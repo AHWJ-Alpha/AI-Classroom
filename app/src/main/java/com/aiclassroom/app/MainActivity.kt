@@ -9,21 +9,27 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,8 +42,11 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.HealthAndSafety
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.South
+import androidx.compose.material.icons.filled.North
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -57,6 +66,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -111,6 +122,7 @@ private enum class Tab(val title: String, val icon: ImageVector) {
 private data class ChatMessage(val role: String, val text: String)
 private data class BranchClass(val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String)
 private data class KnowledgeFile(val name: String, val type: String, val chars: Int, val preview: String)
+private data class ConversationChapter(val title: String, val summary: String, val startIndex: Int, val endIndex: Int)
 private data class ClassroomConfig(
     val provider: String = "OpenAI",
     val apiKey: String = "",
@@ -127,6 +139,7 @@ private data class Classroom(
     val messages: MutableList<ChatMessage>,
     val branches: MutableList<BranchClass>,
     val memories: MutableList<String>,
+    val chapters: MutableList<ConversationChapter>,
     val files: MutableList<KnowledgeFile>,
     val config: ClassroomConfig
 )
@@ -141,6 +154,7 @@ private fun AIClassroomApp() {
     var classIndex by remember { mutableIntStateOf(store.loadIndex(initialClasses.lastIndex)) }
     var input by remember { mutableStateOf("") }
     var classMenuOpen by remember { mutableStateOf(false) }
+    var jumpToMessageIndex by remember { mutableStateOf<Int?>(null) }
     var saveNotice by remember { mutableStateOf("所有内容自动保存在本机") }
     var modelStatus by remember { mutableStateOf("未获取模型") }
     var isLoading by remember { mutableStateOf(false) }
@@ -175,6 +189,19 @@ private fun AIClassroomApp() {
         replaceCurrent(current.copy(config = classes[sourceIndex].config), "已复制课堂配置")
     }
 
+    fun deleteClassroom(deleteIndex: Int) {
+        if (deleteIndex !in classes.indices) return
+        if (classes.size == 1) {
+            classes[0] = newClassroom(1, classes[0].config)
+            classIndex = 0
+        } else {
+            classes.removeAt(deleteIndex)
+            classIndex = classIndex.coerceAtMost(classes.lastIndex)
+        }
+        classMenuOpen = false
+        persist("课堂已删除")
+    }
+
     fun systemPrompt(room: Classroom): String {
         val knowledge = room.files.joinToString("\n") { "[${it.name}] ${it.preview}" }.take(3000)
         val memory = room.memories.takeLast(MEMORY_PROMPT_LIMIT).joinToString("\n")
@@ -195,6 +222,8 @@ private fun AIClassroomApp() {
             val result = callChat(room.config.baseUrl, room.config.apiKey, activeModel, systemPrompt(room), room.messages.toList())
             room.messages.add(ChatMessage("assistant", filterNsfw(result, room.config.efficientMode)))
             room.memories.add(summarize("主课堂", room.messages.takeLast(8)))
+            room.chapters.clear()
+            room.chapters.addAll(buildConversationChapters(room.messages, room.config, activeModel))
             isLoading = false
             persist("回复和记忆已保存")
         }
@@ -205,7 +234,7 @@ private fun AIClassroomApp() {
             TopAppBar(
                 title = {
                     Column {
-                        Text("AI Classroom 1.4", fontWeight = FontWeight.Bold)
+                        Text("AI Classroom 1.5", fontWeight = FontWeight.Bold)
                         Text("${current.name} · ${current.topic}", color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 },
@@ -243,10 +272,10 @@ private fun AIClassroomApp() {
                     classIndex = it
                     classMenuOpen = false
                     persist("已切换课堂")
-                }, onNew = { addClassroom() }, onNewWithConfig = { addClassroom(classes[it]) }, onCopyConfig = ::copyConfigFrom)
+                }, onNew = { addClassroom() }, onNewWithConfig = { addClassroom(classes[it]) }, onCopyConfig = ::copyConfigFrom, onDelete = ::deleteClassroom)
             } else {
                 when (tab) {
-                    Tab.Class -> ClassScreen(current, classIndex, classes.size, input, { input = it }, isLoading, { classMenuOpen = true }, { sendMessage() }) { index ->
+                    Tab.Class -> ClassScreen(current, classIndex, classes.size, input, { input = it }, isLoading, jumpToMessageIndex, { jumpToMessageIndex = null }, { classMenuOpen = true }, { sendMessage() }) { index ->
                         val selected = current.messages.drop(index)
                         val branchMessages = selected.take(BRANCH_CONTEXT_LIMIT).toMutableStateList()
                         val title = selected.firstOrNull()?.text?.take(18)?.ifBlank { "分支课堂" } ?: "分支课堂"
@@ -259,7 +288,10 @@ private fun AIClassroomApp() {
                         tab = Tab.Class
                         sendMessage("继续这个分支：${branch.source}\n${branch.messages.joinToString("\n") { it.role + ":" + it.text }}")
                     }
-                    Tab.Memory -> MemoryScreen(current.memories)
+                    Tab.Memory -> MemoryScreen(current.chapters, current.messages) { index ->
+                        jumpToMessageIndex = index
+                        tab = Tab.Class
+                    }
                     Tab.Knowledge -> KnowledgeScreen(current.files) { persist("知识库已保存") }
                     Tab.Model -> ModelScreen(
                         config = current.config,
@@ -296,38 +328,46 @@ private fun ClassroomMenu(
     onSelect: (Int) -> Unit,
     onNew: () -> Unit,
     onNewWithConfig: (Int) -> Unit,
-    onCopyConfig: (Int) -> Unit
+    onCopyConfig: (Int) -> Unit,
+    onDelete: (Int) -> Unit
 ) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item {
-            InfoCard {
-                Text("课堂管理", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                Text("左滑或右滑可打开/收起。每个课堂都有独立配置，操作后实时保存。", color = Muted, lineHeight = 20.sp)
-                Spacer(Modifier.height(8.dp))
-                Button(onClick = onNew) { Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("新建课堂") }
-                Text(saveNotice, color = Green, fontSize = 13.sp)
-            }
-        }
-        items(classes.indices.toList()) { i ->
-            val room = classes[i]
-            InfoCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(room.name, fontWeight = FontWeight.Bold)
-                        Text(room.config.customModel.ifBlank { room.config.selectedModel }, color = Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Row(Modifier.fillMaxSize()) {
+        Surface(Modifier.fillMaxHeight().fillMaxWidth(0.78f), color = Color.White, shape = RoundedCornerShape(topEnd = 14.dp, bottomEnd = 14.dp)) {
+            LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), contentPadding = PaddingValues(vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    Text("课堂", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                    Text(saveNotice, color = Green, fontSize = 12.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Button(onClick = onNew, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("新建课堂")
                     }
-                    if (i == classIndex) Icon(Icons.Default.Check, null, tint = Green)
                 }
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { onSelect(i) }) { Text("切换") }
-                    OutlinedButton(onClick = { onNewWithConfig(i) }) { Icon(Icons.Default.ContentCopy, null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("复制新建") }
-                }
-                if (i != classIndex) {
-                    TextButton(onClick = { onCopyConfig(i) }) { Text("复制此配置到当前课堂") }
+                items(classes.indices.toList()) { i ->
+                    val room = classes[i]
+                    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(if (i == classIndex) Color(0xFFEAF2FF) else Color(0xFFF7F8FA))) {
+                        Column(Modifier.padding(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(room.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(room.config.customModel.ifBlank { room.config.selectedModel }, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                if (i == classIndex) Icon(Icons.Default.Check, null, tint = Green, modifier = Modifier.size(18.dp))
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(onClick = { onSelect(i) }) { Text("进入") }
+                                OutlinedButton(onClick = { onNewWithConfig(i) }) { Text("复制") }
+                                TextButton(onClick = { onDelete(i) }) { Icon(Icons.Default.Delete, null, Modifier.size(16.dp)); Text("删除") }
+                            }
+                            if (i != classIndex) TextButton(onClick = { onCopyConfig(i) }) { Text("复制配置到当前课堂") }
+                        }
+                    }
                 }
             }
         }
+        Box(Modifier.fillMaxSize().background(Color(0x33000000)))
     }
 }
 
@@ -339,43 +379,93 @@ private fun ClassScreen(
     input: String,
     onInput: (String) -> Unit,
     isLoading: Boolean,
+    jumpToMessageIndex: Int?,
+    onJumpHandled: () -> Unit,
     onOpenMenu: () -> Unit,
     onSend: () -> Unit,
     onBranch: (Int) -> Unit
 ) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item {
-            InfoCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("课堂 ${index + 1}/$count", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    OutlinedButton(onClick = onOpenMenu) { Text("切换") }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val isAtBottom by remember { derivedStateOf { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 >= room.messages.size } }
+    LaunchedEffect(room.messages.size, isLoading) {
+        if (room.messages.isNotEmpty()) listState.animateScrollToItem(room.messages.size + 1)
+    }
+    LaunchedEffect(jumpToMessageIndex) {
+        val target = jumpToMessageIndex ?: return@LaunchedEffect
+        listState.animateScrollToItem((target + 1).coerceAtLeast(0))
+        onJumpHandled()
+    }
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(vertical = 10.dp, horizontal = 2.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            item {
+                InfoCard {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("课堂 ${index + 1}/$count", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        OutlinedButton(onClick = onOpenMenu) { Text("切换") }
+                    }
+                    Text(room.topic, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Text(room.topic, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            items(room.messages.size) { i -> MessageCard(i, room.messages[i], onBranch) }
+            if (isLoading) item { AiThinkingRow() }
+            item {
+                InfoCard {
+                    OutlinedTextField(input, onInput, Modifier.fillMaxWidth(), placeholder = { Text("输入学习目标或问题") }, minLines = 2)
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = onSend, enabled = !isLoading) {
+                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (isLoading) "生成中" else "发送")
+                    }
+                }
             }
         }
-        items(room.messages.size) { i -> MessageCard(i, room.messages[i], onBranch) }
-        item {
-            InfoCard {
-                OutlinedTextField(input, onInput, Modifier.fillMaxWidth(), placeholder = { Text("输入学习目标或问题") }, minLines = 2)
-                Spacer(Modifier.height(8.dp))
-                Button(onClick = onSend, enabled = !isLoading) {
-                    Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (isLoading) "生成中" else "发送")
-                }
+        Button(
+            onClick = { scope.launch { if (isAtBottom) listState.animateScrollToItem(0) else listState.animateScrollToItem(room.messages.size + 1) } },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 6.dp, bottom = 108.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+        ) {
+            Icon(if (isAtBottom) Icons.Default.North else Icons.Default.South, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text(if (isAtBottom) "开头" else "底部")
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MessageCard(index: Int, message: ChatMessage, onBranch: (Int) -> Unit) {
+    if (message.role == "user") {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Column(
+                Modifier
+                    .fillMaxWidth(0.82f)
+                    .background(Blue, RoundedCornerShape(8.dp))
+                    .padding(12.dp)
+            ) {
+                Text("我", color = Color.White.copy(alpha = 0.82f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Spacer(Modifier.height(4.dp))
+                Text(message.text, color = Color.White, lineHeight = 21.sp)
+                TextButton(onClick = { onBranch(index) }) { Text("从这里开分支", color = Color.White) }
             }
+        }
+    } else {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+            Text("AI 讲师", color = Green, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Spacer(Modifier.height(6.dp))
+            MarkdownText(message.text)
+            TextButton(onClick = { onBranch(index) }) { Text("从这里开分支") }
         }
     }
 }
 
 @Composable
-private fun MessageCard(index: Int, message: ChatMessage, onBranch: (Int) -> Unit) {
-    InfoCard {
-        Text(if (message.role == "user") "我" else "AI 讲师", color = if (message.role == "user") Blue else Green, fontWeight = FontWeight.Bold)
+private fun AiThinkingRow() {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        Text("AI 讲师", color = Green, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(6.dp))
-        MarkdownText(message.text)
-        Spacer(Modifier.height(4.dp))
-        TextButton(onClick = { onBranch(index) }) { Text("从这里开分支") }
+        Text("正在回复...", color = Muted)
     }
 }
 
@@ -396,10 +486,50 @@ private fun BranchScreen(branches: List<BranchClass>, onContinue: (BranchClass) 
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MemoryScreen(memories: List<String>) {
+private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<ChatMessage>, onJump: (Int) -> Unit) {
+    val visibleChapters = chapters.ifEmpty { fallbackChapters(messages) }
+    var overview by remember { mutableStateOf(true) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(memories.reversed()) { InfoCard { MarkdownText(it) } }
+        item {
+            InfoCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("对话章节", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    FilterChip(overview, { overview = true }, label = { Text("全览") })
+                    Spacer(Modifier.width(6.dp))
+                    FilterChip(!overview, { overview = false }, label = { Text("章节") })
+                }
+                Text("双击章节可跳到主课堂对应对话。", color = Muted, fontSize = 13.sp)
+            }
+        }
+        if (visibleChapters.isEmpty()) item { InfoCard { Text("开始对话后会自动生成章节索引。", color = Muted) } }
+        if (overview) {
+            items(visibleChapters) { chapter ->
+                InfoCard {
+                    Text(chapter.title, fontWeight = FontWeight.Bold)
+                    Text(chapter.summary, color = Ink, lineHeight = 21.sp)
+                }
+            }
+        } else {
+            items(visibleChapters) { chapter ->
+                Card(
+                    Modifier
+                        .fillMaxWidth()
+                        .combinedClickable(onClick = {}, onDoubleClick = { onJump(chapter.startIndex) }),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = CardDefaults.cardColors(Color.White),
+                    elevation = CardDefaults.cardElevation(1.dp)
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(chapter.title, fontWeight = FontWeight.Bold)
+                        Text("第 ${chapter.startIndex + 1} 到 ${chapter.endIndex + 1} 条", color = Muted, fontSize = 12.sp)
+                        Spacer(Modifier.height(6.dp))
+                        Text(chapter.summary, color = Ink, lineHeight = 21.sp)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -559,6 +689,7 @@ private fun newClassroom(number: Int, config: ClassroomConfig = ClassroomConfig(
     messages = mutableStateListOf(ChatMessage("assistant", "输入学习目标，我会开始主课堂教学。支持 Markdown 与公式文本，例如 `f(x)=x^2` 或 ${'$'}E=mc^2${'$'}。")),
     branches = mutableStateListOf(),
     memories = mutableStateListOf("等待开始。"),
+    chapters = mutableStateListOf(),
     files = mutableStateListOf(),
     config = config
 )
@@ -608,6 +739,7 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
         messages = optJSONArray("messages").toMessages().toMutableStateList(),
         branches = optJSONArray("branches").toBranches().toMutableStateList(),
         memories = optJSONArray("memories").toStrings().ifEmpty { listOf("等待开始。") }.toMutableStateList(),
+        chapters = optJSONArray("chapters").toChapters().toMutableStateList(),
         files = optJSONArray("files").toFiles().toMutableStateList(),
         config = ClassroomConfig(
             provider = configJson.optString("provider", "OpenAI"),
@@ -630,6 +762,7 @@ private fun Classroom.toJson() = JSONObject().apply {
             .put("messages", JSONArray(branch.messages.map { JSONObject().put("role", it.role).put("text", it.text) }))
     }))
     put("memories", JSONArray(memories))
+    put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("summary", it.summary).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
     put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview) }))
     put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("mentorPrompt", config.mentorPrompt).put("efficientMode", config.efficientMode))
 }
@@ -637,6 +770,7 @@ private fun Classroom.toJson() = JSONObject().apply {
 private fun JSONArray?.toMessages(): List<ChatMessage> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ChatMessage(item.optString("role"), item.optString("text")) } }
 private fun JSONArray?.toBranches(): List<BranchClass> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> BranchClass(item.optString("title"), item.optString("source"), item.optJSONArray("messages").toMessages().toMutableStateList(), item.optString("memory")) } }
 private fun JSONArray?.toStrings(): List<String> = if (this == null) emptyList() else List(length()) { optString(it) }
+private fun JSONArray?.toChapters(): List<ConversationChapter> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ConversationChapter(item.optString("title"), item.optString("summary"), item.optInt("startIndex"), item.optInt("endIndex")) } }
 private fun JSONArray?.toFiles(): List<KnowledgeFile> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> KnowledgeFile(item.optString("name"), item.optString("type"), item.optInt("chars"), item.optString("preview")) } }
 private fun <T> List<T>.toMutableStateList() = mutableStateListOf<T>().also { it.addAll(this) }
 
@@ -674,6 +808,43 @@ private suspend fun callChat(baseUrl: String, apiKey: String, model: String, sys
         Regex("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").find(readBody(connection))?.groupValues?.get(1)?.unescapeJson() ?: "模型没有返回内容。"
     }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
 }
+
+private suspend fun buildConversationChapters(messages: List<ChatMessage>, config: ClassroomConfig, model: String): List<ConversationChapter> = withContext(Dispatchers.IO) {
+    val chunks = messages.chunked(CHAPTER_SIZE)
+    chunks.mapIndexed { chunkIndex, chunk ->
+        val start = chunkIndex * CHAPTER_SIZE
+        val end = (start + chunk.size - 1).coerceAtLeast(start)
+        val local = localChapterSummary(chunkIndex, chunk, start, end)
+        if (config.apiKey.isBlank() || model.isBlank()) {
+            local
+        } else {
+            val prompt = "请把下面这段课堂对话总结成一个章节标题和一句话摘要。只返回 JSON：{\"title\":\"...\",\"summary\":\"...\"}\n" +
+                chunk.joinToString("\n") { "${if (it.role == "user") "用户" else "AI"}：${it.text}" }.take(4000)
+            val result = callChat(config.baseUrl, config.apiKey, model, "你负责为 AI 课堂生成简洁的对话章节索引。", listOf(ChatMessage("user", prompt)))
+            parseChapter(result, start, end) ?: local
+        }
+    }
+}
+
+private fun fallbackChapters(messages: List<ChatMessage>): List<ConversationChapter> = messages.chunked(CHAPTER_SIZE).mapIndexed { index, chunk ->
+    val start = index * CHAPTER_SIZE
+    localChapterSummary(index, chunk, start, start + chunk.size - 1)
+}
+
+private fun localChapterSummary(index: Int, messages: List<ChatMessage>, start: Int, end: Int): ConversationChapter {
+    val firstUser = messages.firstOrNull { it.role == "user" }?.text?.replace(Regex("\\s+"), " ").orEmpty()
+    val title = if (firstUser.isBlank()) "章节 ${index + 1}" else firstUser.take(18)
+    val summary = messages.joinToString(" ") { it.text }.replace(Regex("\\s+"), " ").take(80).ifBlank { "本章暂无摘要。" }
+    return ConversationChapter(title, summary, start, end)
+}
+
+private fun parseChapter(raw: String, start: Int, end: Int): ConversationChapter? = runCatching {
+    val jsonText = Regex("\\{[\\s\\S]*\\}").find(raw)?.value ?: return@runCatching null
+    val json = JSONObject(jsonText)
+    val title = json.optString("title").ifBlank { return@runCatching null }
+    val summary = json.optString("summary").ifBlank { return@runCatching null }
+    ConversationChapter(title.take(28), summary.take(120), start, end)
+}.getOrNull()
 
 private fun readBody(connection: HttpURLConnection): String {
     val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
@@ -713,3 +884,4 @@ private val Green = Color(0xFF2FB344)
 private val Purple = Color(0xFF7A5AF8)
 private const val MEMORY_PROMPT_LIMIT = 24
 private const val BRANCH_CONTEXT_LIMIT = 24
+private const val CHAPTER_SIZE = 12
