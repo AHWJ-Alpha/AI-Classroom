@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
@@ -62,6 +63,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -95,6 +97,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -129,6 +133,7 @@ private data class KnowledgeFile(val name: String, val type: String, val chars: 
 private data class ConversationChapter(val title: String, val summary: String, val startIndex: Int, val endIndex: Int)
 private data class ExamQuestion(val premise: String, val question: String, val answer: String = "", val unknown: Boolean = false)
 private data class ExamSession(val title: String, val questions: MutableList<ExamQuestion>, val draft: String = "", val submitted: Boolean = false)
+private data class ThemePreset(val mode: String, val title: String, val subtitle: String, val primary: Long, val secondary: Long)
 private data class AppPalette(
     val page: Color,
     val surface: Color,
@@ -147,9 +152,9 @@ private data class ClassroomConfig(
     val mentorPrompt: String = "你是一名耐心、结构清晰的 AI 讲师。默认使用中文教学，保持主线课程连续，并在必要时用 Markdown 和公式文本表达。",
     val efficientMode: Boolean = true,
     val reverseConversation: Boolean = false,
-    val themeMode: String = "青蓝默认",
-    val primaryColor: Long = 0xFF10A7B5,
-    val secondaryColor: Long = 0xFF2563EB
+    val themeMode: String = "ocean",
+    val primaryColor: Long = 0xFF39C5BB,
+    val secondaryColor: Long = 0xFF00AEEF
 )
 
 private data class Classroom(
@@ -175,16 +180,20 @@ private fun AIClassroomApp() {
     var classMenuOpen by remember { mutableStateOf(false) }
     var jumpToMessageIndex by remember { mutableStateOf<Int?>(null) }
     var examSession by remember { mutableStateOf<ExamSession?>(null) }
+    var showNewDialog by remember { mutableStateOf(!store.hasSeenReleaseNotes(APP_VERSION)) }
+    var showManualDialog by remember { mutableStateOf(false) }
     var saveNotice by remember { mutableStateOf("所有内容自动保存在本机") }
     var modelStatus by remember { mutableStateOf("未获取模型") }
     var isLoading by remember { mutableStateOf(false) }
     val classes = remember { mutableStateListOf<Classroom>().apply { addAll(initialClasses) } }
     val models = remember { mutableStateListOf("gpt-4o-mini", "gpt-4o", "deepseek-chat", "qwen-plus") }
     val scope = rememberCoroutineScope()
+    val memoryJobs = remember { java.util.IdentityHashMap<Classroom, Job>() }
+    val memoryWatermarks = remember { java.util.IdentityHashMap<Classroom, Int>() }
     if (classIndex > classes.lastIndex) classIndex = classes.lastIndex.coerceAtLeast(0)
     val current = classes[classIndex]
     val activeModel = current.config.customModel.ifBlank { current.config.selectedModel }
-    val palette = paletteFor(current.config)
+    val palette = remember(current.config) { paletteFor(current.config) }
 
     fun persist(message: String = "已保存到本机") {
         store.save(classes, classIndex)
@@ -230,33 +239,64 @@ private fun AIClassroomApp() {
         return "${room.config.mentorPrompt}\n课堂：${room.name}\n学习内容：${room.topic}\n记忆：$memory\n知识库：$knowledge\n$safety"
     }
 
+    fun scheduleMemoryBuild(room: Classroom, model: String) {
+        val lastBuilt = memoryWatermarks.getOrPut(room) { room.chapters.maxOfOrNull { it.endIndex + 1 } ?: 0 }
+        if (room.messages.size - lastBuilt < MEMORY_BATCH_MESSAGE_COUNT) return
+        memoryJobs[room]?.cancel()
+        memoryJobs[room] = scope.launch {
+            delay(MEMORY_BATCH_DELAY_MS)
+            val snapshot = room.messages.toList()
+            val chapters = buildConversationChapters(snapshot, room.config, model)
+            val branchMemory = room.memories.filterNot { it.startsWith(MAIN_MEMORY_PREFIX) }
+            room.chapters.clear()
+            room.chapters.addAll(chapters)
+            room.memories.clear()
+            room.memories.addAll(branchMemory.takeLast(MEMORY_PROMPT_LIMIT / 2))
+            room.memories.addAll(chapters.takeLast(MEMORY_PROMPT_LIMIT).map { chapter ->
+                "$MAIN_MEMORY_PREFIX ${chapter.title}: ${chapter.summary}"
+            })
+            memoryWatermarks[room] = snapshot.size
+            persist("记忆已在后台整理并保存")
+        }
+    }
+
     fun sendMessage(seed: String? = null) {
         val text = (seed ?: input).trim()
         if (text.isBlank() || isLoading) return
         val room = current
         input = ""
         room.messages.add(ChatMessage("user", filterNsfw(text, room.config.efficientMode)))
-        room.memories.add(summarize("主课堂", room.messages.takeLast(6)))
         persist("对话已保存")
         isLoading = true
         scope.launch {
-            val result = callChat(room.config.baseUrl, room.config.apiKey, activeModel, systemPrompt(room) + "\n" + EXAM_TOOL_PROMPT, room.messages.toList())
-            room.messages.add(ChatMessage("assistant", filterNsfw(result, room.config.efficientMode)))
-            detectExamSession(result)?.let { examSession = it }
-            room.memories.add(summarize("主课堂", room.messages.takeLast(8)))
-            room.chapters.clear()
-            room.chapters.addAll(buildConversationChapters(room.messages, room.config, activeModel))
+            val result = callChat(room.config.baseUrl, room.config.apiKey, activeModel, systemPrompt(room) + "\n" + EXAM_TOOL_PROMPT + "\n" + EXAM_TOOL_PROMPT_V2, room.messages.toList())
+            val detectedExam = detectExamSession(result, force = isExamRequest(text))
+            val visibleResult = stripExamBlock(result).ifBlank { if (detectedExam != null) "已为你准备好本次测试。" else result }
+            room.messages.add(ChatMessage("assistant", filterNsfw(visibleResult, room.config.efficientMode)))
+            detectedExam?.let { examSession = it }
             isLoading = false
-            persist("回复和记忆已保存")
+            persist("回复已保存，记忆将在后台整理")
+            scheduleMemoryBuild(room, activeModel)
         }
     }
 
+    MaterialTheme(
+        colorScheme = androidx.compose.material3.lightColorScheme(
+            primary = palette.secondary,
+            secondary = palette.primary,
+            tertiary = palette.accent,
+            background = palette.page,
+            surface = palette.surface,
+            onBackground = palette.ink,
+            onSurface = palette.ink
+        )
+    ) {
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Column {
-                        Text("AI Classroom 1.6", fontWeight = FontWeight.Bold)
+                        Text("AI Classroom $APP_VERSION", fontWeight = FontWeight.Bold)
                         Text("${current.name} · ${current.topic}", color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 },
@@ -291,7 +331,7 @@ private fun AIClassroomApp() {
         ) {
             Box(Modifier.fillMaxSize()) {
                 when (tab) {
-                    Tab.Class -> ClassScreen(current, classIndex, classes.size, input, { input = it }, isLoading, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, { classMenuOpen = true }, { sendMessage() }) { index ->
+                    Tab.Class -> ClassScreen(current, classIndex, classes.size, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, { classMenuOpen = true }, { sendMessage() }) { index ->
                         val selected = current.messages.drop(index)
                         val branchMessages = selected.take(BRANCH_CONTEXT_LIMIT).toMutableStateList()
                         val title = selected.firstOrNull()?.text?.take(18)?.ifBlank { "分支课堂" } ?: "分支课堂"
@@ -315,6 +355,7 @@ private fun AIClassroomApp() {
                         modelStatus = modelStatus,
                         saveNotice = saveNotice,
                         onConfig = { replaceCurrent(current.copy(config = it), "设置已保存") },
+                        onOpenManual = { showManualDialog = true },
                         onFetchModels = {
                             scope.launch {
                                 modelStatus = "获取中..."
@@ -336,7 +377,7 @@ private fun AIClassroomApp() {
                     enter = slideInHorizontally(animationSpec = tween(220)) { -it },
                     exit = slideOutHorizontally(animationSpec = tween(180)) { -it }
                 ) {
-                    ClassroomMenu(classes, classIndex, saveNotice, onSelect = {
+                    ClassroomMenu(classes, classIndex, saveNotice, palette, onSelect = {
                         classIndex = it
                         classMenuOpen = false
                         persist("已切换课堂")
@@ -357,8 +398,18 @@ private fun AIClassroomApp() {
                         }
                     })
                 }
+                if (showNewDialog) {
+                    ReleaseNotesDialog(onClose = {
+                        store.markReleaseNotesSeen(APP_VERSION)
+                        showNewDialog = false
+                    })
+                }
+                if (showManualDialog) {
+                    UserManualDialog(onClose = { showManualDialog = false })
+                }
             }
         }
+    }
     }
 }
 
@@ -367,6 +418,7 @@ private fun ClassroomMenu(
     classes: List<Classroom>,
     classIndex: Int,
     saveNotice: String,
+    palette: AppPalette,
     onSelect: (Int) -> Unit,
     onNew: () -> Unit,
     onNewWithConfig: (Int) -> Unit,
@@ -378,7 +430,7 @@ private fun ClassroomMenu(
             LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), contentPadding = PaddingValues(vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {
                     Text("课堂", fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                    Text(saveNotice, color = Green, fontSize = 12.sp)
+                    Text(saveNotice, color = palette.secondary, fontSize = 12.sp)
                     Spacer(Modifier.height(10.dp))
                     Button(onClick = onNew, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Default.Add, null, Modifier.size(18.dp))
@@ -388,14 +440,14 @@ private fun ClassroomMenu(
                 }
                 items(classes.indices.toList()) { i ->
                     val room = classes[i]
-                    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(if (i == classIndex) Color(0xFFEAF2FF) else Color(0xFFF7F8FA))) {
+                    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(if (i == classIndex) palette.secondary.copy(alpha = 0.10f).compositeOnWhite() else Color(0xFFF7F8FA))) {
                         Column(Modifier.padding(10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
                                     Text(room.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     Text(room.config.customModel.ifBlank { room.config.selectedModel }, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }
-                                if (i == classIndex) Icon(Icons.Default.Check, null, tint = Green, modifier = Modifier.size(18.dp))
+                                if (i == classIndex) Icon(Icons.Default.Check, null, tint = palette.secondary, modifier = Modifier.size(18.dp))
                             }
                             Spacer(Modifier.height(8.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -409,7 +461,6 @@ private fun ClassroomMenu(
                 }
             }
         }
-        Box(Modifier.fillMaxSize().background(Color(0x33000000)))
     }
 }
 
@@ -421,6 +472,7 @@ private fun ClassScreen(
     input: String,
     onInput: (String) -> Unit,
     isLoading: Boolean,
+    palette: AppPalette,
     jumpToMessageIndex: Int?,
     onJumpHandled: () -> Unit,
     reverseConversation: Boolean,
@@ -453,23 +505,35 @@ private fun ClassScreen(
                     Text(room.topic, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            items(room.messages.size) { i -> MessageCard(i, room.messages[i], onBranch) }
-            if (isLoading) item { AiThinkingRow() }
+            items(room.messages.size) { i -> MessageCard(i, room.messages[i], palette, onBranch) }
+            if (isLoading) item { AiThinkingRow(palette) }
             item {
                 InfoCard {
-                    OutlinedTextField(input, onInput, Modifier.fillMaxWidth(), placeholder = { Text("输入学习目标或问题") }, minLines = 2)
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = onSend, enabled = !isLoading) {
-                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (isLoading) "生成中" else "发送")
+                    Box(Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            input,
+                            onInput,
+                            Modifier.fillMaxWidth().padding(bottom = 2.dp),
+                            placeholder = { Text("输入学习目标或问题") },
+                            minLines = 3
+                        )
+                        Button(
+                            onClick = onSend,
+                            enabled = !isLoading,
+                            modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (isLoading) "生成中" else "发送")
+                        }
                     }
                 }
             }
         }
         Button(
             onClick = { scope.launch { if (isAtBottom) listState.animateScrollToItem(topIndex) else listState.animateScrollToItem(bottomIndex) } },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 6.dp, bottom = 108.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 6.dp, bottom = 164.dp),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Icon(if (isAtBottom) Icons.Default.North else Icons.Default.South, null, Modifier.size(18.dp))
@@ -481,24 +545,25 @@ private fun ClassScreen(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageCard(index: Int, message: ChatMessage, onBranch: (Int) -> Unit) {
+private fun MessageCard(index: Int, message: ChatMessage, palette: AppPalette, onBranch: (Int) -> Unit) {
     if (message.role == "user") {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Column(
                 Modifier
                     .fillMaxWidth(0.82f)
-                    .background(Blue, RoundedCornerShape(8.dp))
+                    .background(palette.secondary.copy(alpha = 0.13f).compositeOnWhite(), RoundedCornerShape(10.dp))
+                    .border(1.dp, palette.secondary.copy(alpha = 0.24f), RoundedCornerShape(10.dp))
                     .padding(12.dp)
             ) {
-                Text("我", color = Color.White.copy(alpha = 0.82f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text("我", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 Spacer(Modifier.height(4.dp))
-                Text(message.text, color = Color.White, lineHeight = 21.sp)
-                TextButton(onClick = { onBranch(index) }) { Text("从这里开分支", color = Color.White) }
+                Text(message.text, color = palette.ink, lineHeight = 21.sp)
+                TextButton(onClick = { onBranch(index) }) { Text("从这里开分支", color = palette.secondary) }
             }
         }
     } else {
         Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
-            Text("AI 讲师", color = Green, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text("AI 讲师", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             Spacer(Modifier.height(6.dp))
             MarkdownText(message.text)
             TextButton(onClick = { onBranch(index) }) { Text("从这里开分支") }
@@ -507,12 +572,40 @@ private fun MessageCard(index: Int, message: ChatMessage, onBranch: (Int) -> Uni
 }
 
 @Composable
-private fun AiThinkingRow() {
+private fun AiThinkingRow(palette: AppPalette) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
-        Text("AI 讲师", color = Green, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text("AI 讲师", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(6.dp))
         Text("正在回复...", color = Muted)
     }
+}
+
+@Composable
+private fun ReleaseNotesDialog(onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("New!", fontWeight = FontWeight.Bold) },
+        text = {
+            LazyColumn(Modifier.height(360.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item { MarkdownText(RELEASE_NOTES_TEXT) }
+            }
+        },
+        confirmButton = { Button(onClick = onClose) { Text("知道了") } }
+    )
+}
+
+@Composable
+private fun UserManualDialog(onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("使用手册", fontWeight = FontWeight.Bold) },
+        text = {
+            LazyColumn(Modifier.height(460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item { MarkdownText(USER_MANUAL_TEXT) }
+            }
+        },
+        confirmButton = { Button(onClick = onClose) { Text("关闭") } }
+    )
 }
 
 @Composable
@@ -531,7 +624,7 @@ private fun ExamOverlay(
             LazyColumn(Modifier.weight(1.15f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 item {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Quiz, null, tint = Blue)
+                        Icon(Icons.Default.Quiz, null, tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(8.dp))
                         Text(session.title, fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f))
                         TextButton(onClick = onClose) { Text("退出") }
@@ -543,7 +636,7 @@ private fun ExamOverlay(
                         Text("前提", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Text(q.premise.ifBlank { "无额外前提" }, lineHeight = 21.sp)
                         Spacer(Modifier.height(8.dp))
-                        Text("问题 ${i + 1}", color = Blue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("问题 ${i + 1}", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         Text(q.question, lineHeight = 21.sp)
                         Spacer(Modifier.height(8.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -673,6 +766,7 @@ private fun ModelScreen(
     modelStatus: String,
     saveNotice: String,
     onConfig: (ClassroomConfig) -> Unit,
+    onOpenManual: () -> Unit,
     onFetchModels: () -> Unit
 ) {
     val providers = listOf("OpenAI", "DeepSeek", "通义千问", "自定义")
@@ -686,6 +780,11 @@ private fun ModelScreen(
     var themeMode by remember(config.themeMode) { mutableStateOf(config.themeMode) }
     var primaryColor by remember(config.primaryColor) { mutableStateOf(config.primaryColor) }
     var secondaryColor by remember(config.secondaryColor) { mutableStateOf(config.secondaryColor) }
+    var primaryHex by remember(config.primaryColor) { mutableStateOf(argbToHex(config.primaryColor)) }
+    var secondaryHex by remember(config.secondaryColor) { mutableStateOf(argbToHex(config.secondaryColor)) }
+    val canCustomizeColors = themeMode == "ocean" || themeMode == "single"
+    val primaryValid = parseHexColor(primaryHex) != null
+    val secondaryValid = parseHexColor(secondaryHex) != null
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             InfoCard {
@@ -736,37 +835,101 @@ private fun ModelScreen(
         }
         item {
             InfoCard {
-                Text("界面与皮肤模块", fontWeight = FontWeight.Bold)
+                Text("皮肤与界面", fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.ColorLens, null, tint = Blue)
+                    Icon(Icons.Default.ColorLens, null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
                     Text("对话从下到上", modifier = Modifier.weight(1f))
                     Switch(reverseConversation, { reverseConversation = it })
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
+                Text("皮肤风格", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("青蓝默认", "黑白", "跟随系统", "单主色", "双主色").forEach { mode ->
-                        FilterChip(themeMode == mode, { themeMode = mode }, label = { Text(mode) })
+                    THEME_PRESETS.forEach { preset ->
+                        ThemePresetChip(
+                            preset = preset,
+                            selected = themeMode == preset.mode,
+                            onClick = {
+                                themeMode = preset.mode
+                                primaryColor = preset.primary
+                                secondaryColor = preset.secondary
+                                primaryHex = argbToHex(preset.primary)
+                                secondaryHex = argbToHex(preset.secondary)
+                            }
+                        )
                     }
+                }
+                Spacer(Modifier.height(10.dp))
+                if (canCustomizeColors) {
+                    ThemePreview(primaryColor, secondaryColor)
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        primaryHex,
+                        {
+                            primaryHex = it
+                            parseHexColor(it)?.let { color ->
+                                primaryColor = color
+                                if (themeMode == "single") secondaryColor = color
+                            }
+                        },
+                        Modifier.fillMaxWidth(),
+                        label = { Text(if (themeMode == "single") "单色 Hex" else "主色 Hex") },
+                        singleLine = true,
+                        isError = !primaryValid
+                    )
+                    if (!primaryValid) Text("请输入 #RRGGBB 或 #AARRGGBB", color = Color(0xFFB42318), fontSize = 12.sp)
+                    if (themeMode == "ocean") {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            secondaryHex,
+                            {
+                                secondaryHex = it
+                                parseHexColor(it)?.let { color -> secondaryColor = color }
+                            },
+                            Modifier.fillMaxWidth(),
+                            label = { Text("辅色 Hex") },
+                            singleLine = true,
+                            isError = !secondaryValid
+                        )
+                        if (!secondaryValid) Text("请输入 #RRGGBB 或 #AARRGGBB", color = Color(0xFFB42318), fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("二次元可自定义主色和辅色；单色只使用一个颜色生成界面层次。", color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(0xFF10A7B5, 0xFF2563EB, 0xFF2FB344, 0xFF7A5AF8).forEach { color ->
-                        Button(onClick = { primaryColor = color }, contentPadding = PaddingValues(0.dp), modifier = Modifier.size(34.dp)) { Box(Modifier.fillMaxSize().background(Color(color))) }
+                    OutlinedButton(onClick = {
+                        val ocean = THEME_PRESETS.first()
+                        themeMode = ocean.mode
+                        primaryColor = ocean.primary
+                        secondaryColor = ocean.secondary
+                        primaryHex = argbToHex(ocean.primary)
+                        secondaryHex = argbToHex(ocean.secondary)
+                    }) { Text("恢复二次元默认") }
+                    Button(
+                        onClick = {
+                            val cleanPrimary = parseHexColor(primaryHex) ?: primaryColor
+                            val cleanSecondary = if (themeMode == "single") cleanPrimary else parseHexColor(secondaryHex) ?: secondaryColor
+                            primaryColor = cleanPrimary
+                            secondaryColor = cleanSecondary
+                            primaryHex = argbToHex(cleanPrimary)
+                            secondaryHex = argbToHex(cleanSecondary)
+                            val cleanThemeMode = when {
+                                themeMode == "mono" || themeMode == "system" || themeMode == "ocean" -> themeMode
+                                cleanPrimary == cleanSecondary -> "single"
+                                else -> "ocean"
+                            }
+                            themeMode = cleanThemeMode
+                            onConfig(config.copy(reverseConversation = reverseConversation, themeMode = cleanThemeMode, primaryColor = cleanPrimary, secondaryColor = cleanSecondary))
+                        },
+                        enabled = primaryValid && secondaryValid
+                    ) {
+                        Icon(Icons.Default.Check, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("保存皮肤")
                     }
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(0xFF2563EB, 0xFF10A7B5, 0xFF101828, 0xFF667085).forEach { color ->
-                        OutlinedButton(onClick = { secondaryColor = color }, contentPadding = PaddingValues(0.dp), modifier = Modifier.size(34.dp)) { Box(Modifier.fillMaxSize().background(Color(color))) }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                Button(onClick = { onConfig(config.copy(reverseConversation = reverseConversation, themeMode = themeMode, primaryColor = primaryColor, secondaryColor = secondaryColor)) }) {
-                    Icon(Icons.Default.Check, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("保存界面与皮肤模块")
                 }
             }
         }
@@ -777,7 +940,7 @@ private fun ModelScreen(
                 OutlinedTextField(mentorPrompt, { mentorPrompt = it }, Modifier.fillMaxWidth(), label = { Text("讲师人格提示词") }, minLines = 4)
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.HealthAndSafety, null, tint = Green)
+                    Icon(Icons.Default.HealthAndSafety, null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
                     Text("高效模式", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     Switch(efficientMode, { efficientMode = it })
@@ -791,7 +954,67 @@ private fun ModelScreen(
                 }
             }
         }
-        item { Text(saveNotice, color = Green, modifier = Modifier.padding(4.dp)) }
+        item {
+            InfoCard {
+                Text("使用手册", fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                Text("查看 AI Classroom 的课堂、分支、记忆、知识库、模型配置、皮肤和考试工具说明。", color = Muted, lineHeight = 21.sp)
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = onOpenManual) { Text("打开使用手册") }
+            }
+        }
+        item { Text(saveNotice, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(4.dp)) }
+    }
+}
+
+@Composable
+private fun ThemePresetChip(preset: ThemePreset, selected: Boolean, onClick: () -> Unit) {
+    val primary = colorFromLong(preset.primary)
+    val secondary = colorFromLong(preset.secondary)
+    Card(
+        onClick = onClick,
+        modifier = Modifier.width(178.dp).height(96.dp),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(if (selected) primary.copy(alpha = 0.13f).compositeOnWhite() else Color.White),
+        elevation = CardDefaults.cardElevation(if (selected) 3.dp else 1.dp)
+    ) {
+        Column(Modifier.fillMaxSize().padding(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(18.dp).background(primary, RoundedCornerShape(5.dp)))
+                Spacer(Modifier.width(6.dp))
+                Box(Modifier.size(18.dp).background(secondary, RoundedCornerShape(5.dp)))
+                Spacer(Modifier.width(8.dp))
+                Text(preset.title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (selected) Icon(Icons.Default.Check, null, tint = primary, modifier = Modifier.size(18.dp)) else Spacer(Modifier.size(18.dp))
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(preset.subtitle, color = Muted, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun ThemePreview(primaryValue: Long, secondaryValue: Long) {
+    val primary = colorFromLong(primaryValue)
+    val secondary = colorFromLong(secondaryValue)
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(primary.copy(alpha = 0.08f).compositeOnWhite()), elevation = CardDefaults.cardElevation(0.dp)) {
+        Column(Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(34.dp).background(primary, RoundedCornerShape(8.dp)))
+                Spacer(Modifier.width(8.dp))
+                Box(Modifier.size(34.dp).background(secondary, RoundedCornerShape(8.dp)))
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("当前预览", fontWeight = FontWeight.Bold)
+                    Text("${argbToHex(primaryValue)} / ${argbToHex(secondaryValue)}", color = Muted, fontSize = 12.sp)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Surface(color = primary, shape = RoundedCornerShape(8.dp)) { Text("主操作", color = Color.White, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) }
+                Surface(color = secondary.copy(alpha = 0.14f).compositeOnWhite(), shape = RoundedCornerShape(8.dp)) { Text("辅助强调", color = secondary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) }
+            }
+        }
     }
 }
 
@@ -867,6 +1090,12 @@ private class ClassroomStore(context: Context) {
 
     fun loadIndex(lastIndex: Int): Int = prefs.getInt("class_index", 0).coerceIn(0, lastIndex.coerceAtLeast(0))
 
+    fun hasSeenReleaseNotes(version: String): Boolean = prefs.getBoolean("seen_release_notes_$version", false)
+
+    fun markReleaseNotesSeen(version: String) {
+        prefs.edit().putBoolean("seen_release_notes_$version", true).apply()
+    }
+
     fun save(classes: List<Classroom>, classIndex: Int) {
         val payload = JSONArray(classes.map { it.toJson() }).toString()
         runCatching {
@@ -904,9 +1133,9 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
             mentorPrompt = configJson.optString("mentorPrompt", ClassroomConfig().mentorPrompt),
             efficientMode = configJson.optBoolean("efficientMode", true),
             reverseConversation = configJson.optBoolean("reverseConversation", false),
-            themeMode = configJson.optString("themeMode", "青蓝默认"),
-            primaryColor = configJson.optLong("primaryColor", 0xFF10A7B5),
-            secondaryColor = configJson.optLong("secondaryColor", 0xFF2563EB)
+            themeMode = normalizeThemeMode(configJson.optString("themeMode", "ocean")),
+            primaryColor = configJson.optLong("primaryColor", 0xFF39C5BB),
+            secondaryColor = configJson.optLong("secondaryColor", 0xFF00AEEF)
         )
     )
 }
@@ -976,6 +1205,16 @@ private const val EXAM_TOOL_PROMPT = """
 可以重复多组“前提/问题”。不要把考试作为普通聊天问题发出。
 """
 
+private const val EXAM_TOOL_PROMPT_V2 = """
+When you start an exam, quiz, mock test, or the user asks to be tested, append a machine-readable exam block at the end:
+[EXAM]
+premise: background, reading passage, data, or instructions
+question: concrete question one
+question: concrete question two
+[/EXAM]
+Repeat premise/question groups when needed. Put real exam questions inside the block.
+"""
+
 private suspend fun buildConversationChapters(messages: List<ChatMessage>, config: ClassroomConfig, model: String): List<ConversationChapter> = withContext(Dispatchers.IO) {
     val chunks = messages.chunked(CHAPTER_SIZE)
     chunks.mapIndexed { chunkIndex, chunk ->
@@ -991,6 +1230,54 @@ private suspend fun buildConversationChapters(messages: List<ChatMessage>, confi
             parseChapter(result, start, end) ?: local
         }
     }
+}
+
+private fun isExamRequest(text: String): Boolean {
+    val triggers = listOf("考试", "测验", "测试", "考我", "出题", "随堂", "模拟考", "quiz", "exam", "test")
+    return triggers.any { text.contains(it, ignoreCase = true) }
+}
+
+private fun detectExamSession(text: String, force: Boolean): ExamSession? {
+    parseExamBlock(text)?.let { return it }
+    parseReadableExam(text)?.let { return it }
+    if (!force && !isExamRequest(text)) return null
+    return fallbackExamFromText(text)
+}
+
+private fun stripExamBlock(text: String): String =
+    text.replace(Regex("\\[EXAM][\\s\\S]*?\\[/EXAM]", RegexOption.IGNORE_CASE), "").trim()
+
+private fun parseExamBlock(text: String): ExamSession? {
+    val block = Regex("\\[EXAM]([\\s\\S]*?)\\[/EXAM]", RegexOption.IGNORE_CASE).find(text)?.groupValues?.getOrNull(1) ?: return null
+    val questions = mutableListOf<ExamQuestion>()
+    var premise = "请根据当前课堂内容作答。"
+    block.lines().map { it.trim() }.filter { it.isNotBlank() }.forEach { line ->
+        when {
+            line.startsWith("premise:", true) -> premise = line.substringAfter(":").trim().ifBlank { premise }
+            line.startsWith("question:", true) -> line.substringAfter(":").trim().takeIf { it.isNotBlank() }?.let { questions.add(ExamQuestion(premise, it)) }
+        }
+    }
+    return questions.takeIf { it.isNotEmpty() }?.let { ExamSession("AI 随堂考试", it.toMutableStateList()) }
+}
+
+private fun parseReadableExam(text: String): ExamSession? {
+    val normalized = text.replace('：', ':')
+    if (!normalized.contains("【考试】") && !isExamRequest(normalized)) return null
+    val premise = Regex("(?:前提|材料|背景):([\\s\\S]*?)(?=(?:问题|题目|Q\\d*)[:：]|$)")
+        .find(normalized)?.groupValues?.getOrNull(1)?.replace("【考试】", "")?.trim().orEmpty().ifBlank { "请根据当前课堂内容作答。" }
+    val questions = Regex("(?:问题|题目|Q\\d*)[:：]([\\s\\S]*?)(?=(?:问题|题目|Q\\d*|前提|材料|背景)[:：]|$)")
+        .findAll(normalized).mapNotNull { it.groupValues.getOrNull(1)?.trim()?.takeIf { q -> q.isNotBlank() }?.let { q -> ExamQuestion(premise, q) } }
+        .toList()
+    return questions.takeIf { it.isNotEmpty() }?.let { ExamSession("AI 随堂考试", it.toMutableStateList()) }
+}
+
+private fun fallbackExamFromText(text: String): ExamSession {
+    val candidates = text.lines().map { it.trim() }.filter { line ->
+        line.length >= 8 && (line.contains("？") || line.contains("?") || line.matches(Regex(".*(简述|说明|分析|解释|计算|写出).*")))
+    }.take(6)
+    val questions = candidates.ifEmpty { listOf("请结合刚才课堂内容，回答本轮测试的核心问题。") }
+        .map { ExamQuestion("请根据当前课堂内容作答。", it.removePrefix("问题:").removePrefix("题目:").trim()) }
+    return ExamSession("AI 随堂考试", questions.toMutableStateList())
 }
 
 private fun detectExamSession(text: String): ExamSession? {
@@ -1095,20 +1382,109 @@ private fun paletteFor(config: ClassroomConfig): AppPalette {
     val primary = colorFromLong(config.primaryColor)
     val secondary = colorFromLong(config.secondaryColor)
     return when (config.themeMode) {
-        "榛戠櫧", "黑白" -> AppPalette(Color(0xFFF6F6F6), Color.White, Color(0xFF171717), Color(0xFF666666), Color(0xFF111111), Color(0xFF555555), Color(0xFF2F2F2F))
-        "鍗曚富鑹?", "单主色" -> AppPalette(primary.copy(alpha = 0.08f).compositeOnWhite(), Color.White, Ink, Muted, primary, primary.copy(alpha = 0.72f).compositeOnWhite(), primary.copy(alpha = 0.55f).compositeOnWhite())
-        "鍙屼富鑹?", "双主色" -> AppPalette(primary.copy(alpha = 0.08f).compositeOnWhite(), Color.White, Ink, Muted, primary, secondary, secondary.copy(alpha = 0.72f).compositeOnWhite())
-        else -> AppPalette(Page, Color.White, Ink, Muted, Green, Blue, Purple)
+        "mono" -> AppPalette(Color(0xFFF7F7F8), Color.White, Color(0xFF171717), Color(0xFF686868), Color(0xFF111111), Color(0xFF555555), Color(0xFF2F2F2F))
+        "single" -> AppPalette(primary.copy(alpha = 0.08f).compositeOnWhite(), Color.White, Ink, Muted, primary, primary.copy(alpha = 0.72f).compositeOnWhite(), primary.copy(alpha = 0.55f).compositeOnWhite())
+        else -> AppPalette(Color(0xFFEFF9FB), Color.White, Color(0xFF0F2630), Color(0xFF5B6F78), primary, secondary, Color(0xFF0891B2))
     }
 }
 
-private fun colorFromLong(value: Long): Color = Color(value.toULong())
+private fun colorFromLong(value: Long): Color = Color(value.toInt())
+private fun argbToHex(value: Long): String = "#" + (value and 0xFFFFFFFFL).toString(16).padStart(8, '0').uppercase()
+private fun parseHexColor(raw: String): Long? {
+    val clean = raw.trim().removePrefix("#")
+    val argb = when (clean.length) {
+        6 -> "FF$clean"
+        8 -> clean
+        else -> return null
+    }
+    return argb.toLongOrNull(16)?.takeIf { it in 0..0xFFFFFFFFL }
+}
+private fun normalizeThemeMode(raw: String): String = when (raw) {
+    "mono", "黑白", "榛戠櫧" -> "mono"
+    "single", "单主色", "鍗曚富鑹?" -> "single"
+    "dual", "双主色", "鍙屼富鑹?" -> "ocean"
+    "system", "Follow System", "跟随系统" -> "system"
+    else -> "ocean"
+}
 private fun Color.compositeOnWhite(): Color = Color(
     red = red * alpha + (1f - alpha),
     green = green * alpha + (1f - alpha),
     blue = blue * alpha + (1f - alpha),
     alpha = 1f
 )
+
+private const val APP_VERSION = "1.6.6"
+
+private val THEME_PRESETS = listOf(
+    ThemePreset("ocean", "二次元", "清透青绿、亮蓝点缀", 0xFF39C5BB, 0xFF00AEEF),
+    ThemePreset("mono", "黑白", "克制灰阶界面", 0xFF111111, 0xFF666666),
+    ThemePreset("single", "单主色", "用主色生成轻重层次", 0xFF39C5BB, 0xFF39C5BB),
+    ThemePreset("system", "跟随系统", "保留系统浅色基调", 0xFF39C5BB, 0xFF00AEEF)
+)
+
+private const val RELEASE_NOTES_TEXT = """
+# AI Classroom 1.6.4
+
+- 用户对话框改为淡辅色背景，减少大面积色块。
+- 按钮、提示和保存反馈统一跟随当前皮肤辅色。
+- Ocean 预设改为二次元，删除双主色预设。
+- 只有二次元和单色皮肤显示自定义颜色。
+
+# AI Classroom 1.6.2
+
+- 重做皮肤模块，默认风格使用二次元青蓝色调。
+- 皮肤预设改为卡片选择，支持明确的选中勾选和实时预览。
+- 支持输入任意 Hex 颜色，自定义主色和辅色，保存前会校验格式。
+- 修复皮肤保存后可能闪退的问题。
+
+# AI Classroom 1.6.1
+
+- 新增首次进入应用的 “New!” 弹窗，只在当前版本第一次打开时展示。
+- 新增设置页“使用手册”，可随时查看课堂、分支、记忆、知识库、模型和考试工具说明。
+- 使用手册会作为应用内记录保留，后续版本可以继续追加更新内容。
+
+# 1.6 主要内容
+
+- 二级菜单改为左侧滑出覆盖层，打开和关闭时保留主课堂滚动位置。
+- 支持对话从上到下或从下到上显示。
+- 新增二次元、黑白、跟随系统、单色皮肤入口。
+- AI 明确发起考试时自动进入沉浸式考试界面。
+- 考试支持前提、问题、答案框、草稿纸、过往对话和不会题分支。
+"""
+
+private const val USER_MANUAL_TEXT = """
+# AI Classroom 使用手册
+
+## 主课堂
+在主课堂输入学习目标或问题，AI 会围绕当前课堂持续教学。课堂内容、对话、章节索引和摘要会保存在本地。
+
+## 分支课堂
+在任意对话下选择开分支，可以从那一段内容继续追问。分支不会打断主课堂，重要内容会回写到记忆摘要。
+
+## 记忆
+记忆页用于查看对话章节索引。全览模式会显示每段一句话摘要，章节模式可双击跳回主课堂对应位置。
+
+## 知识库
+知识库目前可直接读取 `.md` 和 `.txt` 文件。文件摘要会加入课堂上下文，帮助 AI 结合你的材料教学。
+
+## API 与模型
+在设置页保存 API 模块，可填写服务商、Base URL 和 API Key。模型模块支持自动获取模型，也可以手动输入模型名称。
+
+## 讲师人格
+讲师人格提示词可以自定义，例如教授、工程师、考研老师或更轻松的风格。保存后当前课堂会持续使用该配置。
+
+## 高效模式
+高效模式会过滤 NSFW 等不适合学习场景的内容，默认开启。
+
+## 界面与皮肤
+设置页可切换对话方向和皮肤。默认是二次元青蓝色调，也可以选择黑白、跟随系统或单色。只有二次元和单色皮肤支持自定义颜色。
+
+## 多课堂
+主界面滑出二级菜单后可以切换课堂、新建课堂、删除课堂，也可以复制其他课堂配置。
+
+## 考试工具
+考试不是普通入口。AI 明确要进行考试时，应用会自动进入沉浸式考试界面。题目由前提和问题组成，用户在每个问题后填写答案并提交批改。标记“不会”会自动生成讲解分支。
+"""
 
 private val Page = Color(0xFFF3F8FA)
 private val Ink = Color(0xFF102027)
@@ -1119,3 +1495,6 @@ private val Purple = Color(0xFF0E7490)
 private const val MEMORY_PROMPT_LIMIT = 24
 private const val BRANCH_CONTEXT_LIMIT = 24
 private const val CHAPTER_SIZE = 12
+private const val MEMORY_BATCH_MESSAGE_COUNT = 8
+private const val MEMORY_BATCH_DELAY_MS = 45000L
+private const val MAIN_MEMORY_PREFIX = "主课堂记忆："
