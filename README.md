@@ -1,4 +1,4 @@
-# AI Classroom 1.5
+# AI Classroom 1.6
 
 AI Classroom 是一个面向长期学习场景的 Android Demo，主线为 AI 课堂、分支课堂、长期记忆、知识库和可自定义讲师配置。
 
