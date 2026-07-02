@@ -12,8 +12,8 @@ android {
         applicationId = "com.aiclassroom.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.6.6"
+        versionCode = 18
+        versionName = "1.9.0"
     }
 
     buildTypes {

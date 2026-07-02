@@ -1,6 +1,7 @@
-package com.aiclassroom.app
+﻿package com.aiclassroom.app
 
 import android.content.Context
+import android.content.res.Configuration
 import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
@@ -10,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.animation.AnimatedVisibility
@@ -17,6 +19,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,8 +49,10 @@ import androidx.compose.material.icons.filled.HealthAndSafety
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.South
 import androidx.compose.material.icons.filled.North
 import androidx.compose.material.icons.filled.ColorLens
@@ -58,6 +63,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -84,8 +91,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -133,6 +143,8 @@ private data class KnowledgeFile(val name: String, val type: String, val chars: 
 private data class ConversationChapter(val title: String, val summary: String, val startIndex: Int, val endIndex: Int)
 private data class ExamQuestion(val premise: String, val question: String, val answer: String = "", val unknown: Boolean = false)
 private data class ExamSession(val title: String, val questions: MutableList<ExamQuestion>, val draft: String = "", val submitted: Boolean = false)
+private data class UpdateInfo(val version: String, val name: String, val url: String, val notes: String)
+private data class DrawStroke(val points: List<Offset>)
 private data class ThemePreset(val mode: String, val title: String, val subtitle: String, val primary: Long, val secondary: Long)
 private data class AppPalette(
     val page: Color,
@@ -178,9 +190,11 @@ private fun AIClassroomApp() {
     var classIndex by remember { mutableIntStateOf(store.loadIndex(initialClasses.lastIndex)) }
     var input by remember { mutableStateOf("") }
     var classMenuOpen by remember { mutableStateOf(false) }
+    var chromeVisible by remember { mutableStateOf(false) }
     var jumpToMessageIndex by remember { mutableStateOf<Int?>(null) }
     var examSession by remember { mutableStateOf<ExamSession?>(null) }
     var showNewDialog by remember { mutableStateOf(!store.hasSeenReleaseNotes(APP_VERSION)) }
+    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var showManualDialog by remember { mutableStateOf(false) }
     var saveNotice by remember { mutableStateOf("所有内容自动保存在本机") }
     var modelStatus by remember { mutableStateOf("未获取模型") }
@@ -194,6 +208,17 @@ private fun AIClassroomApp() {
     val current = classes[classIndex]
     val activeModel = current.config.customModel.ifBlank { current.config.selectedModel }
     val palette = remember(current.config) { paletteFor(current.config) }
+
+    LaunchedEffect(Unit) {
+        if (store.canShowUpdateToday()) {
+            checkGitHubUpdate()?.let { info ->
+                if (isRemoteVersionNewer(info.version, APP_VERSION)) {
+                    store.markUpdateCheckedToday()
+                    updateInfo = info
+                }
+            }
+        }
+    }
 
     fun persist(message: String = "已保存到本机") {
         store.save(classes, classIndex)
@@ -260,7 +285,7 @@ private fun AIClassroomApp() {
         }
     }
 
-    fun sendMessage(seed: String? = null) {
+    fun sendMessage(seed: String? = null, allowExamTrigger: Boolean = true) {
         val text = (seed ?: input).trim()
         if (text.isBlank() || isLoading) return
         val room = current
@@ -269,10 +294,16 @@ private fun AIClassroomApp() {
         persist("对话已保存")
         isLoading = true
         scope.launch {
-            val result = callChat(room.config.baseUrl, room.config.apiKey, activeModel, systemPrompt(room) + "\n" + EXAM_TOOL_PROMPT + "\n" + EXAM_TOOL_PROMPT_V2, room.messages.toList())
-            val detectedExam = detectExamSession(result, force = isExamRequest(text))
+            val assistantIndex = room.messages.size
+            room.messages.add(ChatMessage("assistant", ""))
+            var streamed = ""
+            val result = callChatStream(room.config.baseUrl, room.config.apiKey, activeModel, systemPrompt(room) + "\n" + EXAM_TOOL_PROMPT + "\n" + EXAM_TOOL_PROMPT_V2, room.messages.dropLast(1).toList()) { delta ->
+                streamed += delta
+                room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(stripExamBlock(streamed), room.config.efficientMode))
+            }
+            val detectedExam = if (allowExamTrigger) detectExamSession(result, userRequestedExam = isExamRequest(text)) else null
             val visibleResult = stripExamBlock(result).ifBlank { if (detectedExam != null) "已为你准备好本次测试。" else result }
-            room.messages.add(ChatMessage("assistant", filterNsfw(visibleResult, room.config.efficientMode)))
+            room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(visibleResult, room.config.efficientMode))
             detectedExam?.let { examSession = it }
             isLoading = false
             persist("回复已保存，记忆将在后台整理")
@@ -293,6 +324,7 @@ private fun AIClassroomApp() {
     ) {
     Scaffold(
         topBar = {
+            if (chromeVisible || tab != Tab.Class) {
             TopAppBar(
                 title = {
                     Column {
@@ -303,12 +335,15 @@ private fun AIClassroomApp() {
                 actions = { TextButton(onClick = { classMenuOpen = !classMenuOpen }) { Text("课堂") } },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.page)
             )
+            }
         },
         bottomBar = {
+            if (chromeVisible || tab != Tab.Class) {
             NavigationBar(containerColor = palette.surface) {
                 Tab.entries.forEach { item ->
                     NavigationBarItem(selected = tab == item, onClick = { tab = item; classMenuOpen = false }, icon = { Icon(item.icon, contentDescription = item.title) }, label = { Text(item.title) })
                 }
+            }
             }
         }
     ) { padding ->
@@ -321,7 +356,8 @@ private fun AIClassroomApp() {
                     var total = 0f
                     detectHorizontalDragGestures(
                         onDragEnd = {
-                            if (total < -80f || total > 80f) classMenuOpen = !classMenuOpen
+                            if (!classMenuOpen && total > 80f) classMenuOpen = true
+                            if (classMenuOpen && total < -80f) classMenuOpen = false
                             total = 0f
                         },
                         onHorizontalDrag = { _, dragAmount -> total += dragAmount }
@@ -331,7 +367,19 @@ private fun AIClassroomApp() {
         ) {
             Box(Modifier.fillMaxSize()) {
                 when (tab) {
-                    Tab.Class -> ClassScreen(current, classIndex, classes.size, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, { classMenuOpen = true }, { sendMessage() }) { index ->
+                    Tab.Class -> ClassScreen(current, classIndex, classes.size, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, onOpenMenu = { classMenuOpen = true }, onSend = { sendMessage() }, onDeleteAfter = { index ->
+                        if (index in current.messages.indices) {
+                            for (i in current.messages.lastIndex downTo index) current.messages.removeAt(i)
+                            current.chapters.clear()
+                            persist("已删除后续对话")
+                        }
+                    }, onRewrite = { index, text ->
+                        if (index in current.messages.indices) {
+                            current.messages[index] = current.messages[index].copy(text = text)
+                            current.chapters.clear()
+                            persist("对话已重写")
+                        }
+                    }) { index ->
                         val selected = current.messages.drop(index)
                         val branchMessages = selected.take(BRANCH_CONTEXT_LIMIT).toMutableStateList()
                         val title = selected.firstOrNull()?.text?.take(18)?.ifBlank { "分支课堂" } ?: "分支课堂"
@@ -372,6 +420,14 @@ private fun AIClassroomApp() {
                         }
                     )
                 }
+                if (tab == Tab.Class) {
+                    ChromeToggleButton(
+                        visible = chromeVisible,
+                        palette = palette,
+                        onClick = { chromeVisible = !chromeVisible },
+                        modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 8.dp)
+                    )
+                }
                 AnimatedVisibility(
                     visible = classMenuOpen,
                     enter = slideInHorizontally(animationSpec = tween(220)) { -it },
@@ -384,9 +440,9 @@ private fun AIClassroomApp() {
                     }, onNew = { addClassroom() }, onNewWithConfig = { addClassroom(classes[it]) }, onCopyConfig = ::copyConfigFrom, onDelete = ::deleteClassroom)
                 }
                 examSession?.let { session ->
-                    ExamOverlay(session, current.messages, current.branches, onUpdate = { examSession = it }, onClose = { examSession = null }, onSubmit = { packed ->
+                    ExamOverlay(session, current.messages, current.branches, onUpdate = { examSession = it }, onClose = { examSession = null; persist("已退出考试模式") }, onSubmit = { packed ->
                         examSession = null
-                        sendMessage(packed)
+                        sendMessage(packed, allowExamTrigger = false)
                     }, onUnknown = { questionIndex, question ->
                         val branchText = "考试不会题：\n前提：${question.premise}\n问题：${question.question}\n请讲解这道题的思路。"
                         current.branches.add(BranchClass("考试不会题 ${questionIndex + 1}", "考试工具", mutableStateListOf(ChatMessage("user", branchText), ChatMessage("assistant", "正在生成讲解，可返回主课堂继续同步查看。")), summarize("考试不会题", listOf(ChatMessage("user", branchText)))))
@@ -403,6 +459,9 @@ private fun AIClassroomApp() {
                         store.markReleaseNotesSeen(APP_VERSION)
                         showNewDialog = false
                     })
+                }
+                updateInfo?.let { info ->
+                    UpdateDialog(info, onClose = { updateInfo = null })
                 }
                 if (showManualDialog) {
                     UserManualDialog(onClose = { showManualDialog = false })
@@ -478,14 +537,18 @@ private fun ClassScreen(
     reverseConversation: Boolean,
     onOpenMenu: () -> Unit,
     onSend: () -> Unit,
+    onDeleteAfter: (Int) -> Unit,
+    onRewrite: (Int, String) -> Unit,
     onBranch: (Int) -> Unit
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    var rewriteTarget by remember { mutableStateOf<Pair<Int, String>?>(null) }
     val lastItemIndex = room.messages.size + 1
     val bottomIndex = if (reverseConversation) 0 else lastItemIndex
     val topIndex = if (reverseConversation) lastItemIndex else 0
     val isAtBottom by remember { derivedStateOf { listState.firstVisibleItemIndex == bottomIndex } }
+    val compactInput by remember { derivedStateOf { !isAtBottom } }
     LaunchedEffect(room.messages.size) {
         if (room.messages.isNotEmpty()) listState.animateScrollToItem(bottomIndex)
     }
@@ -495,7 +558,7 @@ private fun ClassScreen(
         onJumpHandled()
     }
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = reverseConversation, contentPadding = PaddingValues(vertical = 10.dp, horizontal = 2.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = reverseConversation, contentPadding = PaddingValues(top = 10.dp, bottom = if (compactInput) 76.dp else 142.dp, start = 2.dp, end = 2.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item {
                 InfoCard {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -505,52 +568,119 @@ private fun ClassScreen(
                     Text(room.topic, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            items(room.messages.size) { i -> MessageCard(i, room.messages[i], palette, onBranch) }
+            items(room.messages.size) { i -> MessageCard(i, room.messages[i], palette, onBranch, onDeleteAfter, { rewriteTarget = i to room.messages[i].text }) }
             if (isLoading) item { AiThinkingRow(palette) }
-            item {
-                InfoCard {
-                    Box(Modifier.fillMaxWidth()) {
-                        OutlinedTextField(
-                            input,
-                            onInput,
-                            Modifier.fillMaxWidth().padding(bottom = 2.dp),
-                            placeholder = { Text("输入学习目标或问题") },
-                            minLines = 3
-                        )
-                        Button(
-                            onClick = onSend,
-                            enabled = !isLoading,
-                            modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                        ) {
-                            Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (isLoading) "生成中" else "发送")
-                        }
-                    }
-                }
-            }
         }
+        ChatInputBar(
+            input = input,
+            onInput = onInput,
+            isLoading = isLoading,
+            compact = compactInput,
+            palette = palette,
+            onSend = onSend,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
         Button(
             onClick = { scope.launch { if (isAtBottom) listState.animateScrollToItem(topIndex) else listState.animateScrollToItem(bottomIndex) } },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 6.dp, bottom = 164.dp),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = if (compactInput) 122.dp else 188.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp)
         ) {
             Icon(if (isAtBottom) Icons.Default.North else Icons.Default.South, null, Modifier.size(18.dp))
             Spacer(Modifier.width(4.dp))
             Text(if (isAtBottom) "开头" else "底部")
+        }
+        rewriteTarget?.let { target ->
+            RewriteDialog(
+                initial = target.second,
+                onClose = { rewriteTarget = null },
+                onSave = { newText ->
+                    onRewrite(target.first, newText)
+                    rewriteTarget = null
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChromeToggleButton(visible: Boolean, palette: AppPalette, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        color = palette.secondary.copy(alpha = 0.14f).compositeOnWhite(),
+        shape = RoundedCornerShape(999.dp),
+        shadowElevation = 2.dp,
+        border = androidx.compose.foundation.BorderStroke(1.dp, palette.secondary.copy(alpha = 0.22f))
+    ) {
+        Row(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Tune, contentDescription = null, tint = palette.secondary, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(5.dp))
+            Text(if (visible) "隐藏导航" else "显示导航", color = palette.secondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun ChatInputBar(
+    input: String,
+    onInput: (String) -> Unit,
+    isLoading: Boolean,
+    compact: Boolean,
+    palette: AppPalette,
+    onSend: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 6.dp),
+        color = palette.surface,
+        shape = RoundedCornerShape(10.dp),
+        shadowElevation = 3.dp
+    ) {
+        Box(Modifier.fillMaxWidth().padding(8.dp)) {
+            OutlinedTextField(
+                input,
+                onInput,
+                Modifier.fillMaxWidth().padding(end = 84.dp),
+                placeholder = { Text("输入学习目标或问题") },
+                minLines = if (compact) 1 else 3,
+                maxLines = if (compact) 1 else 5,
+                singleLine = compact
+            )
+            Button(
+                onClick = onSend,
+                enabled = !isLoading,
+                modifier = Modifier.align(Alignment.BottomEnd),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                if (!compact) {
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (isLoading) "生成中" else "发送")
+                }
+            }
         }
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageCard(index: Int, message: ChatMessage, palette: AppPalette, onBranch: (Int) -> Unit) {
+private fun MessageCard(
+    index: Int,
+    message: ChatMessage,
+    palette: AppPalette,
+    onBranch: (Int) -> Unit,
+    onDeleteAfter: (Int) -> Unit,
+    onRewrite: (Int) -> Unit
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val actionModifier = Modifier.combinedClickable(onClick = {}, onLongClick = { menuOpen = true })
+    Box(Modifier.fillMaxWidth()) {
     if (message.role == "user") {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Column(
                 Modifier
                     .fillMaxWidth(0.82f)
+                    .then(actionModifier)
                     .background(palette.secondary.copy(alpha = 0.13f).compositeOnWhite(), RoundedCornerShape(10.dp))
                     .border(1.dp, palette.secondary.copy(alpha = 0.24f), RoundedCornerShape(10.dp))
                     .padding(12.dp)
@@ -562,13 +692,31 @@ private fun MessageCard(index: Int, message: ChatMessage, palette: AppPalette, o
             }
         }
     } else {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        Column(Modifier.fillMaxWidth().then(actionModifier).padding(horizontal = 4.dp)) {
             Text("AI 讲师", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             Spacer(Modifier.height(6.dp))
             MarkdownText(message.text)
             TextButton(onClick = { onBranch(index) }) { Text("从这里开分支") }
         }
     }
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(text = { Text("从这里开分支") }, onClick = { menuOpen = false; onBranch(index) })
+            DropdownMenuItem(text = { Text("重写这段内容") }, leadingIcon = { Icon(Icons.Default.Edit, null) }, onClick = { menuOpen = false; onRewrite(index) })
+            DropdownMenuItem(text = { Text("删除此处及之后") }, leadingIcon = { Icon(Icons.Default.Delete, null) }, onClick = { menuOpen = false; onDeleteAfter(index) })
+        }
+    }
+}
+
+@Composable
+private fun RewriteDialog(initial: String, onClose: () -> Unit, onSave: (String) -> Unit) {
+    var text by remember(initial) { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("重写对话内容", fontWeight = FontWeight.Bold) },
+        text = { OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), minLines = 5) },
+        confirmButton = { Button(onClick = { onSave(text) }) { Text("保存") } },
+        dismissButton = { TextButton(onClick = onClose) { Text("取消") } }
+    )
 }
 
 @Composable
@@ -588,6 +736,23 @@ private fun ReleaseNotesDialog(onClose: () -> Unit) {
         text = {
             LazyColumn(Modifier.height(360.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item { MarkdownText(RELEASE_NOTES_TEXT) }
+            }
+        },
+        confirmButton = { Button(onClick = onClose) { Text("知道了") } }
+    )
+}
+
+@Composable
+private fun UpdateDialog(info: UpdateInfo, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("发现新版本", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(info.name.ifBlank { info.version }, fontWeight = FontWeight.Bold)
+                Text("GitHub Release 已发布更新，可前往仓库下载新版 APK。", color = Muted)
+                if (info.notes.isNotBlank()) MarkdownText(info.notes.take(320))
+                Text(info.url, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
             }
         },
         confirmButton = { Button(onClick = onClose) { Text("知道了") } }
@@ -618,60 +783,148 @@ private fun ExamOverlay(
     onSubmit: (String) -> Unit,
     onUnknown: (Int, ExamQuestion) -> Unit
 ) {
-    var side by remember { mutableStateOf("草稿纸") }
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    var sidePanel by remember { mutableStateOf<String?>(null) }
+    var draftMode by remember { mutableStateOf("text") }
+    val strokes = remember { mutableStateListOf<DrawStroke>() }
+    LaunchedEffect(isLandscape) {
+        if (!isLandscape) sidePanel = null
+    }
     Surface(Modifier.fillMaxSize(), color = Page) {
-        Row(Modifier.fillMaxSize().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            LazyColumn(Modifier.weight(1.15f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                item {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Quiz, null, tint = MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(8.dp))
-                        Text(session.title, fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f))
-                        TextButton(onClick = onClose) { Text("退出") }
-                    }
-                }
-                items(session.questions.indices.toList()) { i ->
-                    val q = session.questions[i]
-                    InfoCard {
-                        Text("前提", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Text(q.premise.ifBlank { "无额外前提" }, lineHeight = 21.sp)
-                        Spacer(Modifier.height(8.dp))
-                        Text("问题 ${i + 1}", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text(q.question, lineHeight = 21.sp)
-                        Spacer(Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Switch(q.unknown, {
-                                val updated = q.copy(unknown = it, answer = if (it) "" else q.answer)
-                                session.questions[i] = updated
-                                onUpdate(session.copy(questions = session.questions))
-                                if (it) onUnknown(i, updated)
-                            })
-                            Text("不会", color = if (q.unknown) Blue else Muted)
-                        }
-                        OutlinedTextField(q.answer, {
-                            session.questions[i] = q.copy(answer = it)
-                            onUpdate(session.copy(questions = session.questions))
-                        }, Modifier.fillMaxWidth(), enabled = !q.unknown, minLines = 3, placeholder = { Text(if (q.unknown) "已标记不会" else "在这里作答") })
-                    }
-                }
-                item {
-                    Button(onClick = { onSubmit(packExamAnswers(session)) }, modifier = Modifier.fillMaxWidth()) { Text("提交答案") }
+        if (isLandscape) {
+            Row(Modifier.fillMaxSize().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ExamQuestionList(session, Modifier.weight(if (sidePanel == null) 1f else 0.58f).fillMaxHeight(), true, sidePanel, onSidePanel = { sidePanel = if (sidePanel == it) null else it }, onClose, onSubmit, onUpdate, onUnknown)
+                sidePanel?.let { panel ->
+                    ExamSidePanel(panel, session, messages, branches, draftMode, onDraftMode = { draftMode = it }, strokes, onUpdate = onUpdate, modifier = Modifier.weight(0.42f).fillMaxHeight())
                 }
             }
-            Column(Modifier.weight(0.85f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FilterChip(side == "草稿纸", { side = "草稿纸" }, label = { Text("草稿纸") })
-                    FilterChip(side == "过往对话", { side = "过往对话" }, label = { Text("过往对话") })
-                    FilterChip(side == "分支", { side = "分支" }, label = { Text("分支") })
+        } else {
+            ExamQuestionList(session, Modifier.fillMaxSize().padding(12.dp), false, null, onSidePanel = {}, onClose, onSubmit, onUpdate, onUnknown)
+        }
+    }
+}
+
+@Composable
+private fun ExamQuestionList(
+    session: ExamSession,
+    modifier: Modifier,
+    isLandscape: Boolean,
+    sidePanel: String?,
+    onSidePanel: (String) -> Unit,
+    onClose: () -> Unit,
+    onSubmit: (String) -> Unit,
+    onUpdate: (ExamSession) -> Unit,
+    onUnknown: (Int, ExamQuestion) -> Unit
+) {
+    LazyColumn(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            InfoCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Quiz, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text(session.title, fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    TextButton(onClick = onClose) { Text("退出") }
                 }
-                InfoCard {
-                    when (side) {
-                        "草稿纸" -> OutlinedTextField(session.draft, { onUpdate(session.copy(draft = it)) }, Modifier.fillMaxWidth(), minLines = 16, placeholder = { Text("草稿纸") })
-                        "过往对话" -> LazyColumn(Modifier.height(420.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { items(messages.takeLast(20)) { MarkdownText((if (it.role == "user") "我：" else "AI：") + it.text.take(500)) } }
-                        else -> LazyColumn(Modifier.height(420.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { items(branches.takeLast(8)) { Text(it.title, fontWeight = FontWeight.Bold); MarkdownText(it.messages.lastOrNull()?.text.orEmpty()) } }
+                if (isLandscape) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { onSidePanel("draft") }) { Text(if (sidePanel == "draft") "关闭草稿纸" else "打开草稿纸") }
+                        OutlinedButton(onClick = { onSidePanel("overview") }) { Text(if (sidePanel == "overview") "关闭总览" else "打开总览") }
                     }
                 }
             }
+        }
+        items(session.questions.indices.toList()) { i ->
+            val q = session.questions[i]
+            InfoCard {
+                Text("前提", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(q.premise.ifBlank { "无额外前提" }, lineHeight = 21.sp)
+                Spacer(Modifier.height(8.dp))
+                Text("问题 ${i + 1}", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text(q.question, lineHeight = 21.sp)
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(q.unknown, {
+                        val updated = q.copy(unknown = it, answer = if (it) "" else q.answer)
+                        session.questions[i] = updated
+                        onUpdate(session.copy(questions = session.questions))
+                        if (it) onUnknown(i, updated)
+                    })
+                    Text("不会", color = if (q.unknown) Blue else Muted)
+                }
+                OutlinedTextField(q.answer, {
+                    session.questions[i] = q.copy(answer = it)
+                    onUpdate(session.copy(questions = session.questions))
+                }, Modifier.fillMaxWidth(), enabled = !q.unknown, minLines = 3, placeholder = { Text(if (q.unknown) "已标记不会" else "在这里作答") })
+            }
+        }
+        item { Button(onClick = { onSubmit(packExamAnswers(session)) }, modifier = Modifier.fillMaxWidth()) { Text("提交答案") } }
+    }
+}
+
+@Composable
+private fun ExamSidePanel(
+    panel: String,
+    session: ExamSession,
+    messages: List<ChatMessage>,
+    branches: List<BranchClass>,
+    draftMode: String,
+    onDraftMode: (String) -> Unit,
+    strokes: MutableList<DrawStroke>,
+    onUpdate: (ExamSession) -> Unit,
+    modifier: Modifier
+) {
+    Box(modifier) {
+        InfoCard {
+            if (panel == "draft") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("草稿纸", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    FilterChip(draftMode == "text", { onDraftMode("text") }, label = { Text("打字") })
+                    Spacer(Modifier.width(6.dp))
+                    FilterChip(draftMode == "draw", { onDraftMode("draw") }, label = { Text("涂绘") })
+                }
+                Spacer(Modifier.height(8.dp))
+                if (draftMode == "text") {
+                    OutlinedTextField(session.draft, { onUpdate(session.copy(draft = it)) }, Modifier.fillMaxWidth(), minLines = 14, placeholder = { Text("草稿纸") })
+                } else {
+                    DrawPad(strokes, Modifier.height(430.dp).fillMaxWidth())
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { strokes.clear() }, modifier = Modifier.fillMaxWidth()) { Text("清空涂绘") }
+                }
+            } else {
+                Text("过去总览", fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                LazyColumn(Modifier.height(470.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    item { Text("过往对话", color = Muted, fontWeight = FontWeight.Bold) }
+                    items(messages.takeLast(12)) { MarkdownText((if (it.role == "user") "我：" else "AI：") + it.text.take(360)) }
+                    item { Text("不会题分支", color = Muted, fontWeight = FontWeight.Bold) }
+                    items(branches.takeLast(6)) { Text(it.title, fontWeight = FontWeight.Bold); MarkdownText(it.messages.lastOrNull()?.text.orEmpty().take(360)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DrawPad(strokes: MutableList<DrawStroke>, modifier: Modifier) {
+    var current by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    Canvas(
+        modifier
+            .background(Color.White, RoundedCornerShape(8.dp))
+            .border(1.dp, Color(0xFFE1E6EF), RoundedCornerShape(8.dp))
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { current = listOf(it) },
+                    onDrag = { change, _ -> current = current + change.position },
+                    onDragEnd = {
+                        if (current.size > 1) strokes.add(DrawStroke(current))
+                        current = emptyList()
+                    }
+                )
+            }
+    ) {
+        (strokes.map { it.points } + listOf(current)).forEach { points ->
+            points.zipWithNext().forEach { (from, to) -> drawLine(Color(0xFF111827), from, to, strokeWidth = 4f, cap = StrokeCap.Round) }
         }
     }
 }
@@ -1020,7 +1273,7 @@ private fun ThemePreview(primaryValue: Long, secondaryValue: Long) {
 
 @Composable
 private fun MarkdownText(text: String) {
-    val lines = text.lines()
+    val lines = sanitizeMathText(text).lines()
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         lines.forEach { line ->
             val trimmed = line.trim()
@@ -1028,11 +1281,55 @@ private fun MarkdownText(text: String) {
                 trimmed.startsWith("```") -> Text(trimmed, fontFamily = FontFamily.Monospace, color = Muted)
                 trimmed.startsWith("#") -> Text(trimmed.trimStart('#', ' '), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Ink)
                 trimmed.startsWith("-") || trimmed.startsWith("*") -> Text("• ${trimmed.drop(1).trim()}", color = Ink, lineHeight = 21.sp)
-                trimmed.contains("$") || trimmed.contains("\\(") || trimmed.contains("\\[") -> Text(trimmed, fontFamily = FontFamily.Monospace, color = Purple, lineHeight = 21.sp)
+                isMathLikeLine(trimmed) -> Text(trimmed, fontFamily = FontFamily.Monospace, color = Purple, lineHeight = 21.sp)
                 else -> Text(buildInlineMarkdown(trimmed), color = Ink, lineHeight = 21.sp)
             }
         }
     }
+}
+
+private fun isMathLikeLine(line: String): Boolean =
+    line.contains("$") || line.contains("\\(") || line.contains("\\[") || line.contains("\\begin") || line.contains("\\text") || line.contains("\\phi") || line.contains("\\psi")
+
+private fun sanitizeMathText(raw: String): String {
+    var text = raw
+        .replace('；', ';')
+        .replace('（', '(')
+        .replace('）', ')')
+        .replace('《', '<')
+        .replace('》', '>')
+    val replacements = listOf(
+        "ItextComplexityi" to "\\text{Complexity}",
+        "ItextíComplexity)" to "\\text{Complexity}",
+        "Itext Complexityj" to "\\text{Complexity}",
+        "ItextfCon" to "\\text{Complexity}",
+        "Itext（" to "\\text{",
+        "Itext(" to "\\text{",
+        "ltext（" to "\\text{",
+        "ltext(" to "\\text{",
+        "text《" to "\\text{",
+        "text<" to "\\text{",
+        "Ibeginfcases" to "\\begin{cases}",
+        "Ibegin(cases" to "\\begin{cases}",
+        "Iend(casesy" to "\\end{cases}",
+        "Iend(cases" to "\\end{cases}",
+        "lnot" to "\\lnot",
+        "lor" to "\\lor",
+        "land" to "\\land",
+        "lpsi" to "\\psi",
+        "Ipsi" to "\\psi",
+        "Npsi" to "\\psi",
+        "phil" to "\\phi",
+        "Iphi" to "\\phi",
+        "\\phil" to "\\phi",
+        "\\lpsi" to "\\psi"
+    )
+    replacements.forEach { (bad, good) -> text = text.replace(bad, good) }
+    text = text
+        .replace(Regex("\\\\text\\{([^}\\n]*)(?=\\n|$)"), "\\\\text{$1}")
+        .replace(Regex("\\s+小底部"), "")
+        .replace("!\\phi", "\\phi")
+    return text
 }
 
 private fun buildInlineMarkdown(line: String) = buildAnnotatedString {
@@ -1094,6 +1391,15 @@ private class ClassroomStore(context: Context) {
 
     fun markReleaseNotesSeen(version: String) {
         prefs.edit().putBoolean("seen_release_notes_$version", true).apply()
+    }
+
+    fun canShowUpdateToday(): Boolean {
+        val today = System.currentTimeMillis() / DAY_MS
+        return prefs.getLong("last_update_prompt_day", -1L) != today
+    }
+
+    fun markUpdateCheckedToday() {
+        prefs.edit().putLong("last_update_prompt_day", System.currentTimeMillis() / DAY_MS).apply()
     }
 
     fun save(classes: List<Classroom>, classIndex: Int) {
@@ -1180,6 +1486,43 @@ private suspend fun fetchModels(baseUrl: String, apiKey: String): List<String> =
     }.getOrDefault(emptyList())
 }
 
+private suspend fun checkGitHubUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
+    runCatching {
+        val connection = URL(GITHUB_LATEST_RELEASE_API).openConnection() as HttpURLConnection
+        connection.requestMethod = "GET"
+        connection.setRequestProperty("Accept", "application/vnd.github+json")
+        connection.setRequestProperty("User-Agent", "AI-Classroom-Android")
+        connection.connectTimeout = 6000
+        connection.readTimeout = 8000
+        val raw = readBody(connection)
+        if (connection.responseCode !in 200..299) return@runCatching null
+        val json = JSONObject(raw)
+        val version = json.optString("tag_name").ifBlank { json.optString("name") }
+        if (version.isBlank()) return@runCatching null
+        UpdateInfo(
+            version = version,
+            name = json.optString("name", version),
+            url = json.optString("html_url", GITHUB_RELEASES_URL),
+            notes = json.optString("body").take(500)
+        )
+    }.getOrNull()
+}
+
+private fun isRemoteVersionNewer(remote: String, local: String): Boolean {
+    val remoteParts = versionParts(remote)
+    val localParts = versionParts(local)
+    val size = maxOf(remoteParts.size, localParts.size, 3)
+    repeat(size) { index ->
+        val r = remoteParts.getOrElse(index) { 0 }
+        val l = localParts.getOrElse(index) { 0 }
+        if (r != l) return r > l
+    }
+    return false
+}
+
+private fun versionParts(value: String): List<Int> =
+    Regex("\\d+").findAll(value).map { it.value.toIntOrNull() ?: 0 }.toList()
+
 private suspend fun callChat(baseUrl: String, apiKey: String, model: String, system: String, messages: List<ChatMessage>): String = withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) return@withContext "请先填写 API Key。"
     if (model.isBlank()) return@withContext "请先选择或填写模型名。"
@@ -1194,6 +1537,56 @@ private suspend fun callChat(baseUrl: String, apiKey: String, model: String, sys
         OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages.takeLast(16))) }
         Regex("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").find(readBody(connection))?.groupValues?.get(1)?.unescapeJson() ?: "模型没有返回内容。"
     }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
+}
+
+private suspend fun callChatStream(
+    baseUrl: String,
+    apiKey: String,
+    model: String,
+    system: String,
+    messages: List<ChatMessage>,
+    onDelta: (String) -> Unit
+): String = withContext(Dispatchers.IO) {
+    if (apiKey.isBlank()) return@withContext "请先填写 API Key。"
+    if (model.isBlank()) return@withContext "请先选择或填写模型名。"
+    runCatching {
+        val connection = URL(baseUrl.trimEnd('/') + "/chat/completions").openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.doOutput = true
+        connection.setRequestProperty("Authorization", "Bearer $apiKey")
+        connection.setRequestProperty("Content-Type", "application/json")
+        connection.setRequestProperty("Accept", "text/event-stream")
+        connection.connectTimeout = 20000
+        connection.readTimeout = 120000
+        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages.takeLast(16), stream = true)) }
+        if (connection.responseCode !in 200..299) return@runCatching readBody(connection).ifBlank { "调用失败：HTTP ${connection.responseCode}" }
+        val builder = StringBuilder()
+        BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).useLines { lines ->
+            lines.forEach { line ->
+                if (!line.startsWith("data:")) return@forEach
+                val payload = line.removePrefix("data:").trim()
+                if (payload == "[DONE]") return@forEach
+                val delta = parseStreamDelta(payload)
+                if (delta.isNotEmpty()) {
+                    builder.append(delta)
+                    withContext(Dispatchers.Main) { onDelta(delta) }
+                }
+            }
+        }
+        builder.toString().ifBlank { "模型没有返回内容。" }
+    }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
+}
+
+private fun parseStreamDelta(payload: String): String = runCatching {
+    val choice = JSONObject(payload).optJSONArray("choices")?.optJSONObject(0) ?: return@runCatching ""
+    choice.optJSONObject("delta")?.optNonNullString("content")
+        ?: choice.optJSONObject("message")?.optNonNullString("content")
+        ?: ""
+}.getOrDefault("")
+
+private fun JSONObject.optNonNullString(name: String): String? {
+    if (!has(name) || isNull(name)) return null
+    return optString(name).takeUnless { it == "null" }
 }
 
 private const val EXAM_TOOL_PROMPT = """
@@ -1237,11 +1630,15 @@ private fun isExamRequest(text: String): Boolean {
     return triggers.any { text.contains(it, ignoreCase = true) }
 }
 
-private fun detectExamSession(text: String, force: Boolean): ExamSession? {
+private fun detectExamSession(text: String, userRequestedExam: Boolean): ExamSession? {
     parseExamBlock(text)?.let { return it }
     parseReadableExam(text)?.let { return it }
-    if (!force && !isExamRequest(text)) return null
-    return fallbackExamFromText(text)
+    return if (userRequestedExam && hasExplicitExamStart(text)) fallbackExamFromText(text) else null
+}
+
+private fun hasExplicitExamStart(text: String): Boolean {
+    val triggers = listOf("【考试】", "[EXAM]", "开始考试", "进入考试", "模拟考试", "随堂测试", "本次测试", "开始测验", "进入测验")
+    return triggers.any { text.contains(it, ignoreCase = true) }
 }
 
 private fun stripExamBlock(text: String): String =
@@ -1262,7 +1659,7 @@ private fun parseExamBlock(text: String): ExamSession? {
 
 private fun parseReadableExam(text: String): ExamSession? {
     val normalized = text.replace('：', ':')
-    if (!normalized.contains("【考试】") && !isExamRequest(normalized)) return null
+    if (!hasExplicitExamStart(normalized)) return null
     val premise = Regex("(?:前提|材料|背景):([\\s\\S]*?)(?=(?:问题|题目|Q\\d*)[:：]|$)")
         .find(normalized)?.groupValues?.getOrNull(1)?.replace("【考试】", "")?.trim().orEmpty().ifBlank { "请根据当前课堂内容作答。" }
     val questions = Regex("(?:问题|题目|Q\\d*)[:：]([\\s\\S]*?)(?=(?:问题|题目|Q\\d*|前提|材料|背景)[:：]|$)")
@@ -1278,42 +1675,6 @@ private fun fallbackExamFromText(text: String): ExamSession {
     val questions = candidates.ifEmpty { listOf("请结合刚才课堂内容，回答本轮测试的核心问题。") }
         .map { ExamQuestion("请根据当前课堂内容作答。", it.removePrefix("问题:").removePrefix("题目:").trim()) }
     return ExamSession("AI 随堂考试", questions.toMutableStateList())
-}
-
-private fun detectExamSession(text: String): ExamSession? {
-    detectStructuredExamSession(text)?.let { return it }
-    val trigger = listOf("开始考试", "进入考试", "模拟考试", "随堂测试", "考试模式", "【考试】")
-    if (trigger.none { text.contains(it) }) return null
-    val blocks = text.split(Regex("(?=题目\\s*\\d+|问题\\s*\\d+|Q\\d+)")).filter { it.isNotBlank() }
-    val questions = blocks.mapNotNull { block ->
-        val premise = Regex("前提[:：]([\\s\\S]*?)(问题[:：]|$)").find(block)?.groupValues?.getOrNull(1)?.trim().orEmpty()
-        val question = Regex("问题[:：]([\\s\\S]*)").find(block)?.groupValues?.getOrNull(1)?.trim()
-            ?: block.lines().firstOrNull { it.contains("？") || it.contains("?") }?.trim()
-            ?: block.trim().take(160)
-        if (question.isBlank()) null else ExamQuestion(premise, question)
-    }.ifEmpty {
-        listOf(ExamQuestion("请根据刚才课堂内容作答。", text.lines().firstOrNull { it.contains("？") || it.contains("?") } ?: "请完成本次测试。"))
-    }.toMutableStateList()
-    return ExamSession("AI 随堂考试", questions)
-}
-
-private fun detectStructuredExamSession(text: String): ExamSession? {
-    val trigger = listOf("开始考试", "进入考试", "模拟考试", "随堂测试", "考试模式", "【考试】")
-    if (trigger.none { text.contains(it) }) return null
-    val normalized = text.replace("：", ":")
-    val questions = Regex("前提:([\\s\\S]*?)(?=前提:|$)").findAll(normalized).flatMap { match ->
-        val block = match.groupValues[1]
-        val parts = block.split(Regex("(?=问题:)"))
-        val premise = parts.firstOrNull().orEmpty().replace("【考试】", "").trim()
-        parts.drop(1).mapNotNull { part ->
-            val question = part.removePrefix("问题:").trim()
-            if (question.isBlank()) null else ExamQuestion(premise, question)
-        }
-    }.toList().ifEmpty {
-        val firstQuestion = normalized.lines().firstOrNull { it.contains("?") || it.contains("？") } ?: normalized.take(160)
-        listOf(ExamQuestion("请根据课堂内容作答。", firstQuestion))
-    }.toMutableStateList()
-    return ExamSession("AI 随堂考试", questions)
 }
 
 private fun packExamAnswers(session: ExamSession): String = buildString {
@@ -1353,10 +1714,10 @@ private fun readBody(connection: HttpURLConnection): String {
     return BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
 }
 
-private fun buildJson(model: String, system: String, messages: List<ChatMessage>): String {
+private fun buildJson(model: String, system: String, messages: List<ChatMessage>, stream: Boolean = false): String {
     val all = listOf(ChatMessage("system", system)) + messages
     val jsonMessages = all.joinToString(",") { "{\"role\":\"${it.role}\",\"content\":\"${it.text.escapeJson()}\"}" }
-    return "{\"model\":\"${model.escapeJson()}\",\"messages\":[$jsonMessages],\"temperature\":0.7}"
+    return "{\"model\":\"${model.escapeJson()}\",\"messages\":[$jsonMessages],\"temperature\":0.7,\"stream\":$stream}"
 }
 
 private fun summarize(scope: String, messages: List<ChatMessage>): String = "$scope 记忆：" + messages.joinToString(" ") { it.text }.replace(Regex("\\s+"), " ").take(180)
@@ -1413,7 +1774,7 @@ private fun Color.compositeOnWhite(): Color = Color(
     alpha = 1f
 )
 
-private const val APP_VERSION = "1.6.6"
+private const val APP_VERSION = "1.9.0"
 
 private val THEME_PRESETS = listOf(
     ThemePreset("ocean", "二次元", "清透青绿、亮蓝点缀", 0xFF39C5BB, 0xFF00AEEF),
@@ -1423,35 +1784,19 @@ private val THEME_PRESETS = listOf(
 )
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 1.6.4
+# AI Classroom 1.8.0
 
-- 用户对话框改为淡辅色背景，减少大面积色块。
-- 按钮、提示和保存反馈统一跟随当前皮肤辅色。
-- Ocean 预设改为二次元，删除双主色预设。
-- 只有二次元和单色皮肤显示自定义颜色。
+- 顶部 AI Classroom 区域和底部导航不再自动弹出，改为右上角按键手动显示或隐藏。
+- 右上角新增“显示导航 / 隐藏导航”胶囊按键，主课堂阅读时可以保持沉浸界面。
+- “开头 / 底部”跳转按键整体上移，避免贴近输入栏。
+- 底部输入栏继续保持：在历史对话中为单行可输入，在底部时为更完整的多行输入。
+- 优化主课堂悬浮按钮间距和层级，让导航、跳转、输入三者互不抢位置。
 
-# AI Classroom 1.6.2
+# 延续优化
 
-- 重做皮肤模块，默认风格使用二次元青蓝色调。
-- 皮肤预设改为卡片选择，支持明确的选中勾选和实时预览。
-- 支持输入任意 Hex 颜色，自定义主色和辅色，保存前会校验格式。
-- 修复皮肤保存后可能闪退的问题。
-
-# AI Classroom 1.6.1
-
-- 新增首次进入应用的 “New!” 弹窗，只在当前版本第一次打开时展示。
-- 新增设置页“使用手册”，可随时查看课堂、分支、记忆、知识库、模型和考试工具说明。
-- 使用手册会作为应用内记录保留，后续版本可以继续追加更新内容。
-
-# 1.6 主要内容
-
-- 二级菜单改为左侧滑出覆盖层，打开和关闭时保留主课堂滚动位置。
-- 支持对话从上到下或从下到上显示。
-- 新增二次元、黑白、跟随系统、单色皮肤入口。
-- AI 明确发起考试时自动进入沉浸式考试界面。
-- 考试支持前提、问题、答案框、草稿纸、过往对话和不会题分支。
+- 数学公式展示会修正常见损坏的 LaTeX 命令文本。
+- 长按对话可选择开分支、重写该段或删除此处及之后内容。
 """
-
 private const val USER_MANUAL_TEXT = """
 # AI Classroom 使用手册
 
@@ -1498,3 +1843,8 @@ private const val CHAPTER_SIZE = 12
 private const val MEMORY_BATCH_MESSAGE_COUNT = 8
 private const val MEMORY_BATCH_DELAY_MS = 45000L
 private const val MAIN_MEMORY_PREFIX = "主课堂记忆："
+private const val DAY_MS = 86_400_000L
+private const val GITHUB_RELEASES_URL = "https://github.com/AHWJ-Alpha/AI-Classroom/releases"
+private const val GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/AHWJ-Alpha/AI-Classroom/releases/latest"
+
+
