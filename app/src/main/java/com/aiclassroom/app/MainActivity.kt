@@ -61,10 +61,12 @@ import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Quiz
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.DropdownMenu
@@ -72,8 +74,10 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -172,6 +176,9 @@ private data class ClassroomConfig(
     val modelChain: String = "gpt-4o-mini",
     val deepThinkingEnabled: Boolean = false,
     val deepThinkingModel: String = "",
+    val visionProvider: String = "OpenAI",
+    val visionApiKey: String = "",
+    val visionBaseUrl: String = "https://api.openai.com/v1",
     val visionModel: String = "gpt-4o-mini",
     val ttsProvider: String = "OpenAI",
     val ttsApiKey: String = "",
@@ -198,6 +205,8 @@ private data class ClassroomConfig(
     }
 
     fun visionModels(): List<String> = (listOf(visionModel) + orderedModels()).map { it.trim() }.filter { it.isNotBlank() }.distinct()
+    fun visionApiKeyOrMain(): String = visionApiKey.ifBlank { apiKey }
+    fun visionBaseUrlOrMain(): String = visionBaseUrl.ifBlank { baseUrl }
 }
 
 private data class Classroom(
@@ -416,8 +425,15 @@ private fun AIClassroomApp() {
             tertiary = palette.accent,
             background = palette.page,
             surface = palette.surface,
+            surfaceVariant = palette.primary.copy(alpha = 0.10f).compositeOnWhite(),
+            primaryContainer = palette.secondary.copy(alpha = 0.16f).compositeOnWhite(),
+            secondaryContainer = palette.primary.copy(alpha = 0.14f).compositeOnWhite(),
+            outline = palette.secondary.copy(alpha = 0.34f),
+            onPrimary = Color.White,
+            onSecondary = Color.White,
             onBackground = palette.ink,
-            onSurface = palette.ink
+            onSurface = palette.ink,
+            onSurfaceVariant = palette.muted
         )
     ) {
     Scaffold(
@@ -426,20 +442,32 @@ private fun AIClassroomApp() {
             TopAppBar(
                 title = {
                     Column {
-                        Text("AI Classroom $APP_VERSION", fontWeight = FontWeight.Bold)
-                        Text("${current.name} · ${current.topic}", color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("AI Classroom $APP_VERSION", fontWeight = FontWeight.Bold, color = palette.ink)
+                        Text("${current.name} · ${current.topic}", color = palette.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 },
-                actions = { TextButton(onClick = { classMenuOpen = !classMenuOpen }) { Text("课堂") } },
+                actions = { TextButton(onClick = { classMenuOpen = !classMenuOpen }) { Text("课堂", color = palette.secondary) } },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.page)
             )
             }
         },
         bottomBar = {
             if (chromeVisible || tab != Tab.Class) {
-            NavigationBar(containerColor = palette.surface) {
+            NavigationBar(containerColor = palette.surface, tonalElevation = 0.dp) {
                 Tab.entries.forEach { item ->
-                    NavigationBarItem(selected = tab == item, onClick = { tab = item; classMenuOpen = false }, icon = { Icon(item.icon, contentDescription = item.title) }, label = { Text(item.title) })
+                    NavigationBarItem(
+                        selected = tab == item,
+                        onClick = { tab = item; classMenuOpen = false },
+                        icon = { Icon(item.icon, contentDescription = item.title) },
+                        label = { Text(item.title) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = palette.secondary,
+                            selectedTextColor = palette.secondary,
+                            indicatorColor = palette.secondary.copy(alpha = 0.13f).compositeOnWhite(),
+                            unselectedIconColor = palette.muted,
+                            unselectedTextColor = palette.muted
+                        )
+                    )
                 }
             }
             }
@@ -732,27 +760,46 @@ private fun ChatInputBar(
     Surface(
         modifier = modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 6.dp),
         color = palette.surface,
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(12.dp),
         shadowElevation = 3.dp
     ) {
         Box(Modifier.fillMaxWidth().padding(8.dp)) {
             OutlinedTextField(
                 input,
                 onInput,
-                Modifier.fillMaxWidth().padding(end = 84.dp),
+                Modifier.fillMaxWidth().padding(end = if (compact) 104.dp else 132.dp),
                 placeholder = { Text("输入学习目标或问题") },
                 minLines = if (compact) 1 else 3,
                 maxLines = if (compact) 1 else 5,
-                singleLine = compact
+                singleLine = compact,
+                shape = RoundedCornerShape(10.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = palette.secondary,
+                    unfocusedBorderColor = palette.secondary.copy(alpha = 0.28f),
+                    cursorColor = palette.secondary,
+                    focusedContainerColor = palette.page.copy(alpha = 0.45f),
+                    unfocusedContainerColor = palette.page.copy(alpha = 0.35f)
+                )
             )
-            Row(Modifier.align(Alignment.BottomEnd), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onImage, enabled = !isLoading) {
-                    Icon(Icons.Default.Image, contentDescription = null, tint = palette.secondary)
+            Row(Modifier.align(Alignment.BottomEnd), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    onClick = onImage,
+                    enabled = !isLoading,
+                    shape = RoundedCornerShape(10.dp),
+                    color = palette.secondary.copy(alpha = 0.12f).compositeOnWhite(),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, palette.secondary.copy(alpha = 0.24f)),
+                    modifier = Modifier.size(42.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.Image, contentDescription = null, tint = palette.secondary, modifier = Modifier.size(21.dp))
+                    }
                 }
                 Button(
                     onClick = onSend,
                     enabled = !isLoading,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = if (compact) 10.dp else 12.dp, vertical = 10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.secondary, contentColor = Color.White)
                 ) {
                     Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                     if (!compact) {
@@ -982,9 +1029,9 @@ private fun ExamSidePanel(
             if (panel == "draft") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("草稿纸", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    FilterChip(draftMode == "text", { onDraftMode("text") }, label = { Text("打字") })
+                    AppFilterChip(draftMode == "text", { onDraftMode("text") }) { Text("打字") }
                     Spacer(Modifier.width(6.dp))
-                    FilterChip(draftMode == "draw", { onDraftMode("draw") }, label = { Text("涂绘") })
+                    AppFilterChip(draftMode == "draw", { onDraftMode("draw") }) { Text("涂绘") }
                 }
                 Spacer(Modifier.height(8.dp))
                 if (draftMode == "text") {
@@ -1146,9 +1193,9 @@ private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<Cha
             InfoCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("对话章节", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    FilterChip(overview, { overview = true }, label = { Text("全览") })
+                    AppFilterChip(overview, { overview = true }) { Text("全览") }
                     Spacer(Modifier.width(6.dp))
-                    FilterChip(!overview, { overview = false }, label = { Text("章节") })
+                    AppFilterChip(!overview, { overview = false }) { Text("章节") }
                 }
                 Text("双击章节可跳到主课堂对应对话。", color = Muted, fontSize = 13.sp)
             }
@@ -1307,6 +1354,9 @@ private fun ModelScreen(
     var modelChain by remember(config.modelChain) { mutableStateOf(config.modelChain.ifBlank { config.customModel.ifBlank { config.selectedModel } }) }
     var deepThinkingEnabled by remember(config.deepThinkingEnabled) { mutableStateOf(config.deepThinkingEnabled) }
     var deepThinkingModel by remember(config.deepThinkingModel) { mutableStateOf(config.deepThinkingModel) }
+    var visionProvider by remember(config.visionProvider) { mutableStateOf(config.visionProvider) }
+    var visionApiBaseUrl by remember(config.visionBaseUrl) { mutableStateOf(config.visionBaseUrl) }
+    var visionApiKey by remember(config.visionApiKey) { mutableStateOf(config.visionApiKey) }
     var visionModel by remember(config.visionModel) { mutableStateOf(config.visionModel) }
     var ttsProvider by remember(config.ttsProvider) { mutableStateOf(config.ttsProvider) }
     var ttsApiKey by remember(config.ttsApiKey) { mutableStateOf(config.ttsApiKey) }
@@ -1326,16 +1376,19 @@ private fun ModelScreen(
     val primaryValid = parseHexColor(primaryHex) != null
     val secondaryValid = parseHexColor(secondaryHex) != null
     val scope = rememberCoroutineScope()
-    var collapsedModule by remember { mutableStateOf<String?>(null) }
+    var expandedModule by remember { mutableStateOf<String?>("model") }
+    var visionStatus by remember { mutableStateOf("未获取识图模型") }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
-            SettingsCard("API 模块", collapsedModule == "api", { collapsedModule = if (collapsedModule == "api") null else "api" }) {
+            SettingsCard("模型模块", expandedModule == "model", { expandedModule = if (expandedModule == "model") null else "model" }) {
+                Text("普通课堂对话使用此模块的 API。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     providers.forEach { provider ->
-                        FilterChip(apiProvider == provider, {
+                        AppFilterChip(apiProvider == provider, {
                             apiProvider = provider
                             apiBaseUrl = defaultBaseUrl(provider)
-                        }, label = { Text(provider) })
+                        }) { Text(provider) }
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -1343,21 +1396,9 @@ private fun ModelScreen(
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(apiKey, { apiKey = it }, Modifier.fillMaxWidth(), label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = { onConfig(config.copy(provider = apiProvider, baseUrl = apiBaseUrl.trim(), apiKey = apiKey.trim())); collapsedModule = "api" }) {
-                    Icon(Icons.Default.Check, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("保存 API 模块")
-                }
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = onFetchModels) { Text("获取模型") }
-                Text(modelStatus, color = Muted)
-            }
-        }
-        item {
-            SettingsCard("模型模块", collapsedModule == "model", { collapsedModule = if (collapsedModule == "model") null else "model" }) {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     models.forEach { model ->
-                        FilterChip(modelName == model, { modelName = model; if (!modelChain.lines().map { it.trim() }.contains(model)) modelChain = listOf(model, modelChain).filter { it.isNotBlank() }.joinToString("\n") }, label = { Text(model) })
+                        AppFilterChip(modelName == model, { modelName = model; if (!modelChain.lines().map { it.trim() }.contains(model)) modelChain = listOf(model, modelChain).filter { it.isNotBlank() }.joinToString("\n") }) { Text(model) }
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -1376,40 +1417,71 @@ private fun ModelScreen(
                 Button(onClick = {
                     val cleanName = modelName.trim()
                     val cleanChain = modelChain.lines().flatMap { it.split(',', '，') }.map { it.trim() }.filter { it.isNotBlank() }.distinct().joinToString("\n")
-                    onConfig(config.copy(selectedModel = cleanName.ifBlank { config.selectedModel }, customModel = if (cleanName in models) "" else cleanName, modelChain = cleanChain.ifBlank { cleanName.ifBlank { config.selectedModel } }, deepThinkingEnabled = deepThinkingEnabled, deepThinkingModel = deepThinkingModel.trim()))
-                    collapsedModule = "model"
+                    onConfig(config.copy(provider = apiProvider, baseUrl = apiBaseUrl.trim(), apiKey = apiKey.trim(), selectedModel = cleanName.ifBlank { config.selectedModel }, customModel = if (cleanName in models) "" else cleanName, modelChain = cleanChain.ifBlank { cleanName.ifBlank { config.selectedModel } }, deepThinkingEnabled = deepThinkingEnabled, deepThinkingModel = deepThinkingModel.trim()))
+                    expandedModule = null
                 }) {
                     Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("保存模型模块")
                 }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = onFetchModels) { Text("获取模型", color = MaterialTheme.colorScheme.primary) }
+                Text(modelStatus, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         item {
-            SettingsCard("多模态模块", collapsedModule == "vision", { collapsedModule = if (collapsedModule == "vision") null else "vision" }) {
+            SettingsCard("多模态模块", expandedModule == "vision", { expandedModule = if (expandedModule == "vision") null else "vision" }) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Image, null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
                     Text("课堂图片分析模型", fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.height(8.dp))
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    providers.forEach { provider ->
+                        AppFilterChip(visionProvider == provider, {
+                            visionProvider = provider
+                            visionApiBaseUrl = defaultBaseUrl(provider)
+                        }) { Text(provider) }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(visionApiBaseUrl, { visionApiBaseUrl = it }, Modifier.fillMaxWidth(), label = { Text("多模态 Base URL") }, singleLine = true)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(visionApiKey, { visionApiKey = it }, Modifier.fillMaxWidth(), label = { Text("多模态 API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(visionModel, { visionModel = it }, Modifier.fillMaxWidth(), label = { Text("识图/转述模型名称") }, singleLine = true)
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = { onConfig(config.copy(visionModel = visionModel.trim().ifBlank { config.visionModel })); collapsedModule = "vision" }) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = { onConfig(config.copy(visionProvider = visionProvider, visionBaseUrl = visionApiBaseUrl.trim(), visionApiKey = visionApiKey.trim(), visionModel = visionModel.trim().ifBlank { config.visionModel })); expandedModule = null }) {
                     Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("保存多模态模块")
                 }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            visionStatus = "获取中..."
+                            val fetched = fetchModels(visionApiBaseUrl, visionApiKey)
+                            if (fetched.isNotEmpty()) {
+                                visionModel = fetched.first()
+                                visionStatus = "已获取 ${fetched.size} 个模型"
+                            } else {
+                                visionStatus = "获取失败，可手动填写"
+                            }
+                        }
+                    }) { Text("获取模型", color = MaterialTheme.colorScheme.primary) }
+                }
+                Text(visionStatus, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         item {
-            SettingsCard("TTS 模块", collapsedModule == "tts", { collapsedModule = if (collapsedModule == "tts") null else "tts" }) {
+            SettingsCard("TTS 模块", expandedModule == "tts", { expandedModule = if (expandedModule == "tts") null else "tts" }) {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ttsProviders.forEach { provider ->
-                        FilterChip(ttsProvider == provider, {
+                        AppFilterChip(ttsProvider == provider, {
                             ttsProvider = provider
                             ttsBaseUrl = defaultBaseUrl(provider)
-                        }, label = { Text(provider) })
+                        }) { Text(provider) }
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -1423,7 +1495,7 @@ private fun ModelScreen(
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Button(onClick = { onConfig(config.copy(ttsProvider = ttsProvider, ttsApiKey = ttsApiKey.trim(), ttsBaseUrl = ttsBaseUrl.trim(), ttsModel = ttsModel.trim(), ttsVoice = ttsVoice.trim())); collapsedModule = "tts" }) {
+                    Button(onClick = { onConfig(config.copy(ttsProvider = ttsProvider, ttsApiKey = ttsApiKey.trim(), ttsBaseUrl = ttsBaseUrl.trim(), ttsModel = ttsModel.trim(), ttsVoice = ttsVoice.trim())); expandedModule = null }) {
                         Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("保存 TTS 模块")
@@ -1439,13 +1511,13 @@ private fun ModelScreen(
                                 ttsStatus = "获取失败，可手动填写"
                             }
                         }
-                    }) { Text("获取模型") }
+                    }) { Text("获取模型", color = MaterialTheme.colorScheme.primary) }
                 }
-                Text(ttsStatus, color = Muted)
+                Text(ttsStatus, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         item {
-            SettingsCard("皮肤与界面", collapsedModule == "theme", { collapsedModule = if (collapsedModule == "theme") null else "theme" }) {
+            SettingsCard("皮肤与界面", expandedModule == "theme", { expandedModule = if (expandedModule == "theme") null else "theme" }) {
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.ColorLens, null, tint = MaterialTheme.colorScheme.primary)
@@ -1533,7 +1605,7 @@ private fun ModelScreen(
                             }
                             themeMode = cleanThemeMode
                             onConfig(config.copy(reverseConversation = reverseConversation, themeMode = cleanThemeMode, primaryColor = cleanPrimary, secondaryColor = cleanSecondary))
-                            collapsedModule = "theme"
+                            expandedModule = null
                         },
                         enabled = primaryValid && secondaryValid
                     ) {
@@ -1545,7 +1617,7 @@ private fun ModelScreen(
             }
         }
         item {
-            SettingsCard("讲师人格与模式模块", collapsedModule == "mentor", { collapsedModule = if (collapsedModule == "mentor") null else "mentor" }) {
+            SettingsCard("讲师人格与模式模块", expandedModule == "mentor", { expandedModule = if (expandedModule == "mentor") null else "mentor" }) {
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(mentorPrompt, { mentorPrompt = it }, Modifier.fillMaxWidth(), label = { Text("讲师人格提示词") }, minLines = 4)
                 Spacer(Modifier.height(8.dp))
@@ -1557,7 +1629,7 @@ private fun ModelScreen(
                 }
                 Text("过滤 NSFW 内容。", color = Muted)
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = { onConfig(config.copy(mentorPrompt = mentorPrompt.trim(), efficientMode = efficientMode)); collapsedModule = "mentor" }) {
+                Button(onClick = { onConfig(config.copy(mentorPrompt = mentorPrompt.trim(), efficientMode = efficientMode)); expandedModule = null }) {
                     Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("保存讲师人格与模式模块")
@@ -1604,19 +1676,41 @@ private fun ThemePresetChip(preset: ThemePreset, selected: Boolean, onClick: () 
 }
 
 @Composable
-private fun SettingsCard(title: String, collapsed: Boolean, onToggle: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+private fun SettingsCard(title: String, expanded: Boolean, onToggle: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     InfoCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            TextButton(onClick = onToggle) { Text(if (collapsed) "展开" else "收起") }
+            TextButton(onClick = onToggle) { Text(if (expanded) "收起" else "展开", color = MaterialTheme.colorScheme.primary) }
         }
-        AnimatedVisibility(visible = !collapsed) {
+        AnimatedVisibility(visible = expanded) {
             Column {
                 Spacer(Modifier.height(8.dp))
                 content()
             }
         }
     }
+}
+
+@Composable
+private fun AppFilterChip(selected: Boolean, onClick: () -> Unit, label: @Composable () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = label,
+        shape = RoundedCornerShape(9.dp),
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+            selectedLabelColor = MaterialTheme.colorScheme.primary,
+            containerColor = MaterialTheme.colorScheme.surface,
+            labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+        ),
+        border = FilterChipDefaults.filterChipBorder(
+            enabled = true,
+            selected = selected,
+            borderColor = MaterialTheme.colorScheme.outline,
+            selectedBorderColor = MaterialTheme.colorScheme.primary
+        )
+    )
 }
 
 
@@ -1813,6 +1907,9 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
             modelChain = configJson.optString("modelChain", configJson.optString("customModel", configJson.optString("selectedModel", "gpt-4o-mini"))),
             deepThinkingEnabled = configJson.optBoolean("deepThinkingEnabled", false),
             deepThinkingModel = configJson.optString("deepThinkingModel", ""),
+            visionProvider = configJson.optString("visionProvider", configJson.optString("provider", "OpenAI")),
+            visionApiKey = configJson.optString("visionApiKey", configJson.optString("apiKey", "")),
+            visionBaseUrl = configJson.optString("visionBaseUrl", configJson.optString("baseUrl", "https://api.openai.com/v1")),
             visionModel = configJson.optString("visionModel", "gpt-4o-mini"),
             ttsProvider = configJson.optString("ttsProvider", "OpenAI"),
             ttsApiKey = configJson.optString("ttsApiKey", ""),
@@ -1841,7 +1938,7 @@ private fun Classroom.toJson() = JSONObject().apply {
     put("memories", JSONArray(memories))
     put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("summary", it.summary).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
     put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview) }))
-    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("mentorPrompt", config.mentorPrompt).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
+    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("mentorPrompt", config.mentorPrompt).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
 }
 
 private fun JSONArray?.toMessages(): List<ChatMessage> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ChatMessage(item.optString("role"), item.optString("text")) } }
@@ -1998,7 +2095,7 @@ private suspend fun callVisionWithFallback(config: ClassroomConfig, models: List
     val candidates = models.ifEmpty { config.visionModels() }
     var last = "请先选择或填写识图模型名。"
     candidates.forEach { model ->
-        val result = callVision(config.baseUrl, config.apiKey, model, system, prompt, dataUrl)
+        val result = callVision(config.visionBaseUrlOrMain(), config.visionApiKeyOrMain(), model, system, prompt, dataUrl)
         if (!isApiFailure(result)) return@withContext result
         last = result
     }
@@ -2237,7 +2334,7 @@ private fun Color.compositeOnWhite(): Color = Color(
     alpha = 1f
 )
 
-private const val APP_VERSION = "2.0"
+private const val APP_VERSION = "2.1"
 
 private val THEME_PRESETS = listOf(
     ThemePreset("ocean", "二次元", "清透青绿、亮蓝点缀", 0xFF39C5BB, 0xFF00AEEF),
@@ -2247,28 +2344,27 @@ private val THEME_PRESETS = listOf(
 )
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 2.0
+# AI Classroom 2.1
 
 # 这次更新
 
-- 版本号升级为 2.0，作为新的稳定演示版。
-- API 模块支持多个模型按优先级自动降级，前面的模型不可用时会尝试后面的模型。
-- 新增深度思考模式，可在设置里单独填写深度思考模型。
-- 主课堂支持上传照片，可调用用户配置的识图或转述模型分析解答。
-- 新增 TTS 配置，可保存语音 API Key、Base URL、模型和音色。
-- 设置页改为按模块保存，保存后自动收起对应模块。
+- 皮肤系统重新接入全局界面，导航栏、按钮、输入框、筛选项和卡片会统一跟随当前皮肤。
+- 设置页改为“最多展开一个模块”，保存后自动收起当前模块。
+- 模型模块、多模态模块、TTS 模块都拥有各自的 Base URL、API Key 和模型配置。
+- 多模态图片分析会优先使用多模态模块的独立 API 配置。
+- 主课堂图片按钮位置已重排，不再压在输入框边线上。
 
 # 延续优化
 
+- 默认皮肤仍为 #39C5BB 与 #00AEEF。
+- 使用手册已同步 2.1 设置逻辑。
 - 所有课堂、分支、设置、知识库、记忆和考试记录继续保存在本机。
-- 皮肤色调覆盖更多界面区域，默认仍为 #39C5BB 与 #00AEEF。
-- 使用手册已补充完整，可在设置页随时查看。
 """
 private const val USER_MANUAL_TEXT = """
 # AI Classroom 使用手册
 
 ## 快速开始
-第一次使用时，先进入设置页，保存 API 模块。至少需要填写 Base URL、API Key 和一个可用模型名。回到主课堂后，输入你想学习的内容，例如“从零开始学 C 语言指针”，AI 会围绕这个课堂持续教学。
+第一次使用时，先进入设置页，展开“模型模块”，填写 Base URL、API Key 和至少一个可用模型名并保存。回到主课堂后，输入你想学习的内容，例如“从零开始学 C 语言指针”，AI 会围绕这个课堂持续教学。
 
 ## 主课堂
 主课堂是一门课程的主线。你可以输入学习目标、追问问题、让 AI 出例题、讲解代码或总结章节。课堂内容、对话、章节索引、摘要和配置都会保存在本地。
@@ -2289,17 +2385,17 @@ private const val USER_MANUAL_TEXT = """
 知识库目前可直接读取 `.md` 和 `.txt` 文件。文件摘要会加入课堂上下文，帮助 AI 结合你的材料教学。
 
 ## API 与模型
-API 模块用于保存服务商、Base URL 和 API Key。模型模块支持自动获取模型，也可以手动输入模型名。
+模型模块用于保存普通课堂对话的服务商、Base URL、API Key 和模型名。它支持自动获取模型，也可以手动输入模型名。
 
 模型优先级支持一行一个模型。应用会先调用第一行模型，如果连接失败或接口返回错误，会自动尝试下一行模型。
 
 深度思考模式开启后，会优先使用单独填写的深度思考模型。关闭后，应用只按普通模型优先级调用。
 
 ## 多模态图片
-多模态模块用于填写识图或转述模型名称。它可以与普通对话模型不同。主课堂上传照片时会优先调用这个模型，如果不可用，会尝试普通模型链。
+多模态模块拥有独立的服务商、Base URL、API Key 和识图/转述模型名称。它可以与普通对话模型不同。主课堂上传照片时会优先调用多模态模块；如果该模块未填写 API Key，则会回退使用模型模块的 API Key。
 
 ## TTS
-TTS 模块用于保存语音服务配置，包括 API Key、Base URL、模型和音色。预设服务商可快速填入常见 Base URL，也可以选择自定义。获取模型按钮会尝试从兼容接口读取模型列表；如果失败，可以手动填写模型名。
+TTS 模块用于保存语音服务配置，包括服务商、API Key、Base URL、模型和音色。预设服务商可快速填入常见 Base URL，也可以选择自定义。获取模型按钮会尝试从兼容接口读取模型列表；如果失败，可以手动填写模型名。
 
 当前版本先完成 TTS 配置保存，为后续语音朗读和讲师发声功能预留。
 
@@ -2310,7 +2406,7 @@ TTS 模块用于保存语音服务配置，包括 API Key、Base URL、模型和
 高效模式用于过滤 NSFW 等不适合学习场景的内容，默认开启。它本质上是健康模式，适合学习、自习和考试场景。
 
 ## 界面与皮肤
-皮肤模块可切换对话方向和界面色调。默认是二次元青蓝色调，也可以选择黑白、跟随系统或单色。二次元和单色皮肤支持自定义颜色，默认颜色为 `#39C5BB` 和 `#00AEEF`。
+皮肤模块可切换对话方向和界面色调。默认是二次元青蓝色调，也可以选择黑白、跟随系统或单色。二次元和单色皮肤支持自定义颜色，默认颜色为 `#39C5BB` 和 `#00AEEF`。导航栏、按钮、输入框、筛选项和主要卡片都会跟随皮肤。
 
 ## 多课堂
 在主界面从左向右滑出课堂菜单，可以切换课堂、新建课堂、删除课堂，也可以复制其他课堂配置。每个课堂都可以有独立 API、模型、人格、皮肤和知识库配置。
