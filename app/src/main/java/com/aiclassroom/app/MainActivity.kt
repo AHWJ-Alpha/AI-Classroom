@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.HealthAndSafety
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Delete
@@ -58,12 +59,14 @@ import androidx.compose.material.icons.filled.South
 import androidx.compose.material.icons.filled.North
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Quiz
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -122,6 +125,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.Base64
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -165,13 +169,36 @@ private data class ClassroomConfig(
     val baseUrl: String = "https://api.openai.com/v1",
     val selectedModel: String = "gpt-4o-mini",
     val customModel: String = "",
+    val modelChain: String = "gpt-4o-mini",
+    val deepThinkingEnabled: Boolean = false,
+    val deepThinkingModel: String = "",
+    val visionModel: String = "gpt-4o-mini",
+    val ttsProvider: String = "OpenAI",
+    val ttsApiKey: String = "",
+    val ttsBaseUrl: String = "https://api.openai.com/v1",
+    val ttsModel: String = "tts-1",
+    val ttsVoice: String = "alloy",
     val mentorPrompt: String = "你是一名耐心、结构清晰的 AI 讲师。默认使用中文教学，保持主线课程连续，并在必要时用 Markdown 和公式文本表达。",
     val efficientMode: Boolean = true,
     val reverseConversation: Boolean = false,
     val themeMode: String = "ocean",
     val primaryColor: Long = 0xFF39C5BB,
     val secondaryColor: Long = 0xFF00AEEF
-)
+) {
+    fun primaryModel(): String = orderedModels().firstOrNull().orEmpty()
+
+    fun orderedModels(): List<String> {
+        val normalModels = modelChain
+            .split('\n', ',', '，', ';', '；')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .ifEmpty { listOf(customModel.ifBlank { selectedModel }) }
+        val deepModels = if (deepThinkingEnabled && deepThinkingModel.isNotBlank()) listOf(deepThinkingModel.trim()) else emptyList()
+        return (deepModels + normalModels + customModel + selectedModel).map { it.trim() }.filter { it.isNotBlank() }.distinct()
+    }
+
+    fun visionModels(): List<String> = (listOf(visionModel) + orderedModels()).map { it.trim() }.filter { it.isNotBlank() }.distinct()
+}
 
 private data class Classroom(
     val name: String,
@@ -213,7 +240,8 @@ private fun AIClassroomApp() {
     val memoryWatermarks = remember { java.util.IdentityHashMap<Classroom, Int>() }
     if (classIndex > classes.lastIndex) classIndex = classes.lastIndex.coerceAtLeast(0)
     val current = classes[classIndex]
-    val activeModel = current.config.customModel.ifBlank { current.config.selectedModel }
+    val activeModel = current.config.primaryModel()
+    val activeModelChain = current.config.orderedModels()
     val palette = remember(current.config) { paletteFor(current.config) }
 
     LaunchedEffect(Unit) {
@@ -309,7 +337,7 @@ private fun AIClassroomApp() {
             val assistantIndex = room.messages.size
             room.messages.add(ChatMessage("assistant", ""))
             var streamed = ""
-            val result = callChatStream(room.config.baseUrl, room.config.apiKey, activeModel, systemPrompt(room) + "\n" + EXAM_TOOL_PROMPT + "\n" + EXAM_TOOL_PROMPT_V2, room.messages.dropLast(1).toList()) { delta ->
+            val result = callChatStreamWithFallback(room.config, activeModelChain, systemPrompt(room) + "\n" + EXAM_TOOL_PROMPT + "\n" + EXAM_TOOL_PROMPT_V2, room.messages.dropLast(1).toList()) { delta ->
                 streamed += delta
                 room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(stripExamBlock(streamed), room.config.efficientMode))
             }
@@ -321,6 +349,39 @@ private fun AIClassroomApp() {
             persist("回复已保存，记忆将在后台整理")
             scheduleMemoryBuild(room, activeModel)
         }
+    }
+
+    fun sendImageMessage(uri: Uri) {
+        if (isLoading) return
+        val room = current
+        val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+        val name = uri.lastPathSegment?.substringAfterLast('/') ?: "课堂图片"
+        room.messages.add(ChatMessage("user", "[图片] $name\n请分析这张图片，并结合当前课堂内容解答。"))
+        persist("图片问题已保存")
+        isLoading = true
+        scope.launch {
+            val dataUrl = withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
+                    if (bytes.isEmpty()) "" else "data:$mime;base64,${Base64.getEncoder().encodeToString(bytes)}"
+                }.getOrDefault("")
+            }
+            val assistantIndex = room.messages.size
+            room.messages.add(ChatMessage("assistant", ""))
+            val result = if (dataUrl.isBlank()) {
+                "图片读取失败，请重新选择照片。"
+            } else {
+                callVisionWithFallback(room.config, room.config.visionModels(), systemPrompt(room), "请分析这张图片，并结合当前课堂内容解答。", dataUrl)
+            }
+            room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(result, room.config.efficientMode))
+            isLoading = false
+            persist("图片分析已保存")
+            scheduleMemoryBuild(room, activeModel)
+        }
+    }
+
+    val imageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let { sendImageMessage(it) }
     }
 
     fun sendBranchMessage(branchIndex: Int) {
@@ -338,7 +399,7 @@ private fun AIClassroomApp() {
             branch.messages.add(ChatMessage("assistant", ""))
             var streamed = ""
             val chatHistory = branch.context.takeLast(BRANCH_CONTEXT_LIMIT) + branch.messages.dropLast(1)
-            val result = callChatStream(room.config.baseUrl, room.config.apiKey, activeModel, branchSystemPrompt(room, branch), chatHistory) { delta ->
+            val result = callChatStreamWithFallback(room.config, activeModelChain, branchSystemPrompt(room, branch), chatHistory) { delta ->
                 streamed += delta
                 branch.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(streamed, room.config.efficientMode))
             }
@@ -404,7 +465,7 @@ private fun AIClassroomApp() {
         ) {
             Box(Modifier.fillMaxSize()) {
                 when (tab) {
-                    Tab.Class -> ClassScreen(current, classIndex, classes.size, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, onOpenMenu = { classMenuOpen = true }, onSend = { sendMessage() }, onDeleteAfter = { index ->
+                    Tab.Class -> ClassScreen(current, classIndex, classes.size, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, onOpenMenu = { classMenuOpen = true }, onSend = { sendMessage() }, onImage = { imageLauncher.launch("image/*") }, onDeleteAfter = { index ->
                         if (index in current.messages.indices) {
                             for (i in current.messages.lastIndex downTo index) current.messages.removeAt(i)
                             current.chapters.clear()
@@ -483,7 +544,7 @@ private fun AIClassroomApp() {
                         current.branches.add(BranchClass("考试不会题 ${questionIndex + 1}", "考试工具", mutableStateListOf(ChatMessage("user", branchText), ChatMessage("assistant", "正在生成讲解，可返回主课堂继续同步查看。")), summarize("考试不会题", listOf(ChatMessage("user", branchText)))))
                         persist("不会题分支已保存")
                         scope.launch {
-                            val answer = callChat(current.config.baseUrl, current.config.apiKey, activeModel, systemPrompt(current), listOf(ChatMessage("user", branchText)))
+                            val answer = callChatWithFallback(current.config, activeModelChain, systemPrompt(current), listOf(ChatMessage("user", branchText)))
                             current.branches.lastOrNull()?.messages?.add(ChatMessage("assistant", answer))
                             persist("不会题讲解已保存")
                         }
@@ -520,7 +581,7 @@ private fun ClassroomMenu(
     onDelete: (Int) -> Unit
 ) {
     Row(Modifier.fillMaxSize()) {
-        Surface(Modifier.fillMaxHeight().fillMaxWidth(0.78f), color = Color.White, shape = RoundedCornerShape(topEnd = 14.dp, bottomEnd = 14.dp)) {
+        Surface(Modifier.fillMaxHeight().fillMaxWidth(0.78f), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(topEnd = 14.dp, bottomEnd = 14.dp)) {
             LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), contentPadding = PaddingValues(vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {
                     Text("课堂", fontWeight = FontWeight.Bold, fontSize = 20.sp)
@@ -572,6 +633,7 @@ private fun ClassScreen(
     reverseConversation: Boolean,
     onOpenMenu: () -> Unit,
     onSend: () -> Unit,
+    onImage: () -> Unit,
     onDeleteAfter: (Int) -> Unit,
     onRewrite: (Int, String) -> Unit,
     onBranch: (Int) -> Unit
@@ -613,6 +675,7 @@ private fun ClassScreen(
             compact = compactInput,
             palette = palette,
             onSend = onSend,
+            onImage = onImage,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
         Button(
@@ -663,6 +726,7 @@ private fun ChatInputBar(
     compact: Boolean,
     palette: AppPalette,
     onSend: () -> Unit,
+    onImage: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -681,16 +745,20 @@ private fun ChatInputBar(
                 maxLines = if (compact) 1 else 5,
                 singleLine = compact
             )
-            Button(
-                onClick = onSend,
-                enabled = !isLoading,
-                modifier = Modifier.align(Alignment.BottomEnd),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-            ) {
-                Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
-                if (!compact) {
-                    Spacer(Modifier.width(4.dp))
-                    Text(if (isLoading) "生成中" else "发送")
+            Row(Modifier.align(Alignment.BottomEnd), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onImage, enabled = !isLoading) {
+                    Icon(Icons.Default.Image, contentDescription = null, tint = palette.secondary)
+                }
+                Button(
+                    onClick = onSend,
+                    enabled = !isLoading,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                    if (!compact) {
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (isLoading) "生成中" else "发送")
+                    }
                 }
             }
         }
@@ -945,7 +1013,7 @@ private fun DrawPad(strokes: MutableList<DrawStroke>, modifier: Modifier) {
     var current by remember { mutableStateOf<List<Offset>>(emptyList()) }
     Canvas(
         modifier
-            .background(Color.White, RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
             .border(1.dp, Color(0xFFE1E6EF), RoundedCornerShape(8.dp))
             .pointerInput(Unit) {
                 detectDragGestures(
@@ -1039,7 +1107,7 @@ private fun BranchChatScreen(
             }
             if (isLoading) item { AiThinkingRow(palette) }
         }
-        ChatInputBar(input, onInput, isLoading, compact = false, palette, onSend, Modifier.align(Alignment.BottomCenter))
+        ChatInputBar(input, onInput, isLoading, compact = false, palette = palette, onSend = onSend, onImage = {}, modifier = Modifier.align(Alignment.BottomCenter))
     }
 }
 
@@ -1095,7 +1163,7 @@ private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<Cha
                         .fillMaxWidth()
                         .combinedClickable(onClick = {}, onDoubleClick = { onJump(chapter.startIndex) }),
                     shape = RoundedCornerShape(8.dp),
-                    colors = CardDefaults.cardColors(Color.White),
+                    colors = CardDefaults.cardColors(MaterialTheme.colorScheme.surface),
                     elevation = CardDefaults.cardElevation(1.dp)
                 ) {
                     Column(Modifier.padding(12.dp)) {
@@ -1150,7 +1218,7 @@ private fun MemoryMindMap(chapters: List<ConversationChapter>, onJump: (Int) -> 
                         .width(116.dp)
                         .offset(x.dp, y.dp),
                     shape = RoundedCornerShape(9.dp),
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.surface,
                     shadowElevation = 2.dp,
                     border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00AEEF).copy(alpha = 0.2f))
                 ) {
@@ -1231,10 +1299,21 @@ private fun ModelScreen(
     onFetchModels: () -> Unit
 ) {
     val providers = listOf("OpenAI", "DeepSeek", "通义千问", "自定义")
+    val ttsProviders = listOf("OpenAI", "通义千问", "自定义")
     var apiProvider by remember(config.provider) { mutableStateOf(config.provider) }
     var apiBaseUrl by remember(config.baseUrl) { mutableStateOf(config.baseUrl) }
     var apiKey by remember(config.apiKey) { mutableStateOf(config.apiKey) }
     var modelName by remember(config.customModel, config.selectedModel) { mutableStateOf(config.customModel.ifBlank { config.selectedModel }) }
+    var modelChain by remember(config.modelChain) { mutableStateOf(config.modelChain.ifBlank { config.customModel.ifBlank { config.selectedModel } }) }
+    var deepThinkingEnabled by remember(config.deepThinkingEnabled) { mutableStateOf(config.deepThinkingEnabled) }
+    var deepThinkingModel by remember(config.deepThinkingModel) { mutableStateOf(config.deepThinkingModel) }
+    var visionModel by remember(config.visionModel) { mutableStateOf(config.visionModel) }
+    var ttsProvider by remember(config.ttsProvider) { mutableStateOf(config.ttsProvider) }
+    var ttsApiKey by remember(config.ttsApiKey) { mutableStateOf(config.ttsApiKey) }
+    var ttsBaseUrl by remember(config.ttsBaseUrl) { mutableStateOf(config.ttsBaseUrl) }
+    var ttsModel by remember(config.ttsModel) { mutableStateOf(config.ttsModel) }
+    var ttsVoice by remember(config.ttsVoice) { mutableStateOf(config.ttsVoice) }
+    var ttsStatus by remember { mutableStateOf("未获取语音模型") }
     var mentorPrompt by remember(config.mentorPrompt) { mutableStateOf(config.mentorPrompt) }
     var efficientMode by remember(config.efficientMode) { mutableStateOf(config.efficientMode) }
     var reverseConversation by remember(config.reverseConversation) { mutableStateOf(config.reverseConversation) }
@@ -1246,10 +1325,11 @@ private fun ModelScreen(
     val canCustomizeColors = themeMode == "ocean" || themeMode == "single"
     val primaryValid = parseHexColor(primaryHex) != null
     val secondaryValid = parseHexColor(secondaryHex) != null
+    val scope = rememberCoroutineScope()
+    var collapsedModule by remember { mutableStateOf<String?>(null) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
-            InfoCard {
-                Text("API 模块", fontWeight = FontWeight.Bold)
+            SettingsCard("API 模块", collapsedModule == "api", { collapsedModule = if (collapsedModule == "api") null else "api" }) {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     providers.forEach { provider ->
                         FilterChip(apiProvider == provider, {
@@ -1263,7 +1343,7 @@ private fun ModelScreen(
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(apiKey, { apiKey = it }, Modifier.fillMaxWidth(), label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = { onConfig(config.copy(provider = apiProvider, baseUrl = apiBaseUrl.trim(), apiKey = apiKey.trim())) }) {
+                Button(onClick = { onConfig(config.copy(provider = apiProvider, baseUrl = apiBaseUrl.trim(), apiKey = apiKey.trim())); collapsedModule = "api" }) {
                     Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("保存 API 模块")
@@ -1274,19 +1354,30 @@ private fun ModelScreen(
             }
         }
         item {
-            InfoCard {
-                Text("模型模块", fontWeight = FontWeight.Bold)
+            SettingsCard("模型模块", collapsedModule == "model", { collapsedModule = if (collapsedModule == "model") null else "model" }) {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     models.forEach { model ->
-                        FilterChip(modelName == model, { modelName = model }, label = { Text(model) })
+                        FilterChip(modelName == model, { modelName = model; if (!modelChain.lines().map { it.trim() }.contains(model)) modelChain = listOf(model, modelChain).filter { it.isNotBlank() }.joinToString("\n") }, label = { Text(model) })
                     }
                 }
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(modelName, { modelName = it }, Modifier.fillMaxWidth(), label = { Text("模型名称") }, singleLine = true)
                 Spacer(Modifier.height(8.dp))
+                OutlinedTextField(modelChain, { modelChain = it }, Modifier.fillMaxWidth(), label = { Text("模型优先级（一行一个，前面的失败后自动尝试后面的）") }, minLines = 3)
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Memory, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("深度思考模式", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                    Switch(deepThinkingEnabled, { deepThinkingEnabled = it })
+                }
+                OutlinedTextField(deepThinkingModel, { deepThinkingModel = it }, Modifier.fillMaxWidth(), label = { Text("深度思考模型") }, singleLine = true)
+                Spacer(Modifier.height(8.dp))
                 Button(onClick = {
                     val cleanName = modelName.trim()
-                    onConfig(config.copy(selectedModel = cleanName.ifBlank { config.selectedModel }, customModel = if (cleanName in models) "" else cleanName))
+                    val cleanChain = modelChain.lines().flatMap { it.split(',', '，') }.map { it.trim() }.filter { it.isNotBlank() }.distinct().joinToString("\n")
+                    onConfig(config.copy(selectedModel = cleanName.ifBlank { config.selectedModel }, customModel = if (cleanName in models) "" else cleanName, modelChain = cleanChain.ifBlank { cleanName.ifBlank { config.selectedModel } }, deepThinkingEnabled = deepThinkingEnabled, deepThinkingModel = deepThinkingModel.trim()))
+                    collapsedModule = "model"
                 }) {
                     Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
@@ -1295,8 +1386,66 @@ private fun ModelScreen(
             }
         }
         item {
-            InfoCard {
-                Text("皮肤与界面", fontWeight = FontWeight.Bold)
+            SettingsCard("多模态模块", collapsedModule == "vision", { collapsedModule = if (collapsedModule == "vision") null else "vision" }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Image, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("课堂图片分析模型", fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(visionModel, { visionModel = it }, Modifier.fillMaxWidth(), label = { Text("识图/转述模型名称") }, singleLine = true)
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = { onConfig(config.copy(visionModel = visionModel.trim().ifBlank { config.visionModel })); collapsedModule = "vision" }) {
+                    Icon(Icons.Default.Check, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("保存多模态模块")
+                }
+            }
+        }
+        item {
+            SettingsCard("TTS 模块", collapsedModule == "tts", { collapsedModule = if (collapsedModule == "tts") null else "tts" }) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ttsProviders.forEach { provider ->
+                        FilterChip(ttsProvider == provider, {
+                            ttsProvider = provider
+                            ttsBaseUrl = defaultBaseUrl(provider)
+                        }, label = { Text(provider) })
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(ttsBaseUrl, { ttsBaseUrl = it }, Modifier.fillMaxWidth(), label = { Text("TTS Base URL") }, singleLine = true)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(ttsApiKey, { ttsApiKey = it }, Modifier.fillMaxWidth(), label = { Text("TTS API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(ttsModel, { ttsModel = it }, Modifier.weight(1f), label = { Text("TTS 模型") }, singleLine = true)
+                    OutlinedTextField(ttsVoice, { ttsVoice = it }, Modifier.weight(1f), label = { Text("音色") }, singleLine = true)
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Button(onClick = { onConfig(config.copy(ttsProvider = ttsProvider, ttsApiKey = ttsApiKey.trim(), ttsBaseUrl = ttsBaseUrl.trim(), ttsModel = ttsModel.trim(), ttsVoice = ttsVoice.trim())); collapsedModule = "tts" }) {
+                        Icon(Icons.Default.Check, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("保存 TTS 模块")
+                    }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            ttsStatus = "获取中..."
+                            val fetched = fetchModels(ttsBaseUrl, ttsApiKey)
+                            if (fetched.isNotEmpty()) {
+                                ttsModel = fetched.first()
+                                ttsStatus = "已获取 ${fetched.size} 个模型"
+                            } else {
+                                ttsStatus = "获取失败，可手动填写"
+                            }
+                        }
+                    }) { Text("获取模型") }
+                }
+                Text(ttsStatus, color = Muted)
+            }
+        }
+        item {
+            SettingsCard("皮肤与界面", collapsedModule == "theme", { collapsedModule = if (collapsedModule == "theme") null else "theme" }) {
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.ColorLens, null, tint = MaterialTheme.colorScheme.primary)
@@ -1384,6 +1533,7 @@ private fun ModelScreen(
                             }
                             themeMode = cleanThemeMode
                             onConfig(config.copy(reverseConversation = reverseConversation, themeMode = cleanThemeMode, primaryColor = cleanPrimary, secondaryColor = cleanSecondary))
+                            collapsedModule = "theme"
                         },
                         enabled = primaryValid && secondaryValid
                     ) {
@@ -1395,8 +1545,7 @@ private fun ModelScreen(
             }
         }
         item {
-            InfoCard {
-                Text("讲师人格与模式模块", fontWeight = FontWeight.Bold)
+            SettingsCard("讲师人格与模式模块", collapsedModule == "mentor", { collapsedModule = if (collapsedModule == "mentor") null else "mentor" }) {
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(mentorPrompt, { mentorPrompt = it }, Modifier.fillMaxWidth(), label = { Text("讲师人格提示词") }, minLines = 4)
                 Spacer(Modifier.height(8.dp))
@@ -1408,7 +1557,7 @@ private fun ModelScreen(
                 }
                 Text("过滤 NSFW 内容。", color = Muted)
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = { onConfig(config.copy(mentorPrompt = mentorPrompt.trim(), efficientMode = efficientMode)) }) {
+                Button(onClick = { onConfig(config.copy(mentorPrompt = mentorPrompt.trim(), efficientMode = efficientMode)); collapsedModule = "mentor" }) {
                     Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("保存讲师人格与模式模块")
@@ -1436,7 +1585,7 @@ private fun ThemePresetChip(preset: ThemePreset, selected: Boolean, onClick: () 
         onClick = onClick,
         modifier = Modifier.width(178.dp).height(96.dp),
         shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(if (selected) primary.copy(alpha = 0.13f).compositeOnWhite() else Color.White),
+        colors = CardDefaults.cardColors(if (selected) primary.copy(alpha = 0.13f).compositeOnWhite() else MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(if (selected) 3.dp else 1.dp)
     ) {
         Column(Modifier.fillMaxSize().padding(10.dp)) {
@@ -1453,6 +1602,23 @@ private fun ThemePresetChip(preset: ThemePreset, selected: Boolean, onClick: () 
         }
     }
 }
+
+@Composable
+private fun SettingsCard(title: String, collapsed: Boolean, onToggle: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    InfoCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            TextButton(onClick = onToggle) { Text(if (collapsed) "展开" else "收起") }
+        }
+        AnimatedVisibility(visible = !collapsed) {
+            Column {
+                Spacer(Modifier.height(8.dp))
+                content()
+            }
+        }
+    }
+}
+
 
 @Composable
 private fun ThemePreview(primaryValue: Long, secondaryValue: Long) {
@@ -1560,7 +1726,7 @@ private fun buildInlineMarkdown(line: String) = buildAnnotatedString {
 
 @Composable
 private fun InfoCard(content: @Composable ColumnScope.() -> Unit) {
-    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(Color.White), elevation = CardDefaults.cardElevation(1.dp)) {
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(1.dp)) {
         Column(Modifier.padding(12.dp), content = content)
     }
 }
@@ -1644,6 +1810,15 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
             baseUrl = configJson.optString("baseUrl", "https://api.openai.com/v1"),
             selectedModel = configJson.optString("selectedModel", "gpt-4o-mini"),
             customModel = configJson.optString("customModel", ""),
+            modelChain = configJson.optString("modelChain", configJson.optString("customModel", configJson.optString("selectedModel", "gpt-4o-mini"))),
+            deepThinkingEnabled = configJson.optBoolean("deepThinkingEnabled", false),
+            deepThinkingModel = configJson.optString("deepThinkingModel", ""),
+            visionModel = configJson.optString("visionModel", "gpt-4o-mini"),
+            ttsProvider = configJson.optString("ttsProvider", "OpenAI"),
+            ttsApiKey = configJson.optString("ttsApiKey", ""),
+            ttsBaseUrl = configJson.optString("ttsBaseUrl", "https://api.openai.com/v1"),
+            ttsModel = configJson.optString("ttsModel", "tts-1"),
+            ttsVoice = configJson.optString("ttsVoice", "alloy"),
             mentorPrompt = configJson.optString("mentorPrompt", ClassroomConfig().mentorPrompt),
             efficientMode = configJson.optBoolean("efficientMode", true),
             reverseConversation = configJson.optBoolean("reverseConversation", false),
@@ -1666,7 +1841,7 @@ private fun Classroom.toJson() = JSONObject().apply {
     put("memories", JSONArray(memories))
     put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("summary", it.summary).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
     put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview) }))
-    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("mentorPrompt", config.mentorPrompt).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
+    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("mentorPrompt", config.mentorPrompt).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
 }
 
 private fun JSONArray?.toMessages(): List<ChatMessage> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ChatMessage(item.optString("role"), item.optString("text")) } }
@@ -1788,6 +1963,68 @@ private suspend fun callChatStream(
         }
         builder.toString().ifBlank { "模型没有返回内容。" }
     }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
+}
+
+private suspend fun callChatWithFallback(config: ClassroomConfig, models: List<String>, system: String, messages: List<ChatMessage>): String {
+    val candidates = models.ifEmpty { config.orderedModels() }
+    var last = "请先选择或填写模型名。"
+    candidates.forEach { model ->
+        val result = callChat(config.baseUrl, config.apiKey, model, system, messages)
+        if (!isApiFailure(result)) return result
+        last = result
+    }
+    return last
+}
+
+private suspend fun callChatStreamWithFallback(
+    config: ClassroomConfig,
+    models: List<String>,
+    system: String,
+    messages: List<ChatMessage>,
+    onDelta: (String) -> Unit
+): String {
+    val candidates = models.ifEmpty { config.orderedModels() }
+    var last = "请先选择或填写模型名。"
+    candidates.forEach { model ->
+        val result = callChatStream(config.baseUrl, config.apiKey, model, system, messages, onDelta)
+        if (!isApiFailure(result)) return result
+        last = result
+    }
+    return last
+}
+
+private suspend fun callVisionWithFallback(config: ClassroomConfig, models: List<String>, system: String, prompt: String, dataUrl: String): String = withContext(Dispatchers.IO) {
+    if (config.apiKey.isBlank()) return@withContext "请先填写 API Key。"
+    val candidates = models.ifEmpty { config.visionModels() }
+    var last = "请先选择或填写识图模型名。"
+    candidates.forEach { model ->
+        val result = callVision(config.baseUrl, config.apiKey, model, system, prompt, dataUrl)
+        if (!isApiFailure(result)) return@withContext result
+        last = result
+    }
+    last
+}
+
+private suspend fun callVision(baseUrl: String, apiKey: String, model: String, system: String, prompt: String, dataUrl: String): String = withContext(Dispatchers.IO) {
+    if (apiKey.isBlank()) return@withContext "请先填写 API Key。"
+    if (model.isBlank()) return@withContext "请先选择或填写识图模型名。"
+    runCatching {
+        val connection = URL(baseUrl.trimEnd('/') + "/chat/completions").openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.doOutput = true
+        connection.setRequestProperty("Authorization", "Bearer $apiKey")
+        connection.setRequestProperty("Content-Type", "application/json")
+        connection.connectTimeout = 20000
+        connection.readTimeout = 90000
+        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildVisionJson(model, system, prompt, dataUrl)) }
+        if (connection.responseCode !in 200..299) return@runCatching readBody(connection).ifBlank { "调用失败：HTTP ${connection.responseCode}" }
+        Regex("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").find(readBody(connection))?.groupValues?.get(1)?.unescapeJson() ?: "模型没有返回内容。"
+    }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
+}
+
+private fun isApiFailure(result: String): Boolean {
+    val text = result.lowercase()
+    return result.startsWith("调用失败") || result.startsWith("请先") || text.contains("http 4") || text.contains("http 5") || text.contains("unauthorized") || text.contains("invalid api")
 }
 
 private fun parseStreamDelta(payload: String): String = runCatching {
@@ -1933,6 +2170,12 @@ private fun buildJson(model: String, system: String, messages: List<ChatMessage>
     return "{\"model\":\"${model.escapeJson()}\",\"messages\":[$jsonMessages],\"temperature\":0.7,\"stream\":$stream}"
 }
 
+private fun buildVisionJson(model: String, system: String, prompt: String, dataUrl: String): String {
+    return """
+        {"model":"${model.escapeJson()}","messages":[{"role":"system","content":"${system.escapeJson()}"},{"role":"user","content":[{"type":"text","text":"${prompt.escapeJson()}"},{"type":"image_url","image_url":{"url":"${dataUrl.escapeJson()}"}}]}],"temperature":0.7}
+    """.trimIndent()
+}
+
 private fun summarize(scope: String, messages: List<ChatMessage>): String = "$scope 记忆：" + messages.joinToString(" ") { it.text }.replace(Regex("\\s+"), " ").take(180)
 
 private fun filterNsfw(text: String, enabled: Boolean): String {
@@ -1956,11 +2199,18 @@ private fun paletteFor(config: ClassroomConfig): AppPalette {
     val primary = colorFromLong(config.primaryColor)
     val secondary = colorFromLong(config.secondaryColor)
     return when (config.themeMode) {
-        "mono" -> AppPalette(Color(0xFFF7F7F8), Color.White, Color(0xFF171717), Color(0xFF686868), Color(0xFF111111), Color(0xFF555555), Color(0xFF2F2F2F))
-        "single" -> AppPalette(primary.copy(alpha = 0.08f).compositeOnWhite(), Color.White, Ink, Muted, primary, primary.copy(alpha = 0.72f).compositeOnWhite(), primary.copy(alpha = 0.55f).compositeOnWhite())
-        else -> AppPalette(Color(0xFFEFF9FB), Color.White, Color(0xFF0F2630), Color(0xFF5B6F78), primary, secondary, Color(0xFF0891B2))
+        "mono" -> AppPalette(Color(0xFFF7F7F8), Color(0xFFFFFFFF), Color(0xFF171717), Color(0xFF686868), Color(0xFF111111), Color(0xFF555555), Color(0xFF2F2F2F))
+        "single" -> AppPalette(primary.copy(alpha = 0.07f).compositeOnWhite(), primary.copy(alpha = 0.035f).compositeOnWhite(), Ink, Muted, primary, primary.copy(alpha = 0.72f).compositeOnWhite(), primary.copy(alpha = 0.55f).compositeOnWhite())
+        else -> AppPalette(blendOnWhite(primary, secondary, 0.055f), blendOnWhite(primary, secondary, 0.025f), Color(0xFF0F2630), Color(0xFF5B6F78), primary, secondary, blendOnWhite(primary, secondary, 0.65f))
     }
 }
+
+private fun blendOnWhite(primary: Color, secondary: Color, alpha: Float): Color = Color(
+    red = ((primary.red + secondary.red) / 2f) * alpha + (1f - alpha),
+    green = ((primary.green + secondary.green) / 2f) * alpha + (1f - alpha),
+    blue = ((primary.blue + secondary.blue) / 2f) * alpha + (1f - alpha),
+    alpha = 1f
+)
 
 private fun colorFromLong(value: Long): Color = Color(value.toInt())
 private fun argbToHex(value: Long): String = "#" + (value and 0xFFFFFFFFL).toString(16).padStart(8, '0').uppercase()
@@ -1987,7 +2237,7 @@ private fun Color.compositeOnWhite(): Color = Color(
     alpha = 1f
 )
 
-private const val APP_VERSION = "1.10.0"
+private const val APP_VERSION = "2.0"
 
 private val THEME_PRESETS = listOf(
     ThemePreset("ocean", "二次元", "清透青绿、亮蓝点缀", 0xFF39C5BB, 0xFF00AEEF),
@@ -1997,51 +2247,81 @@ private val THEME_PRESETS = listOf(
 )
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 1.8.0
+# AI Classroom 2.0
 
-- 顶部 AI Classroom 区域和底部导航不再自动弹出，改为右上角按键手动显示或隐藏。
-- 右上角新增“显示导航 / 隐藏导航”胶囊按键，主课堂阅读时可以保持沉浸界面。
-- “开头 / 底部”跳转按键整体上移，避免贴近输入栏。
-- 底部输入栏继续保持：在历史对话中为单行可输入，在底部时为更完整的多行输入。
-- 优化主课堂悬浮按钮间距和层级，让导航、跳转、输入三者互不抢位置。
+# 这次更新
+
+- 版本号升级为 2.0，作为新的稳定演示版。
+- API 模块支持多个模型按优先级自动降级，前面的模型不可用时会尝试后面的模型。
+- 新增深度思考模式，可在设置里单独填写深度思考模型。
+- 主课堂支持上传照片，可调用用户配置的识图或转述模型分析解答。
+- 新增 TTS 配置，可保存语音 API Key、Base URL、模型和音色。
+- 设置页改为按模块保存，保存后自动收起对应模块。
 
 # 延续优化
 
-- 数学公式展示会修正常见损坏的 LaTeX 命令文本。
-- 长按对话可选择开分支、重写该段或删除此处及之后内容。
+- 所有课堂、分支、设置、知识库、记忆和考试记录继续保存在本机。
+- 皮肤色调覆盖更多界面区域，默认仍为 #39C5BB 与 #00AEEF。
+- 使用手册已补充完整，可在设置页随时查看。
 """
 private const val USER_MANUAL_TEXT = """
 # AI Classroom 使用手册
 
+## 快速开始
+第一次使用时，先进入设置页，保存 API 模块。至少需要填写 Base URL、API Key 和一个可用模型名。回到主课堂后，输入你想学习的内容，例如“从零开始学 C 语言指针”，AI 会围绕这个课堂持续教学。
+
 ## 主课堂
-在主课堂输入学习目标或问题，AI 会围绕当前课堂持续教学。课堂内容、对话、章节索引和摘要会保存在本地。
+主课堂是一门课程的主线。你可以输入学习目标、追问问题、让 AI 出例题、讲解代码或总结章节。课堂内容、对话、章节索引、摘要和配置都会保存在本地。
+
+主课堂输入框右侧的图片按钮可以上传照片。上传后，应用会把图片交给设置页里的识图或转述模型分析，并把结果保存进当前课堂。
 
 ## 分支课堂
-在任意对话下选择开分支，会冻结当时的主课堂上下文，并开启一条与主课堂平行的长对话。分支中的后续内容只保存在分支里，不会复制或改写主课堂。
+长按或点击对话下方的“从这里开分支”，可以从任意一段主课堂对话开始一条平行支线。分支会带上创建时的主课堂上下文，之后的所有问答只保存在分支中，不会复制、打包或改写主课堂。
+
+适合在不打断主线的情况下追问背景知识、补基础、展开例子或处理临时问题。
 
 ## 记忆
-记忆页用于查看对话章节索引。全览模式会生成实时向量思维导图，章节按摘要相似度自动连接；章节模式可双击跳回主课堂对应位置。
+记忆页用于快速查找长期对话。应用会在后台按批次整理课堂内容，生成章节标题和一句话摘要，不会在每一句对话后阻塞前台回复。
+
+全览模式会生成实时向量思维导图，章节按摘要相似度自动连接；章节模式可双击章节跳回主课堂对应位置。
 
 ## 知识库
 知识库目前可直接读取 `.md` 和 `.txt` 文件。文件摘要会加入课堂上下文，帮助 AI 结合你的材料教学。
 
 ## API 与模型
-在设置页保存 API 模块，可填写服务商、Base URL 和 API Key。模型模块支持自动获取模型，也可以手动输入模型名称。
+API 模块用于保存服务商、Base URL 和 API Key。模型模块支持自动获取模型，也可以手动输入模型名。
+
+模型优先级支持一行一个模型。应用会先调用第一行模型，如果连接失败或接口返回错误，会自动尝试下一行模型。
+
+深度思考模式开启后，会优先使用单独填写的深度思考模型。关闭后，应用只按普通模型优先级调用。
+
+## 多模态图片
+多模态模块用于填写识图或转述模型名称。它可以与普通对话模型不同。主课堂上传照片时会优先调用这个模型，如果不可用，会尝试普通模型链。
+
+## TTS
+TTS 模块用于保存语音服务配置，包括 API Key、Base URL、模型和音色。预设服务商可快速填入常见 Base URL，也可以选择自定义。获取模型按钮会尝试从兼容接口读取模型列表；如果失败，可以手动填写模型名。
+
+当前版本先完成 TTS 配置保存，为后续语音朗读和讲师发声功能预留。
 
 ## 讲师人格
-讲师人格提示词可以自定义，例如教授、工程师、考研老师或更轻松的风格。保存后当前课堂会持续使用该配置。
+讲师人格提示词可以自定义，例如大学教授、企业工程师、考研老师、幽默导师或二次元导师。保存后当前课堂会持续使用该人格。
 
 ## 高效模式
-高效模式会过滤 NSFW 等不适合学习场景的内容，默认开启。
+高效模式用于过滤 NSFW 等不适合学习场景的内容，默认开启。它本质上是健康模式，适合学习、自习和考试场景。
 
 ## 界面与皮肤
-设置页可切换对话方向和皮肤。默认是二次元青蓝色调，也可以选择黑白、跟随系统或单色。只有二次元和单色皮肤支持自定义颜色。
+皮肤模块可切换对话方向和界面色调。默认是二次元青蓝色调，也可以选择黑白、跟随系统或单色。二次元和单色皮肤支持自定义颜色，默认颜色为 `#39C5BB` 和 `#00AEEF`。
 
 ## 多课堂
-主界面滑出二级菜单后可以切换课堂、新建课堂、删除课堂，也可以复制其他课堂配置。
+在主界面从左向右滑出课堂菜单，可以切换课堂、新建课堂、删除课堂，也可以复制其他课堂配置。每个课堂都可以有独立 API、模型、人格、皮肤和知识库配置。
 
 ## 考试工具
-考试不是普通入口。AI 明确要进行考试时，应用会自动进入沉浸式考试界面。题目由前提和问题组成，用户在每个问题后填写答案并提交批改。标记“不会”会自动生成讲解分支。
+考试不是普通入口。AI 明确要进行考试、测试或模拟测验时，应用会自动进入沉浸式考试界面。
+
+题目由“前提”和“问题”组成。用户在每个问题后填写答案并提交批改。标记“不会”后，这道题会自动生成讲解分支，方便考试结束后继续学习。
+
+## 本地保存
+所有课堂、分支、对话、知识库摘要、记忆章节、设置和考试记录都会保存在手机本地。手机重启或应用版本更新后，数据仍会保留。
 """
 
 private val Page = Color(0xFFF3F8FA)
