@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -121,6 +122,9 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -138,7 +142,7 @@ private enum class Tab(val title: String, val icon: ImageVector) {
 }
 
 private data class ChatMessage(val role: String, val text: String)
-private data class BranchClass(val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String)
+private data class BranchClass(val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String, val context: MutableList<ChatMessage> = mutableStateListOf())
 private data class KnowledgeFile(val name: String, val type: String, val chars: Int, val preview: String)
 private data class ConversationChapter(val title: String, val summary: String, val startIndex: Int, val endIndex: Int)
 private data class ExamQuestion(val premise: String, val question: String, val answer: String = "", val unknown: Boolean = false)
@@ -194,6 +198,9 @@ private fun AIClassroomApp() {
     var jumpToMessageIndex by remember { mutableStateOf<Int?>(null) }
     var examSession by remember { mutableStateOf<ExamSession?>(null) }
     var showNewDialog by remember { mutableStateOf(!store.hasSeenReleaseNotes(APP_VERSION)) }
+    var activeBranchIndex by remember { mutableIntStateOf(-1) }
+    var branchInput by remember { mutableStateOf("") }
+    var branchLoading by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var showManualDialog by remember { mutableStateOf(false) }
     var saveNotice by remember { mutableStateOf("所有内容自动保存在本机") }
@@ -264,6 +271,11 @@ private fun AIClassroomApp() {
         return "${room.config.mentorPrompt}\n课堂：${room.name}\n学习内容：${room.topic}\n记忆：$memory\n知识库：$knowledge\n$safety"
     }
 
+    fun branchSystemPrompt(room: Classroom, branch: BranchClass): String {
+        val context = branch.context.joinToString("\n") { "${if (it.role == "user") "用户" else "AI"}：${it.text}" }.take(5000)
+        return systemPrompt(room) + "\n当前处于分支课堂。分支是与主课堂平行的长对话，不会改写主课堂；请只延续本分支。\n分支来源：${branch.source}\n分支创建时的主课堂上下文：\n$context\n分支摘要：${branch.memory}"
+    }
+
     fun scheduleMemoryBuild(room: Classroom, model: String) {
         val lastBuilt = memoryWatermarks.getOrPut(room) { room.chapters.maxOfOrNull { it.endIndex + 1 } ?: 0 }
         if (room.messages.size - lastBuilt < MEMORY_BATCH_MESSAGE_COUNT) return
@@ -308,6 +320,31 @@ private fun AIClassroomApp() {
             isLoading = false
             persist("回复已保存，记忆将在后台整理")
             scheduleMemoryBuild(room, activeModel)
+        }
+    }
+
+    fun sendBranchMessage(branchIndex: Int) {
+        if (branchIndex !in current.branches.indices || branchLoading) return
+        val text = branchInput.trim()
+        if (text.isBlank()) return
+        val room = current
+        val branch = room.branches[branchIndex]
+        branchInput = ""
+        branch.messages.add(ChatMessage("user", filterNsfw(text, room.config.efficientMode)))
+        persist("分支对话已保存")
+        branchLoading = true
+        scope.launch {
+            val assistantIndex = branch.messages.size
+            branch.messages.add(ChatMessage("assistant", ""))
+            var streamed = ""
+            val chatHistory = branch.context.takeLast(BRANCH_CONTEXT_LIMIT) + branch.messages.dropLast(1)
+            val result = callChatStream(room.config.baseUrl, room.config.apiKey, activeModel, branchSystemPrompt(room, branch), chatHistory) { delta ->
+                streamed += delta
+                branch.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(streamed, room.config.efficientMode))
+            }
+            branch.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(result, room.config.efficientMode))
+            branchLoading = false
+            persist("分支回复已保存")
         }
     }
 
@@ -380,18 +417,16 @@ private fun AIClassroomApp() {
                             persist("对话已重写")
                         }
                     }) { index ->
-                        val selected = current.messages.drop(index)
-                        val branchMessages = selected.take(BRANCH_CONTEXT_LIMIT).toMutableStateList()
+                        val selected = current.messages.take(index + 1)
+                        val branchMessages = mutableStateListOf<ChatMessage>()
                         val title = selected.firstOrNull()?.text?.take(18)?.ifBlank { "分支课堂" } ?: "分支课堂"
-                        current.branches.add(BranchClass(title, "${current.name} 第 ${index + 1} 条起", branchMessages, summarize("分支", selected)))
-                        current.memories.add(summarize("分支回写", selected))
-                        persist("分支和记忆已保存")
+                        current.branches.add(BranchClass(title, "${current.name} 第 ${index + 1} 条起", branchMessages, summarize("分支上下文", selected), selected.takeLast(BRANCH_CONTEXT_LIMIT).toMutableStateList()))
+                        activeBranchIndex = current.branches.lastIndex
+                        branchInput = ""
+                        persist("分支已保存")
                         tab = Tab.Branch
                     }
-                    Tab.Branch -> BranchScreen(current.branches) { branch ->
-                        tab = Tab.Class
-                        sendMessage("继续这个分支：${branch.source}\n${branch.messages.joinToString("\n") { it.role + ":" + it.text }}")
-                    }
+                    Tab.Branch -> BranchScreen(current.branches, activeBranchIndex, branchInput, { branchInput = it }, branchLoading, palette, onSelect = { activeBranchIndex = it }, onBack = { activeBranchIndex = -1 }, onSend = { sendBranchMessage(activeBranchIndex) })
                     Tab.Memory -> MemoryScreen(current.chapters, current.messages) { index ->
                         jumpToMessageIndex = index
                         tab = Tab.Class
@@ -930,18 +965,105 @@ private fun DrawPad(strokes: MutableList<DrawStroke>, modifier: Modifier) {
 }
 
 @Composable
-private fun BranchScreen(branches: List<BranchClass>, onContinue: (BranchClass) -> Unit) {
+private fun BranchScreen(
+    branches: List<BranchClass>,
+    activeIndex: Int,
+    input: String,
+    onInput: (String) -> Unit,
+    isLoading: Boolean,
+    palette: AppPalette,
+    onSelect: (Int) -> Unit,
+    onBack: () -> Unit,
+    onSend: () -> Unit
+) {
+    if (activeIndex in branches.indices) {
+        BranchChatScreen(branches[activeIndex], input, onInput, isLoading, palette, onBack, onSend)
+        return
+    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (branches.isEmpty()) item { InfoCard { Text("在主课堂任意消息下开分支。", color = Muted) } }
-        items(branches) { branch ->
+        if (branches.isEmpty()) item { InfoCard { Text("在主课堂任意消息下开分支。分支会作为独立长对话保存，不会改写主课堂。", color = Muted) } }
+        items(branches.indices.toList()) { index ->
+            val branch = branches[index]
             InfoCard {
                 Text(branch.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(branch.source, color = Muted, fontSize = 13.sp)
                 Spacer(Modifier.height(6.dp))
                 MarkdownText(branch.memory)
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = { onContinue(branch) }) { Text("继续分支") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onSelect(index) }) { Text("进入分支") }
+                    OutlinedButton(onClick = { onSelect(index) }) { Text("继续对话 ${branch.messages.size}") }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun BranchChatScreen(
+    branch: BranchClass,
+    input: String,
+    onInput: (String) -> Unit,
+    isLoading: Boolean,
+    palette: AppPalette,
+    onBack: () -> Unit,
+    onSend: () -> Unit
+) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(branch.messages.size) {
+        if (branch.messages.isNotEmpty()) listState.animateScrollToItem(branch.messages.size + 1)
+    }
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            state = listState,
+            contentPadding = PaddingValues(top = 10.dp, bottom = 138.dp, start = 2.dp, end = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item {
+                InfoCard {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(branch.title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        OutlinedButton(onClick = onBack) { Text("分支列表") }
+                    }
+                    Text(branch.source, color = Muted, fontSize = 13.sp)
+                    Spacer(Modifier.height(6.dp))
+                    Text("这是与主课堂平行的支线长对话，主课堂内容不会被改写。", color = Muted, fontSize = 13.sp)
+                }
+            }
+            if (branch.messages.isEmpty()) {
+                item { InfoCard { Text("输入问题后，AI 会基于创建分支时的主课堂上下文继续讲解。", color = Muted) } }
+            }
+            items(branch.messages.size) { i ->
+                SimpleMessageCard(branch.messages[i], palette)
+            }
+            if (isLoading) item { AiThinkingRow(palette) }
+        }
+        ChatInputBar(input, onInput, isLoading, compact = false, palette, onSend, Modifier.align(Alignment.BottomCenter))
+    }
+}
+
+@Composable
+private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette) {
+    if (message.role == "user") {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Column(
+                Modifier
+                    .fillMaxWidth(0.82f)
+                    .background(palette.secondary.copy(alpha = 0.11f).compositeOnWhite(), RoundedCornerShape(10.dp))
+                    .border(1.dp, palette.secondary.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
+                    .padding(12.dp)
+            ) {
+                Text("我", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Spacer(Modifier.height(4.dp))
+                Text(message.text, color = palette.ink, lineHeight = 21.sp)
+            }
+        }
+    } else {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+            Text("AI 分支讲师", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Spacer(Modifier.height(6.dp))
+            MarkdownText(message.text)
         }
     }
 }
@@ -965,12 +1087,7 @@ private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<Cha
         }
         if (visibleChapters.isEmpty()) item { InfoCard { Text("开始对话后会自动生成章节索引。", color = Muted) } }
         if (overview) {
-            items(visibleChapters) { chapter ->
-                InfoCard {
-                    Text(chapter.title, fontWeight = FontWeight.Bold)
-                    Text(chapter.summary, color = Ink, lineHeight = 21.sp)
-                }
-            }
+            item { MemoryMindMap(visibleChapters, onJump) }
         } else {
             items(visibleChapters) { chapter ->
                 Card(
@@ -992,6 +1109,97 @@ private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<Cha
         }
     }
 }
+
+@Composable
+private fun MemoryMindMap(chapters: List<ConversationChapter>, onJump: (Int) -> Unit) {
+    val nodes = chapters.take(18)
+    val links = remember(nodes) { buildChapterLinks(nodes) }
+    val width = 320.dp
+    val height = 420.dp
+    InfoCard {
+        Text("实时向量思维导图", fontWeight = FontWeight.Bold)
+        Text("章节会按摘要关键词相似度自动连接，点击节点可跳回对应对话。", color = Muted, fontSize = 13.sp)
+        Spacer(Modifier.height(10.dp))
+        Box(Modifier.fillMaxWidth().height(height)) {
+            Canvas(Modifier.fillMaxSize()) {
+                val center = Offset(size.width / 2f, size.height / 2f)
+                val radius = size.minDimension * 0.36f
+                val positions = nodes.indices.associateWith { index ->
+                    if (nodes.size == 1) center else Offset(
+                        center.x + cos((index * 2.0 * Math.PI / nodes.size) - Math.PI / 2).toFloat() * radius,
+                        center.y + sin((index * 2.0 * Math.PI / nodes.size) - Math.PI / 2).toFloat() * radius
+                    )
+                }
+                links.forEach { (from, to, weight) ->
+                    val a = positions[from] ?: return@forEach
+                    val b = positions[to] ?: return@forEach
+                    drawLine(Color(0xFF00AEEF).copy(alpha = (0.18f + weight * 0.34f).coerceIn(0.18f, 0.52f)), a, b, strokeWidth = 2.5f + weight * 3f, cap = StrokeCap.Round)
+                }
+                positions.values.forEach { point ->
+                    drawCircle(Color(0xFF39C5BB).copy(alpha = 0.18f), radius = 34f, center = point)
+                    drawCircle(Color(0xFF00AEEF), radius = 12f, center = point)
+                }
+            }
+            nodes.forEachIndexed { index, chapter ->
+                val angle = if (nodes.size == 1) -Math.PI / 2 else (index * 2.0 * Math.PI / nodes.size) - Math.PI / 2
+                val x = 50 + (cos(angle) * 118).roundToInt()
+                val y = 178 + (sin(angle) * 156).roundToInt()
+                Surface(
+                    onClick = { onJump(chapter.startIndex) },
+                    modifier = Modifier
+                        .width(116.dp)
+                        .offset(x.dp, y.dp),
+                    shape = RoundedCornerShape(9.dp),
+                    color = Color.White,
+                    shadowElevation = 2.dp,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00AEEF).copy(alpha = 0.2f))
+                ) {
+                    Column(Modifier.padding(8.dp)) {
+                        Text(chapter.title, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(chapter.summary, color = Muted, fontSize = 11.sp, lineHeight = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+        if (nodes.size < chapters.size) Text("已显示最近 ${nodes.size} 个章节。", color = Muted, fontSize = 12.sp)
+    }
+}
+
+private data class ChapterLink(val from: Int, val to: Int, val weight: Float)
+
+private fun buildChapterLinks(chapters: List<ConversationChapter>): List<ChapterLink> {
+    val vectors = chapters.map { chapterVector(it) }
+    val links = mutableListOf<ChapterLink>()
+    for (i in chapters.indices) {
+        if (i < chapters.lastIndex) links.add(ChapterLink(i, i + 1, 0.35f))
+        val best = chapters.indices.filter { it != i && kotlin.math.abs(it - i) > 1 }
+            .map { it to cosineSimilarity(vectors[i], vectors[it]) }
+            .filter { it.second > 0.08f }
+            .maxByOrNull { it.second }
+        best?.let { (target, score) ->
+            if (i < target) links.add(ChapterLink(i, target, score.coerceIn(0.12f, 1f)))
+        }
+    }
+    return links.distinctBy { minOf(it.from, it.to) to maxOf(it.from, it.to) }.take(32)
+}
+
+private fun chapterVector(chapter: ConversationChapter): Map<String, Float> =
+    Regex("[A-Za-z0-9_]+|[\\u4e00-\\u9fa5]{2,}").findAll(chapter.title + " " + chapter.summary)
+        .map { it.value.lowercase() }
+        .filter { it.length > 1 && it !in COMMON_MEMORY_WORDS }
+        .groupingBy { it }
+        .eachCount()
+        .mapValues { it.value.toFloat() }
+
+private fun cosineSimilarity(a: Map<String, Float>, b: Map<String, Float>): Float {
+    if (a.isEmpty() || b.isEmpty()) return 0f
+    val dot = a.entries.sumOf { (key, value) -> (value * (b[key] ?: 0f)).toDouble() }
+    val normA = kotlin.math.sqrt(a.values.sumOf { (it * it).toDouble() })
+    val normB = kotlin.math.sqrt(b.values.sumOf { (it * it).toDouble() })
+    return if (normA == 0.0 || normB == 0.0) 0f else (dot / (normA * normB)).toFloat()
+}
+
+private val COMMON_MEMORY_WORDS = setOf("用户", "课堂", "内容", "学习", "总结", "问题", "讲解", "the", "and", "for", "with", "this", "that")
 
 @Composable
 private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Unit) {
@@ -1453,6 +1661,7 @@ private fun Classroom.toJson() = JSONObject().apply {
     put("branches", JSONArray(branches.map { branch ->
         JSONObject().put("title", branch.title).put("source", branch.source).put("memory", branch.memory)
             .put("messages", JSONArray(branch.messages.map { JSONObject().put("role", it.role).put("text", it.text) }))
+            .put("context", JSONArray(branch.context.map { JSONObject().put("role", it.role).put("text", it.text) }))
     }))
     put("memories", JSONArray(memories))
     put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("summary", it.summary).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
@@ -1461,7 +1670,11 @@ private fun Classroom.toJson() = JSONObject().apply {
 }
 
 private fun JSONArray?.toMessages(): List<ChatMessage> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ChatMessage(item.optString("role"), item.optString("text")) } }
-private fun JSONArray?.toBranches(): List<BranchClass> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> BranchClass(item.optString("title"), item.optString("source"), item.optJSONArray("messages").toMessages().toMutableStateList(), item.optString("memory")) } }
+private fun JSONArray?.toBranches(): List<BranchClass> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item ->
+    val messages = item.optJSONArray("messages").toMessages().toMutableStateList()
+    val context = item.optJSONArray("context").toMessages().ifEmpty { messages.take(BRANCH_CONTEXT_LIMIT) }.toMutableStateList()
+    BranchClass(item.optString("title"), item.optString("source"), messages, item.optString("memory"), context)
+} }
 private fun JSONArray?.toStrings(): List<String> = if (this == null) emptyList() else List(length()) { optString(it) }
 private fun JSONArray?.toChapters(): List<ConversationChapter> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ConversationChapter(item.optString("title"), item.optString("summary"), item.optInt("startIndex"), item.optInt("endIndex")) } }
 private fun JSONArray?.toFiles(): List<KnowledgeFile> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> KnowledgeFile(item.optString("name"), item.optString("type"), item.optInt("chars"), item.optString("preview")) } }
@@ -1774,7 +1987,7 @@ private fun Color.compositeOnWhite(): Color = Color(
     alpha = 1f
 )
 
-private const val APP_VERSION = "1.9.0"
+private const val APP_VERSION = "1.10.0"
 
 private val THEME_PRESETS = listOf(
     ThemePreset("ocean", "二次元", "清透青绿、亮蓝点缀", 0xFF39C5BB, 0xFF00AEEF),
@@ -1804,10 +2017,10 @@ private const val USER_MANUAL_TEXT = """
 在主课堂输入学习目标或问题，AI 会围绕当前课堂持续教学。课堂内容、对话、章节索引和摘要会保存在本地。
 
 ## 分支课堂
-在任意对话下选择开分支，可以从那一段内容继续追问。分支不会打断主课堂，重要内容会回写到记忆摘要。
+在任意对话下选择开分支，会冻结当时的主课堂上下文，并开启一条与主课堂平行的长对话。分支中的后续内容只保存在分支里，不会复制或改写主课堂。
 
 ## 记忆
-记忆页用于查看对话章节索引。全览模式会显示每段一句话摘要，章节模式可双击跳回主课堂对应位置。
+记忆页用于查看对话章节索引。全览模式会生成实时向量思维导图，章节按摘要相似度自动连接；章节模式可双击跳回主课堂对应位置。
 
 ## 知识库
 知识库目前可直接读取 `.md` 和 `.txt` 文件。文件摘要会加入课堂上下文，帮助 AI 结合你的材料教学。
