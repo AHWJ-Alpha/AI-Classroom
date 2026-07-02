@@ -69,6 +69,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -609,7 +610,7 @@ private fun ClassroomMenu(
     onDelete: (Int) -> Unit
 ) {
     Row(Modifier.fillMaxSize()) {
-        Surface(Modifier.fillMaxHeight().fillMaxWidth(0.78f), color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(topEnd = 14.dp, bottomEnd = 14.dp)) {
+        Surface(Modifier.fillMaxHeight().fillMaxWidth(0.78f), color = MaterialTheme.colorScheme.surface, shape = AppShapes.menu) {
             LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), contentPadding = PaddingValues(vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {
                     Text("课堂", fontWeight = FontWeight.Bold, fontSize = 20.sp)
@@ -623,7 +624,7 @@ private fun ClassroomMenu(
                 }
                 items(classes.indices.toList()) { i ->
                     val room = classes[i]
-                    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(if (i == classIndex) palette.secondary.copy(alpha = 0.10f).compositeOnWhite() else Color(0xFFF7F8FA))) {
+                    Card(Modifier.fillMaxWidth(), shape = AppShapes.card, colors = CardDefaults.cardColors(if (i == classIndex) palette.secondary.copy(alpha = 0.10f).compositeOnWhite() else Color(0xFFF7F8FA))) {
                         Column(Modifier.padding(10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
@@ -760,52 +761,53 @@ private fun ChatInputBar(
     Surface(
         modifier = modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 6.dp),
         color = palette.surface,
-        shape = RoundedCornerShape(12.dp),
+        shape = AppShapes.panel,
         shadowElevation = 3.dp
     ) {
-        Box(Modifier.fillMaxWidth().padding(8.dp)) {
-            OutlinedTextField(
-                input,
-                onInput,
-                Modifier.fillMaxWidth().padding(end = if (compact) 104.dp else 132.dp),
-                placeholder = { Text("输入学习目标或问题") },
-                minLines = if (compact) 1 else 3,
-                maxLines = if (compact) 1 else 5,
-                singleLine = compact,
-                shape = RoundedCornerShape(10.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = palette.secondary,
-                    unfocusedBorderColor = palette.secondary.copy(alpha = 0.28f),
-                    cursorColor = palette.secondary,
-                    focusedContainerColor = palette.page.copy(alpha = 0.45f),
-                    unfocusedContainerColor = palette.page.copy(alpha = 0.35f)
+        Row(
+            Modifier.fillMaxWidth().padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.Bottom
+        ) {
+            IconButton(
+                onClick = onImage,
+                enabled = !isLoading,
+                modifier = Modifier.size(44.dp),
+                colors = IconButtonDefaults.iconButtonColors(
+                    containerColor = Color.Transparent,
+                    contentColor = palette.secondary,
+                    disabledContentColor = palette.secondary.copy(alpha = 0.35f)
                 )
-            )
-            Row(Modifier.align(Alignment.BottomEnd), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Surface(
-                    onClick = onImage,
-                    enabled = !isLoading,
-                    shape = RoundedCornerShape(10.dp),
-                    color = palette.secondary.copy(alpha = 0.12f).compositeOnWhite(),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, palette.secondary.copy(alpha = 0.24f)),
-                    modifier = Modifier.size(42.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Image, contentDescription = null, tint = palette.secondary, modifier = Modifier.size(21.dp))
-                    }
-                }
+            ) {
+                Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(24.dp))
+            }
+            Box(Modifier.weight(1f)) {
+                OutlinedTextField(
+                    input,
+                    onInput,
+                    Modifier.fillMaxWidth().padding(end = if (compact) 48.dp else 58.dp),
+                    placeholder = { Text("输入学习目标或问题") },
+                    minLines = if (compact) 1 else 3,
+                    maxLines = if (compact) 1 else 5,
+                    singleLine = compact,
+                    shape = AppShapes.control,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = palette.secondary,
+                        unfocusedBorderColor = palette.secondary.copy(alpha = 0.28f),
+                        cursorColor = palette.secondary,
+                        focusedContainerColor = palette.page.copy(alpha = 0.45f),
+                        unfocusedContainerColor = palette.page.copy(alpha = 0.35f)
+                    )
+                )
                 Button(
                     onClick = onSend,
                     enabled = !isLoading,
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = if (compact) 10.dp else 12.dp, vertical = 10.dp),
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 5.dp, bottom = 5.dp).size(if (compact) 40.dp else 44.dp),
+                    shape = AppShapes.button,
+                    contentPadding = PaddingValues(0.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = palette.secondary, contentColor = Color.White)
                 ) {
                     Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
-                    if (!compact) {
-                        Spacer(Modifier.width(4.dp))
-                        Text(if (isLoading) "生成中" else "发送")
-                    }
                 }
             }
         }
@@ -831,8 +833,8 @@ private fun MessageCard(
                 Modifier
                     .fillMaxWidth(0.82f)
                     .then(actionModifier)
-                    .background(palette.secondary.copy(alpha = 0.13f).compositeOnWhite(), RoundedCornerShape(10.dp))
-                    .border(1.dp, palette.secondary.copy(alpha = 0.24f), RoundedCornerShape(10.dp))
+                    .background(palette.secondary.copy(alpha = 0.13f).compositeOnWhite(), AppShapes.card)
+                    .border(1.dp, palette.secondary.copy(alpha = 0.24f), AppShapes.card)
                     .padding(12.dp)
             ) {
                 Text("我", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -1165,8 +1167,8 @@ private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette) {
             Column(
                 Modifier
                     .fillMaxWidth(0.82f)
-                    .background(palette.secondary.copy(alpha = 0.11f).compositeOnWhite(), RoundedCornerShape(10.dp))
-                    .border(1.dp, palette.secondary.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
+                    .background(palette.secondary.copy(alpha = 0.11f).compositeOnWhite(), AppShapes.card)
+                    .border(1.dp, palette.secondary.copy(alpha = 0.2f), AppShapes.card)
                     .padding(12.dp)
             ) {
                 Text("我", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -1718,7 +1720,7 @@ private fun AppFilterChip(selected: Boolean, onClick: () -> Unit, label: @Compos
 private fun ThemePreview(primaryValue: Long, secondaryValue: Long) {
     val primary = colorFromLong(primaryValue)
     val secondary = colorFromLong(secondaryValue)
-    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(primary.copy(alpha = 0.08f).compositeOnWhite()), elevation = CardDefaults.cardElevation(0.dp)) {
+    Card(Modifier.fillMaxWidth(), shape = AppShapes.card, colors = CardDefaults.cardColors(primary.copy(alpha = 0.08f).compositeOnWhite()), elevation = CardDefaults.cardElevation(0.dp)) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(34.dp).background(primary, RoundedCornerShape(8.dp)))
@@ -1732,8 +1734,8 @@ private fun ThemePreview(primaryValue: Long, secondaryValue: Long) {
             }
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Surface(color = primary, shape = RoundedCornerShape(8.dp)) { Text("主操作", color = Color.White, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) }
-                Surface(color = secondary.copy(alpha = 0.14f).compositeOnWhite(), shape = RoundedCornerShape(8.dp)) { Text("辅助强调", color = secondary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) }
+                Surface(color = primary, shape = AppShapes.button) { Text("主操作", color = Color.White, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) }
+                Surface(color = secondary.copy(alpha = 0.14f).compositeOnWhite(), shape = AppShapes.button) { Text("辅助强调", color = secondary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) }
             }
         }
     }
@@ -1820,7 +1822,7 @@ private fun buildInlineMarkdown(line: String) = buildAnnotatedString {
 
 @Composable
 private fun InfoCard(content: @Composable ColumnScope.() -> Unit) {
-    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(1.dp)) {
+    Card(Modifier.fillMaxWidth(), shape = AppShapes.card, colors = CardDefaults.cardColors(MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(1.dp)) {
         Column(Modifier.padding(12.dp), content = content)
     }
 }
@@ -2334,7 +2336,15 @@ private fun Color.compositeOnWhite(): Color = Color(
     alpha = 1f
 )
 
-private const val APP_VERSION = "2.1"
+private const val APP_VERSION = "2.1.1"
+
+private object AppShapes {
+    val panel = RoundedCornerShape(22.dp)
+    val card = RoundedCornerShape(18.dp)
+    val control = RoundedCornerShape(18.dp)
+    val button = RoundedCornerShape(16.dp)
+    val menu = RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp)
+}
 
 private val THEME_PRESETS = listOf(
     ThemePreset("ocean", "二次元", "清透青绿、亮蓝点缀", 0xFF39C5BB, 0xFF00AEEF),
@@ -2344,20 +2354,19 @@ private val THEME_PRESETS = listOf(
 )
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 2.1
+# AI Classroom 2.1.1
 
 # 这次更新
 
-- 皮肤系统重新接入全局界面，导航栏、按钮、输入框、筛选项和卡片会统一跟随当前皮肤。
-- 设置页改为“最多展开一个模块”，保存后自动收起当前模块。
-- 模型模块、多模态模块、TTS 模块都拥有各自的 Base URL、API Key 和模型配置。
-- 多模态图片分析会优先使用多模态模块的独立 API 配置。
-- 主课堂图片按钮位置已重排，不再压在输入框边线上。
+- 主课堂图片按钮去掉外框，移动到输入框左侧，输入区重新留白避免压线。
+- 发送按钮压缩为更轻量的圆角图标按钮，输入区更适合手机单手操作。
+- 应用核心面板、输入框和按钮统一为更大的圆角风格。
+- README、首次打开弹窗和版本号同步到 2.1.1。
 
 # 延续优化
 
 - 默认皮肤仍为 #39C5BB 与 #00AEEF。
-- 使用手册已同步 2.1 设置逻辑。
+- 继续保留 2.1 的独立模型、多模态和 TTS 配置逻辑。
 - 所有课堂、分支、设置、知识库、记忆和考试记录继续保存在本机。
 """
 private const val USER_MANUAL_TEXT = """
