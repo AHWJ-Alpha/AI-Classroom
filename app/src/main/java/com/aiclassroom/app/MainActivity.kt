@@ -57,6 +57,8 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.South
 import androidx.compose.material.icons.filled.North
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Quiz
 import androidx.compose.material.icons.filled.RecordVoiceOver
@@ -162,11 +164,15 @@ private data class ThemePreset(val mode: String, val title: String, val subtitle
 private data class AppPalette(
     val page: Color,
     val surface: Color,
+    val card: Color,
     val ink: Color,
     val muted: Color,
-    val primary: Color,
-    val secondary: Color,
-    val accent: Color
+    val button: Color,
+    val onButton: Color,
+    val outline: Color,
+    val primary: Color = button,
+    val secondary: Color = button,
+    val accent: Color = button
 )
 private data class ClassroomConfig(
     val provider: String = "OpenAI",
@@ -190,6 +196,7 @@ private data class ClassroomConfig(
     val efficientMode: Boolean = true,
     val reverseConversation: Boolean = false,
     val themeMode: String = "ocean",
+    val interfaceMode: String = "system",
     val primaryColor: Long = 0xFF39C5BB,
     val secondaryColor: Long = 0xFF00AEEF
 ) {
@@ -252,7 +259,8 @@ private fun AIClassroomApp() {
     val current = classes[classIndex]
     val activeModel = current.config.primaryModel()
     val activeModelChain = current.config.orderedModels()
-    val palette = remember(current.config) { paletteFor(current.config) }
+    val systemDark = (LocalConfiguration.current.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    val palette = remember(current.config, systemDark) { paletteFor(current.config, systemDark) }
 
     LaunchedEffect(Unit) {
         if (store.canShowUpdateToday()) {
@@ -421,17 +429,17 @@ private fun AIClassroomApp() {
 
     MaterialTheme(
         colorScheme = androidx.compose.material3.lightColorScheme(
-            primary = palette.secondary,
-            secondary = palette.primary,
-            tertiary = palette.accent,
+            primary = palette.button,
+            secondary = palette.button,
+            tertiary = palette.button,
             background = palette.page,
             surface = palette.surface,
-            surfaceVariant = palette.primary.copy(alpha = 0.10f).compositeOnWhite(),
-            primaryContainer = palette.secondary.copy(alpha = 0.16f).compositeOnWhite(),
-            secondaryContainer = palette.primary.copy(alpha = 0.14f).compositeOnWhite(),
-            outline = palette.secondary.copy(alpha = 0.34f),
-            onPrimary = Color.White,
-            onSecondary = Color.White,
+            surfaceVariant = palette.card,
+            primaryContainer = palette.button.copy(alpha = 0.14f).compositeOn(palette.surface),
+            secondaryContainer = palette.button.copy(alpha = 0.10f).compositeOn(palette.surface),
+            outline = palette.outline,
+            onPrimary = palette.onButton,
+            onSecondary = palette.onButton,
             onBackground = palette.ink,
             onSurface = palette.ink,
             onSurfaceVariant = palette.muted
@@ -447,7 +455,7 @@ private fun AIClassroomApp() {
                         Text("${current.name} · ${current.topic}", color = palette.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 },
-                actions = { TextButton(onClick = { classMenuOpen = !classMenuOpen }) { Text("课堂", color = palette.secondary) } },
+                actions = { TextButton(onClick = { classMenuOpen = !classMenuOpen }) { Text("课堂", color = palette.button) } },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.page)
             )
             }
@@ -462,9 +470,9 @@ private fun AIClassroomApp() {
                         icon = { Icon(item.icon, contentDescription = item.title) },
                         label = { Text(item.title) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = palette.secondary,
-                            selectedTextColor = palette.secondary,
-                            indicatorColor = palette.secondary.copy(alpha = 0.13f).compositeOnWhite(),
+                            selectedIconColor = palette.button,
+                            selectedTextColor = palette.button,
+                            indicatorColor = palette.button.copy(alpha = 0.13f).compositeOn(palette.surface),
                             unselectedIconColor = palette.muted,
                             unselectedTextColor = palette.muted
                         )
@@ -546,11 +554,12 @@ private fun AIClassroomApp() {
                     )
                 }
                 if (tab == Tab.Class) {
-                    ChromeToggleButton(
+                    FloatingIconAction(
+                        icon = if (chromeVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                         visible = chromeVisible,
                         palette = palette,
                         onClick = { chromeVisible = !chromeVisible },
-                        modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 8.dp)
+                        modifier = Modifier.align(Alignment.TopEnd).padding(top = 28.dp, end = 8.dp)
                     )
                 }
                 AnimatedVisibility(
@@ -624,7 +633,7 @@ private fun ClassroomMenu(
                 }
                 items(classes.indices.toList()) { i ->
                     val room = classes[i]
-                    Card(Modifier.fillMaxWidth(), shape = AppShapes.card, colors = CardDefaults.cardColors(if (i == classIndex) palette.secondary.copy(alpha = 0.10f).compositeOnWhite() else Color(0xFFF7F8FA))) {
+                    Card(Modifier.fillMaxWidth(), shape = AppShapes.card, colors = CardDefaults.cardColors(if (i == classIndex) palette.button.copy(alpha = 0.10f).compositeOn(palette.surface) else palette.card)) {
                         Column(Modifier.padding(10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
@@ -673,7 +682,12 @@ private fun ClassScreen(
     val lastItemIndex = room.messages.size + 1
     val bottomIndex = if (reverseConversation) 0 else lastItemIndex
     val topIndex = if (reverseConversation) lastItemIndex else 0
-    val isAtBottom by remember { derivedStateOf { listState.firstVisibleItemIndex == bottomIndex } }
+    val isAtBottom by remember {
+        derivedStateOf {
+            val visible = listState.layoutInfo.visibleItemsInfo
+            visible.any { it.index == bottomIndex } || listState.firstVisibleItemIndex == bottomIndex
+        }
+    }
     val compactInput by remember { derivedStateOf { !isAtBottom } }
     LaunchedEffect(room.messages.size) {
         if (room.messages.isNotEmpty()) listState.animateScrollToItem(bottomIndex)
@@ -707,15 +721,13 @@ private fun ClassScreen(
             onImage = onImage,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
-        Button(
+        FloatingIconAction(
+            icon = if (isAtBottom) Icons.Default.North else Icons.Default.South,
+            visible = isAtBottom,
+            palette = palette,
             onClick = { scope.launch { if (isAtBottom) listState.animateScrollToItem(topIndex) else listState.animateScrollToItem(bottomIndex) } },
             modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = if (compactInput) 122.dp else 188.dp),
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp)
-        ) {
-            Icon(if (isAtBottom) Icons.Default.North else Icons.Default.South, null, Modifier.size(18.dp))
-            Spacer(Modifier.width(4.dp))
-            Text(if (isAtBottom) "开头" else "底部")
-        }
+        )
         rewriteTarget?.let { target ->
             RewriteDialog(
                 initial = target.second,
@@ -730,19 +742,17 @@ private fun ClassScreen(
 }
 
 @Composable
-private fun ChromeToggleButton(visible: Boolean, palette: AppPalette, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun FloatingIconAction(icon: ImageVector, visible: Boolean, palette: AppPalette, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
         onClick = onClick,
-        modifier = modifier,
-        color = palette.secondary.copy(alpha = 0.14f).compositeOnWhite(),
+        modifier = modifier.size(46.dp),
+        color = palette.surface,
         shape = RoundedCornerShape(999.dp),
-        shadowElevation = 2.dp,
-        border = androidx.compose.foundation.BorderStroke(1.dp, palette.secondary.copy(alpha = 0.22f))
+        shadowElevation = 3.dp,
+        border = androidx.compose.foundation.BorderStroke(1.dp, palette.outline)
     ) {
-        Row(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Tune, contentDescription = null, tint = palette.secondary, modifier = Modifier.size(17.dp))
-            Spacer(Modifier.width(5.dp))
-            Text(if (visible) "隐藏导航" else "显示导航", color = palette.secondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Box(contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, tint = palette.button, modifier = Modifier.size(22.dp))
         }
     }
 }
@@ -775,8 +785,8 @@ private fun ChatInputBar(
                 modifier = Modifier.size(44.dp),
                 colors = IconButtonDefaults.iconButtonColors(
                     containerColor = Color.Transparent,
-                    contentColor = palette.secondary,
-                    disabledContentColor = palette.secondary.copy(alpha = 0.35f)
+                    contentColor = palette.button,
+                    disabledContentColor = palette.button.copy(alpha = 0.35f)
                 )
             ) {
                 Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(24.dp))
@@ -792,11 +802,11 @@ private fun ChatInputBar(
                     singleLine = compact,
                     shape = AppShapes.control,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = palette.secondary,
-                        unfocusedBorderColor = palette.secondary.copy(alpha = 0.28f),
-                        cursorColor = palette.secondary,
-                        focusedContainerColor = palette.page.copy(alpha = 0.45f),
-                        unfocusedContainerColor = palette.page.copy(alpha = 0.35f)
+                        focusedBorderColor = palette.button,
+                        unfocusedBorderColor = palette.outline,
+                        cursorColor = palette.button,
+                        focusedContainerColor = palette.card,
+                        unfocusedContainerColor = palette.card
                     )
                 )
                 Button(
@@ -805,7 +815,7 @@ private fun ChatInputBar(
                     modifier = Modifier.align(Alignment.BottomEnd).padding(end = 5.dp, bottom = 5.dp).size(if (compact) 40.dp else 44.dp),
                     shape = AppShapes.button,
                     contentPadding = PaddingValues(0.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = palette.secondary, contentColor = Color.White)
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = palette.onButton)
                 ) {
                     Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                 }
@@ -833,8 +843,8 @@ private fun MessageCard(
                 Modifier
                     .fillMaxWidth(0.82f)
                     .then(actionModifier)
-                    .background(palette.secondary.copy(alpha = 0.13f).compositeOnWhite(), AppShapes.card)
-                    .border(1.dp, palette.secondary.copy(alpha = 0.24f), AppShapes.card)
+                    .background(palette.card, AppShapes.card)
+                    .border(1.dp, palette.outline, AppShapes.card)
                     .padding(12.dp)
             ) {
                 Text("我", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -1167,8 +1177,8 @@ private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette) {
             Column(
                 Modifier
                     .fillMaxWidth(0.82f)
-                    .background(palette.secondary.copy(alpha = 0.11f).compositeOnWhite(), AppShapes.card)
-                    .border(1.dp, palette.secondary.copy(alpha = 0.2f), AppShapes.card)
+                    .background(palette.card, AppShapes.card)
+                    .border(1.dp, palette.outline, AppShapes.card)
                     .padding(12.dp)
             ) {
                 Text("我", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -1369,14 +1379,13 @@ private fun ModelScreen(
     var mentorPrompt by remember(config.mentorPrompt) { mutableStateOf(config.mentorPrompt) }
     var efficientMode by remember(config.efficientMode) { mutableStateOf(config.efficientMode) }
     var reverseConversation by remember(config.reverseConversation) { mutableStateOf(config.reverseConversation) }
-    var themeMode by remember(config.themeMode) { mutableStateOf(config.themeMode) }
+    var themeMode by remember(config.themeMode) { mutableStateOf(normalizeThemeMode(config.themeMode)) }
+    var interfaceMode by remember(config.interfaceMode) { mutableStateOf(normalizeInterfaceMode(config.interfaceMode)) }
     var primaryColor by remember(config.primaryColor) { mutableStateOf(config.primaryColor) }
     var secondaryColor by remember(config.secondaryColor) { mutableStateOf(config.secondaryColor) }
     var primaryHex by remember(config.primaryColor) { mutableStateOf(argbToHex(config.primaryColor)) }
-    var secondaryHex by remember(config.secondaryColor) { mutableStateOf(argbToHex(config.secondaryColor)) }
-    val canCustomizeColors = themeMode == "ocean" || themeMode == "single"
+    val colorSwatches = listOf(0xFF39C5BB, 0xFF00AEEF, 0xFF3B82F6, 0xFF6366F1, 0xFF8B5CF6, 0xFFEC4899, 0xFFEF4444, 0xFFF97316, 0xFF22C55E, 0xFF111827)
     val primaryValid = parseHexColor(primaryHex) != null
-    val secondaryValid = parseHexColor(secondaryHex) != null
     val scope = rememberCoroutineScope()
     var expandedModule by remember { mutableStateOf<String?>("model") }
     var visionStatus by remember { mutableStateOf("未获取识图模型") }
@@ -1528,26 +1537,43 @@ private fun ModelScreen(
                     Switch(reverseConversation, { reverseConversation = it })
                 }
                 Spacer(Modifier.height(10.dp))
-                Text("皮肤风格", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("按钮皮肤", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    THEME_PRESETS.forEach { preset ->
-                        ThemePresetChip(
-                            preset = preset,
-                            selected = themeMode == preset.mode,
-                            onClick = {
-                                themeMode = preset.mode
-                                primaryColor = preset.primary
-                                secondaryColor = preset.secondary
-                                primaryHex = argbToHex(preset.primary)
-                                secondaryHex = argbToHex(preset.secondary)
-                            }
-                        )
+                    AppFilterChip(themeMode == "ocean", {
+                        themeMode = "ocean"
+                        primaryColor = 0xFF39C5BB
+                        secondaryColor = 0xFF00AEEF
+                        primaryHex = argbToHex(primaryColor)
+                    }) { Text("二次元") }
+                    AppFilterChip(themeMode == "custom", {
+                        themeMode = "custom"
+                        primaryHex = argbToHex(primaryColor)
+                    }) { Text("自定义") }
+                }
+                Spacer(Modifier.height(10.dp))
+                Text("界面明暗", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("system" to "自动", "light" to "白色", "dark" to "黑色").forEach { option ->
+                        AppFilterChip(interfaceMode == option.first, { interfaceMode = option.first }) { Text(option.second) }
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                if (canCustomizeColors) {
-                    ThemePreview(primaryColor, secondaryColor)
+                if (themeMode == "custom") {
+                    ButtonColorPreview(primaryColor)
+                    Spacer(Modifier.height(10.dp))
+                    Text("调色盘", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(6.dp))
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        colorSwatches.forEach { swatch ->
+                            ColorSwatch(swatch, primaryColor == swatch) {
+                                primaryColor = swatch
+                                secondaryColor = swatch
+                                primaryHex = argbToHex(swatch)
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(10.dp))
                     OutlinedTextField(
                         primaryHex,
@@ -1555,61 +1581,43 @@ private fun ModelScreen(
                             primaryHex = it
                             parseHexColor(it)?.let { color ->
                                 primaryColor = color
-                                if (themeMode == "single") secondaryColor = color
+                                secondaryColor = color
                             }
                         },
                         Modifier.fillMaxWidth(),
-                        label = { Text(if (themeMode == "single") "单色 Hex" else "主色 Hex") },
+                        label = { Text("按钮颜色 Hex") },
                         singleLine = true,
                         isError = !primaryValid
                     )
                     if (!primaryValid) Text("请输入 #RRGGBB 或 #AARRGGBB", color = Color(0xFFB42318), fontSize = 12.sp)
-                    if (themeMode == "ocean") {
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            secondaryHex,
-                            {
-                                secondaryHex = it
-                                parseHexColor(it)?.let { color -> secondaryColor = color }
-                            },
-                            Modifier.fillMaxWidth(),
-                            label = { Text("辅色 Hex") },
-                            singleLine = true,
-                            isError = !secondaryValid
-                        )
-                        if (!secondaryValid) Text("请输入 #RRGGBB 或 #AARRGGBB", color = Color(0xFFB42318), fontSize = 12.sp)
-                    }
                     Spacer(Modifier.height(8.dp))
-                    Text("二次元可自定义主色和辅色；单色只使用一个颜色生成界面层次。", color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+                    Text("自定义颜色只应用到按钮和可点击强调，不再染色背景、卡片或正文。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, lineHeight = 18.sp)
+                } else {
+                    ButtonColorPreview(0xFF39C5BB)
+                    Spacer(Modifier.height(8.dp))
+                    Text("二次元按钮色固定为 #39C5BB，避免旧自定义值导致颜色失效。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, lineHeight = 18.sp)
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = {
-                        val ocean = THEME_PRESETS.first()
-                        themeMode = ocean.mode
-                        primaryColor = ocean.primary
-                        secondaryColor = ocean.secondary
-                        primaryHex = argbToHex(ocean.primary)
-                        secondaryHex = argbToHex(ocean.secondary)
+                        themeMode = "ocean"
+                        primaryColor = 0xFF39C5BB
+                        secondaryColor = 0xFF00AEEF
+                        primaryHex = argbToHex(primaryColor)
                     }) { Text("恢复二次元默认") }
                     Button(
                         onClick = {
-                            val cleanPrimary = parseHexColor(primaryHex) ?: primaryColor
-                            val cleanSecondary = if (themeMode == "single") cleanPrimary else parseHexColor(secondaryHex) ?: secondaryColor
+                            val cleanThemeMode = normalizeThemeMode(themeMode)
+                            val cleanPrimary = if (cleanThemeMode == "ocean") 0xFF39C5BB else parseHexColor(primaryHex) ?: primaryColor
+                            val cleanSecondary = if (cleanThemeMode == "ocean") 0xFF00AEEF else cleanPrimary
                             primaryColor = cleanPrimary
                             secondaryColor = cleanSecondary
                             primaryHex = argbToHex(cleanPrimary)
-                            secondaryHex = argbToHex(cleanSecondary)
-                            val cleanThemeMode = when {
-                                themeMode == "mono" || themeMode == "system" || themeMode == "ocean" -> themeMode
-                                cleanPrimary == cleanSecondary -> "single"
-                                else -> "ocean"
-                            }
                             themeMode = cleanThemeMode
-                            onConfig(config.copy(reverseConversation = reverseConversation, themeMode = cleanThemeMode, primaryColor = cleanPrimary, secondaryColor = cleanSecondary))
+                            onConfig(config.copy(reverseConversation = reverseConversation, themeMode = cleanThemeMode, interfaceMode = normalizeInterfaceMode(interfaceMode), primaryColor = cleanPrimary, secondaryColor = cleanSecondary))
                             expandedModule = null
                         },
-                        enabled = primaryValid && secondaryValid
+                        enabled = themeMode == "ocean" || primaryValid
                     ) {
                         Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
@@ -1652,27 +1660,19 @@ private fun ModelScreen(
 }
 
 @Composable
-private fun ThemePresetChip(preset: ThemePreset, selected: Boolean, onClick: () -> Unit) {
-    val primary = colorFromLong(preset.primary)
-    val secondary = colorFromLong(preset.secondary)
-    Card(
+private fun ColorSwatch(value: Long, selected: Boolean, onClick: () -> Unit) {
+    val color = colorFromLong(value)
+    Surface(
         onClick = onClick,
-        modifier = Modifier.width(178.dp).height(96.dp),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(if (selected) primary.copy(alpha = 0.13f).compositeOnWhite() else MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(if (selected) 3.dp else 1.dp)
+        modifier = Modifier.size(42.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = color,
+        border = androidx.compose.foundation.BorderStroke(if (selected) 3.dp else 1.dp, if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline)
     ) {
-        Column(Modifier.fillMaxSize().padding(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(18.dp).background(primary, RoundedCornerShape(5.dp)))
-                Spacer(Modifier.width(6.dp))
-                Box(Modifier.size(18.dp).background(secondary, RoundedCornerShape(5.dp)))
-                Spacer(Modifier.width(8.dp))
-                Text(preset.title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (selected) Icon(Icons.Default.Check, null, tint = primary, modifier = Modifier.size(18.dp)) else Spacer(Modifier.size(18.dp))
+        if (selected) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Check, null, tint = if (color.luminanceValue() > 0.58f) Color.Black else Color.White, modifier = Modifier.size(18.dp))
             }
-            Spacer(Modifier.height(6.dp))
-            Text(preset.subtitle, color = Muted, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -1717,25 +1717,16 @@ private fun AppFilterChip(selected: Boolean, onClick: () -> Unit, label: @Compos
 
 
 @Composable
-private fun ThemePreview(primaryValue: Long, secondaryValue: Long) {
-    val primary = colorFromLong(primaryValue)
-    val secondary = colorFromLong(secondaryValue)
-    Card(Modifier.fillMaxWidth(), shape = AppShapes.card, colors = CardDefaults.cardColors(primary.copy(alpha = 0.08f).compositeOnWhite()), elevation = CardDefaults.cardElevation(0.dp)) {
-        Column(Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(34.dp).background(primary, RoundedCornerShape(8.dp)))
-                Spacer(Modifier.width(8.dp))
-                Box(Modifier.size(34.dp).background(secondary, RoundedCornerShape(8.dp)))
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("当前预览", fontWeight = FontWeight.Bold)
-                    Text("${argbToHex(primaryValue)} / ${argbToHex(secondaryValue)}", color = Muted, fontSize = 12.sp)
-                }
-            }
-            Spacer(Modifier.height(10.dp))
+private fun ButtonColorPreview(buttonValue: Long) {
+    val button = colorFromLong(buttonValue)
+    val onButton = if (button.luminanceValue() > 0.58f) Color(0xFF062526) else Color.White
+    Card(Modifier.fillMaxWidth(), shape = AppShapes.card, colors = CardDefaults.cardColors(MaterialTheme.colorScheme.surfaceVariant), elevation = CardDefaults.cardElevation(0.dp)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("按钮预览", fontWeight = FontWeight.Bold)
+            Text("背景和文字保持原生明暗风格，只有按钮与可点击强调使用此颜色。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Surface(color = primary, shape = AppShapes.button) { Text("主操作", color = Color.White, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) }
-                Surface(color = secondary.copy(alpha = 0.14f).compositeOnWhite(), shape = AppShapes.button) { Text("辅助强调", color = secondary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) }
+                Surface(color = button, shape = AppShapes.button) { Text("主操作", color = onButton, modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp), fontWeight = FontWeight.Bold) }
+                Surface(color = button.copy(alpha = 0.12f).compositeOn(MaterialTheme.colorScheme.surface), shape = AppShapes.button) { Text("次级", color = button, modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp), fontWeight = FontWeight.Bold) }
             }
         }
     }
@@ -1744,15 +1735,18 @@ private fun ThemePreview(primaryValue: Long, secondaryValue: Long) {
 @Composable
 private fun MarkdownText(text: String) {
     val lines = sanitizeMathText(text).lines()
+    val textColor = MaterialTheme.colorScheme.onSurface
+    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val mathColor = MaterialTheme.colorScheme.primary
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         lines.forEach { line ->
             val trimmed = line.trim()
             when {
-                trimmed.startsWith("```") -> Text(trimmed, fontFamily = FontFamily.Monospace, color = Muted)
-                trimmed.startsWith("#") -> Text(trimmed.trimStart('#', ' '), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Ink)
-                trimmed.startsWith("-") || trimmed.startsWith("*") -> Text("• ${trimmed.drop(1).trim()}", color = Ink, lineHeight = 21.sp)
-                isMathLikeLine(trimmed) -> Text(trimmed, fontFamily = FontFamily.Monospace, color = Purple, lineHeight = 21.sp)
-                else -> Text(buildInlineMarkdown(trimmed), color = Ink, lineHeight = 21.sp)
+                trimmed.startsWith("```") -> Text(trimmed, fontFamily = FontFamily.Monospace, color = mutedColor)
+                trimmed.startsWith("#") -> Text(trimmed.trimStart('#', ' '), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = textColor)
+                trimmed.startsWith("-") || trimmed.startsWith("*") -> Text("• ${trimmed.drop(1).trim()}", color = textColor, lineHeight = 21.sp)
+                isMathLikeLine(trimmed) -> Text(trimmed, fontFamily = FontFamily.Monospace, color = mathColor, lineHeight = 21.sp)
+                else -> Text(buildInlineMarkdown(trimmed), color = textColor, lineHeight = 21.sp)
             }
         }
     }
@@ -1922,6 +1916,7 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
             efficientMode = configJson.optBoolean("efficientMode", true),
             reverseConversation = configJson.optBoolean("reverseConversation", false),
             themeMode = normalizeThemeMode(configJson.optString("themeMode", "ocean")),
+            interfaceMode = normalizeInterfaceMode(configJson.optString("interfaceMode", legacyInterfaceMode(configJson.optString("themeMode", "ocean")))),
             primaryColor = configJson.optLong("primaryColor", 0xFF39C5BB),
             secondaryColor = configJson.optLong("secondaryColor", 0xFF00AEEF)
         )
@@ -1940,7 +1935,7 @@ private fun Classroom.toJson() = JSONObject().apply {
     put("memories", JSONArray(memories))
     put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("summary", it.summary).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
     put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview) }))
-    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("mentorPrompt", config.mentorPrompt).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
+    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("mentorPrompt", config.mentorPrompt).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("interfaceMode", config.interfaceMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
 }
 
 private fun JSONArray?.toMessages(): List<ChatMessage> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ChatMessage(item.optString("role"), item.optString("text")) } }
@@ -2294,13 +2289,39 @@ private fun AIClassroomTheme(content: @Composable () -> Unit) {
     )
 }
 
-private fun paletteFor(config: ClassroomConfig): AppPalette {
-    val primary = colorFromLong(config.primaryColor)
-    val secondary = colorFromLong(config.secondaryColor)
-    return when (config.themeMode) {
-        "mono" -> AppPalette(Color(0xFFF7F7F8), Color(0xFFFFFFFF), Color(0xFF171717), Color(0xFF686868), Color(0xFF111111), Color(0xFF555555), Color(0xFF2F2F2F))
-        "single" -> AppPalette(primary.copy(alpha = 0.07f).compositeOnWhite(), primary.copy(alpha = 0.035f).compositeOnWhite(), Ink, Muted, primary, primary.copy(alpha = 0.72f).compositeOnWhite(), primary.copy(alpha = 0.55f).compositeOnWhite())
-        else -> AppPalette(blendOnWhite(primary, secondary, 0.055f), blendOnWhite(primary, secondary, 0.025f), Color(0xFF0F2630), Color(0xFF5B6F78), primary, secondary, blendOnWhite(primary, secondary, 0.65f))
+private fun paletteFor(config: ClassroomConfig, systemDark: Boolean): AppPalette {
+    val dark = when (normalizeInterfaceMode(config.interfaceMode)) {
+        "dark" -> true
+        "light" -> false
+        else -> systemDark
+    }
+    val button = when (normalizeThemeMode(config.themeMode)) {
+        "custom" -> colorFromLong(config.primaryColor)
+        else -> Color(0xFF39C5BB)
+    }
+    val onButton = if (button.luminanceValue() > 0.58f) Color(0xFF062526) else Color.White
+    return if (dark) {
+        AppPalette(
+            page = Color(0xFF101214),
+            surface = Color(0xFF171A1D),
+            card = Color(0xFF202428),
+            ink = Color(0xFFF2F4F5),
+            muted = Color(0xFFA6ADB4),
+            button = button,
+            onButton = onButton,
+            outline = Color(0xFF343A40)
+        )
+    } else {
+        AppPalette(
+            page = Color(0xFFF6F7F9),
+            surface = Color(0xFFFFFFFF),
+            card = Color(0xFFF0F2F5),
+            ink = Color(0xFF171A1D),
+            muted = Color(0xFF68727D),
+            button = button,
+            onButton = onButton,
+            outline = Color(0xFFE0E4EA)
+        )
     }
 }
 
@@ -2323,20 +2344,37 @@ private fun parseHexColor(raw: String): Long? {
     return argb.toLongOrNull(16)?.takeIf { it in 0..0xFFFFFFFFL }
 }
 private fun normalizeThemeMode(raw: String): String = when (raw) {
-    "mono", "黑白", "榛戠櫧" -> "mono"
-    "single", "单主色", "鍗曚富鑹?" -> "single"
-    "dual", "双主色", "鍙屼富鑹?" -> "ocean"
-    "system", "Follow System", "跟随系统" -> "system"
+    "custom", "single", "自定义", "单主色", "鍗曚富鑹?" -> "custom"
     else -> "ocean"
 }
+
+private fun normalizeInterfaceMode(raw: String): String = when (raw) {
+    "dark", "black", "黑色", "黑" -> "dark"
+    "light", "white", "白色", "白" -> "light"
+    else -> "system"
+}
+
+private fun legacyInterfaceMode(themeMode: String): String = when (themeMode) {
+    "mono" -> "light"
+    "system" -> "system"
+    else -> "system"
+}
+
+private fun Color.luminanceValue(): Float = 0.299f * red + 0.587f * green + 0.114f * blue
 private fun Color.compositeOnWhite(): Color = Color(
     red = red * alpha + (1f - alpha),
     green = green * alpha + (1f - alpha),
     blue = blue * alpha + (1f - alpha),
     alpha = 1f
 )
+private fun Color.compositeOn(base: Color): Color = Color(
+    red = red * alpha + base.red * (1f - alpha),
+    green = green * alpha + base.green * (1f - alpha),
+    blue = blue * alpha + base.blue * (1f - alpha),
+    alpha = 1f
+)
 
-private const val APP_VERSION = "2.1.1"
+private const val APP_VERSION = "2.2"
 
 private object AppShapes {
     val panel = RoundedCornerShape(22.dp)
@@ -2346,27 +2384,20 @@ private object AppShapes {
     val menu = RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp)
 }
 
-private val THEME_PRESETS = listOf(
-    ThemePreset("ocean", "二次元", "清透青绿、亮蓝点缀", 0xFF39C5BB, 0xFF00AEEF),
-    ThemePreset("mono", "黑白", "克制灰阶界面", 0xFF111111, 0xFF666666),
-    ThemePreset("single", "单主色", "用主色生成轻重层次", 0xFF39C5BB, 0xFF39C5BB),
-    ThemePreset("system", "跟随系统", "保留系统浅色基调", 0xFF39C5BB, 0xFF00AEEF)
-)
-
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 2.1.1
+# AI Classroom 2.2
 
 # 这次更新
 
-- 主课堂图片按钮去掉外框，移动到输入框左侧，输入区重新留白避免压线。
-- 发送按钮压缩为更轻量的圆角图标按钮，输入区更适合手机单手操作。
-- 应用核心面板、输入框和按钮统一为更大的圆角风格。
-- README、首次打开弹窗和版本号同步到 2.1.1。
+- 隐藏导航按钮下移并改为纯图标，和顶部/底部跳转按钮保持一致风格。
+- 修复到底后按钮状态不能及时切换为“到顶”的问题，现在只用箭头方向表达功能。
+- 皮肤逻辑重构为“二次元”和“自定义”两项，自定义颜色只作用于按钮。
+- 界面颜色可选择自动跟随系统、指定白色或指定黑色，并保持文字反色。
+- 修复二次元皮肤被旧自定义颜色污染后颜色设定失效的问题。
 
 # 延续优化
 
-- 默认皮肤仍为 #39C5BB 与 #00AEEF。
-- 继续保留 2.1 的独立模型、多模态和 TTS 配置逻辑。
+- 二次元按钮色固定为 #39C5BB，自定义模式可通过调色盘或 Hex 选择按钮色。
 - 所有课堂、分支、设置、知识库、记忆和考试记录继续保存在本机。
 """
 private const val USER_MANUAL_TEXT = """
@@ -2415,7 +2446,9 @@ TTS 模块用于保存语音服务配置，包括服务商、API Key、Base URL�
 高效模式用于过滤 NSFW 等不适合学习场景的内容，默认开启。它本质上是健康模式，适合学习、自习和考试场景。
 
 ## 界面与皮肤
-皮肤模块可切换对话方向和界面色调。默认是二次元青蓝色调，也可以选择黑白、跟随系统或单色。二次元和单色皮肤支持自定义颜色，默认颜色为 `#39C5BB` 和 `#00AEEF`。导航栏、按钮、输入框、筛选项和主要卡片都会跟随皮肤。
+皮肤模块可切换对话方向、按钮颜色和界面明暗。按钮皮肤只保留“二次元”和“自定义”：二次元固定使用 `#39C5BB`，自定义可通过调色盘或 Hex 输入选择一个按钮色。除按钮和可点击强调外，背景、卡片和正文不再被皮肤色染色。
+
+界面明暗可选择自动跟随系统、白色或黑色，应用会自动保持文字反色，保证可读性。
 
 ## 多课堂
 在主界面从左向右滑出课堂菜单，可以切换课堂、新建课堂、删除课堂，也可以复制其他课堂配置。每个课堂都可以有独立 API、模型、人格、皮肤和知识库配置。
