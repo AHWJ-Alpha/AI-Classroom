@@ -590,7 +590,7 @@ private fun AIClassroomApp() {
                     })
                 }
                 if (showNewDialog) {
-                    ReleaseNotesDialog(onClose = {
+                    ReleaseNotesDialog(palette, onClose = {
                         store.markReleaseNotesSeen(APP_VERSION)
                         showNewDialog = false
                     })
@@ -599,7 +599,7 @@ private fun AIClassroomApp() {
                     UpdateDialog(info, onClose = { updateInfo = null })
                 }
                 if (showManualDialog) {
-                    UserManualDialog(onClose = { showManualDialog = false })
+                    UserManualDialog(palette, onClose = { showManualDialog = false })
                 }
             }
         }
@@ -959,16 +959,26 @@ private fun AiThinkingRow(palette: AppPalette, mentorName: String = "AI 讲师")
 }
 
 @Composable
-private fun ReleaseNotesDialog(onClose: () -> Unit) {
+private fun ReleaseNotesDialog(palette: AppPalette, onClose: () -> Unit) {
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text("New!", fontWeight = FontWeight.Bold) },
+        containerColor = palette.surface,
+        titleContentColor = palette.ink,
+        textContentColor = palette.ink,
+        shape = AppShapes.panel,
+        title = { Text("New!", color = palette.button, fontWeight = FontWeight.Bold) },
         text = {
             LazyColumn(Modifier.height(360.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                item { MarkdownText(RELEASE_NOTES_TEXT) }
+                item { MarkdownText(RELEASE_NOTES_TEXT, color = palette.ink) }
             }
         },
-        confirmButton = { Button(onClick = onClose) { Text("知道了") } }
+        confirmButton = {
+            Button(
+                onClick = onClose,
+                shape = AppShapes.button,
+                colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = palette.onButton)
+            ) { Text("知道了") }
+        }
     )
 }
 
@@ -990,16 +1000,26 @@ private fun UpdateDialog(info: UpdateInfo, onClose: () -> Unit) {
 }
 
 @Composable
-private fun UserManualDialog(onClose: () -> Unit) {
+private fun UserManualDialog(palette: AppPalette, onClose: () -> Unit) {
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text("使用手册", fontWeight = FontWeight.Bold) },
+        containerColor = palette.surface,
+        titleContentColor = palette.ink,
+        textContentColor = palette.ink,
+        shape = AppShapes.panel,
+        title = { Text("使用手册", color = palette.button, fontWeight = FontWeight.Bold) },
         text = {
             LazyColumn(Modifier.height(460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                item { MarkdownText(USER_MANUAL_TEXT) }
+                item { MarkdownText(USER_MANUAL_TEXT, color = palette.ink) }
             }
         },
-        confirmButton = { Button(onClick = onClose) { Text("关闭") } }
+        confirmButton = {
+            Button(
+                onClick = onClose,
+                shape = AppShapes.button,
+                colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = palette.onButton)
+            ) { Text("关闭") }
+        }
     )
 }
 
@@ -1810,9 +1830,9 @@ private fun ButtonColorPreview(buttonValue: Long) {
 }
 
 @Composable
-private fun MarkdownText(text: String) {
+private fun MarkdownText(text: String, color: Color = MaterialTheme.colorScheme.onSurface) {
     val lines = sanitizeMathText(text).lines()
-    val textColor = MaterialTheme.colorScheme.onSurface
+    val textColor = color
     val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
     val mathColor = MaterialTheme.colorScheme.primary
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
