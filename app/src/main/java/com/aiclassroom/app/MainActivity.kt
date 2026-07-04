@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.South
 import androidx.compose.material.icons.filled.North
@@ -87,8 +89,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -192,6 +192,8 @@ private data class ClassroomConfig(
     val ttsBaseUrl: String = "https://api.openai.com/v1",
     val ttsModel: String = "tts-1",
     val ttsVoice: String = "alloy",
+    val mentorName: String = "AI 讲师",
+    val userAlias: String = "同学",
     val mentorPrompt: String = "你是一名耐心、结构清晰的 AI 讲师。默认使用中文教学，保持主线课程连续，并在必要时用 Markdown 和公式文本表达。",
     val efficientMode: Boolean = true,
     val reverseConversation: Boolean = false,
@@ -282,6 +284,12 @@ private fun AIClassroomApp() {
         classes[classIndex] = room
         persist(message)
     }
+    fun replaceClassroomAt(index: Int, room: Classroom, message: String = "已保存到本机") {
+        if (index in classes.indices) {
+            classes[index] = room
+            persist(message)
+        }
+    }
 
     fun addClassroom(copyFrom: Classroom? = null) {
         val room = newClassroom(classes.size + 1, copyFrom?.config ?: ClassroomConfig())
@@ -314,7 +322,7 @@ private fun AIClassroomApp() {
         val knowledge = room.files.joinToString("\n") { "[${it.name}] ${it.preview}" }.take(3000)
         val memory = room.memories.takeLast(MEMORY_PROMPT_LIMIT).joinToString("\n")
         val safety = if (room.config.efficientMode) "高效模式：过滤 NSFW、色情、血腥、违法、仇恨和自伤内容。" else ""
-        return "${room.config.mentorPrompt}\n课堂：${room.name}\n学习内容：${room.topic}\n记忆：$memory\n知识库：$knowledge\n$safety"
+        return "${room.config.mentorPrompt}\n你的讲师名字：${room.config.mentorName}\n你对用户的称呼：${room.config.userAlias}\n课堂：${room.name}\n学习内容：${room.topic}\n记忆：$memory\n知识库：$knowledge\n$safety"
     }
 
     fun branchSystemPrompt(room: Classroom, branch: BranchClass): String {
@@ -447,18 +455,7 @@ private fun AIClassroomApp() {
     ) {
     Scaffold(
         topBar = {
-            if (chromeVisible || tab != Tab.Class) {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("AI Classroom $APP_VERSION", fontWeight = FontWeight.Bold, color = palette.ink)
-                        Text("${current.name} · ${current.topic}", color = palette.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                },
-                actions = { TextButton(onClick = { classMenuOpen = !classMenuOpen }) { Text("课堂", color = palette.button) } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.page)
-            )
-            }
+            Surface(Modifier.fillMaxWidth().statusBarsPadding().height(2.dp), color = palette.page) {}
         },
         bottomBar = {
             if (chromeVisible || tab != Tab.Class) {
@@ -524,7 +521,7 @@ private fun AIClassroomApp() {
                         persist("分支已保存")
                         tab = Tab.Branch
                     }
-                    Tab.Branch -> BranchScreen(current.branches, activeBranchIndex, branchInput, { branchInput = it }, branchLoading, palette, onSelect = { activeBranchIndex = it }, onBack = { activeBranchIndex = -1 }, onSend = { sendBranchMessage(activeBranchIndex) })
+                    Tab.Branch -> BranchScreen(current.branches, activeBranchIndex, branchInput, { branchInput = it }, branchLoading, palette, current.config.mentorName, onSelect = { activeBranchIndex = it }, onBack = { activeBranchIndex = -1 }, onSend = { sendBranchMessage(activeBranchIndex) })
                     Tab.Memory -> MemoryScreen(current.chapters, current.messages) { index ->
                         jumpToMessageIndex = index
                         tab = Tab.Class
@@ -571,6 +568,10 @@ private fun AIClassroomApp() {
                         classIndex = it
                         classMenuOpen = false
                         persist("已切换课堂")
+                    }, onRename = { index, name ->
+                        if (index in classes.indices) {
+                            replaceClassroomAt(index, classes[index].copy(name = name), "课堂名已保存")
+                        }
                     }, onNew = { addClassroom() }, onNewWithConfig = { addClassroom(classes[it]) }, onCopyConfig = ::copyConfigFrom, onDelete = ::deleteClassroom)
                 }
                 examSession?.let { session ->
@@ -613,48 +614,114 @@ private fun ClassroomMenu(
     saveNotice: String,
     palette: AppPalette,
     onSelect: (Int) -> Unit,
+    onRename: (Int, String) -> Unit,
     onNew: () -> Unit,
     onNewWithConfig: (Int) -> Unit,
     onCopyConfig: (Int) -> Unit,
     onDelete: (Int) -> Unit
 ) {
+    var query by remember { mutableStateOf("") }
+    var renameTarget by remember { mutableStateOf<Pair<Int, String>?>(null) }
+    val filtered = classes.indices.filter { i ->
+        val room = classes[i]
+        query.isBlank() || room.name.contains(query, ignoreCase = true) || room.topic.contains(query, ignoreCase = true)
+    }
     Row(Modifier.fillMaxSize()) {
-        Surface(Modifier.fillMaxHeight().fillMaxWidth(0.78f), color = MaterialTheme.colorScheme.surface, shape = AppShapes.menu) {
-            LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp), contentPadding = PaddingValues(vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Surface(Modifier.fillMaxHeight().fillMaxWidth(0.84f), color = MaterialTheme.colorScheme.surface, shape = AppShapes.menu, shadowElevation = 8.dp) {
+            LazyColumn(Modifier.fillMaxSize().padding(horizontal = 14.dp), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {
-                    Text("课堂", fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                    Text(saveNotice, color = palette.secondary, fontSize = 12.sp)
-                    Spacer(Modifier.height(10.dp))
-                    Button(onClick = onNew, modifier = Modifier.fillMaxWidth()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("课堂", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurface)
+                            Text(saveNotice, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        IconButton(onClick = onNew, colors = IconButtonDefaults.iconButtonColors(contentColor = palette.button)) {
+                            Icon(Icons.Default.Add, null)
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        leadingIcon = { Icon(Icons.Default.Search, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                        placeholder = { Text("搜索课堂") },
+                        singleLine = true,
+                        shape = AppShapes.control,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = palette.button,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            cursorColor = palette.button
+                        )
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = onNew, modifier = Modifier.fillMaxWidth(), shape = AppShapes.button) {
                         Icon(Icons.Default.Add, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("新建课堂")
                     }
                 }
-                items(classes.indices.toList()) { i ->
+                if (filtered.isEmpty()) {
+                    item { Text("没有找到课堂", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(12.dp)) }
+                }
+                items(filtered) { i ->
                     val room = classes[i]
-                    Card(Modifier.fillMaxWidth(), shape = AppShapes.card, colors = CardDefaults.cardColors(if (i == classIndex) palette.button.copy(alpha = 0.10f).compositeOn(palette.surface) else palette.card)) {
-                        Column(Modifier.padding(10.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(room.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(room.config.customModel.ifBlank { room.config.selectedModel }, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Surface(
+                        onClick = { onSelect(i) },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = if (i == classIndex) palette.button.copy(alpha = 0.12f).compositeOn(MaterialTheme.colorScheme.surface) else Color.Transparent,
+                        shape = AppShapes.card
+                    ) {
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Surface(Modifier.size(38.dp), shape = RoundedCornerShape(14.dp), color = if (i == classIndex) palette.button else MaterialTheme.colorScheme.surfaceVariant) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text((i + 1).toString(), color = if (i == classIndex) palette.onButton else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
+                                    }
                                 }
-                                if (i == classIndex) Icon(Icons.Default.Check, null, tint = palette.secondary, modifier = Modifier.size(18.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(room.name, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(room.topic, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                if (i == classIndex) Icon(Icons.Default.Check, null, tint = palette.button, modifier = Modifier.size(20.dp))
                             }
-                            Spacer(Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedButton(onClick = { onSelect(i) }) { Text("进入") }
-                                OutlinedButton(onClick = { onNewWithConfig(i) }) { Text("复制") }
+                            Spacer(Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = { renameTarget = i to room.name }) { Icon(Icons.Default.Edit, null, Modifier.size(16.dp)); Spacer(Modifier.width(3.dp)); Text("改名") }
+                                TextButton(onClick = { onNewWithConfig(i) }) { Text("复制") }
+                                if (i != classIndex) TextButton(onClick = { onCopyConfig(i) }) { Text("复制配置") }
                                 TextButton(onClick = { onDelete(i) }) { Icon(Icons.Default.Delete, null, Modifier.size(16.dp)); Text("删除") }
                             }
-                            if (i != classIndex) TextButton(onClick = { onCopyConfig(i) }) { Text("复制配置到当前课堂") }
                         }
                     }
                 }
             }
         }
     }
+    renameTarget?.let { target ->
+        RenameClassroomDialog(
+            initial = target.second,
+            onClose = { renameTarget = null },
+            onSave = { name ->
+                onRename(target.first, name)
+                renameTarget = null
+            }
+        )
+    }
+}
+
+@Composable
+private fun RenameClassroomDialog(initial: String, onClose: () -> Unit, onSave: (String) -> Unit) {
+    var name by remember(initial) { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("修改课堂名字", fontWeight = FontWeight.Bold) },
+        text = { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("课堂名字") }, singleLine = true) },
+        confirmButton = { Button(onClick = { onSave(name.trim().ifBlank { initial }) }) { Text("保存") } },
+        dismissButton = { TextButton(onClick = onClose) { Text("取消") } }
+    )
 }
 
 @Composable
@@ -708,8 +775,8 @@ private fun ClassScreen(
                     Text(room.topic, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            items(room.messages.size) { i -> MessageCard(i, room.messages[i], palette, onBranch, onDeleteAfter, { rewriteTarget = i to room.messages[i].text }) }
-            if (isLoading) item { AiThinkingRow(palette) }
+            items(room.messages.size) { i -> MessageCard(i, room.messages[i], palette, room.config.mentorName, onBranch, onDeleteAfter, { rewriteTarget = i to room.messages[i].text }) }
+            if (isLoading) item { AiThinkingRow(palette, room.config.mentorName) }
         }
         ChatInputBar(
             input = input,
@@ -830,6 +897,7 @@ private fun MessageCard(
     index: Int,
     message: ChatMessage,
     palette: AppPalette,
+    mentorName: String,
     onBranch: (Int) -> Unit,
     onDeleteAfter: (Int) -> Unit,
     onRewrite: (Int) -> Unit
@@ -855,7 +923,7 @@ private fun MessageCard(
         }
     } else {
         Column(Modifier.fillMaxWidth().then(actionModifier).padding(horizontal = 4.dp)) {
-            Text("AI 讲师", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text(mentorName.ifBlank { "AI 讲师" }, color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             Spacer(Modifier.height(6.dp))
             MarkdownText(message.text)
             TextButton(onClick = { onBranch(index) }) { Text("从这里开分支") }
@@ -882,9 +950,9 @@ private fun RewriteDialog(initial: String, onClose: () -> Unit, onSave: (String)
 }
 
 @Composable
-private fun AiThinkingRow(palette: AppPalette) {
+private fun AiThinkingRow(palette: AppPalette, mentorName: String = "AI 讲师") {
     Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
-        Text("AI 讲师", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text(mentorName.ifBlank { "AI 讲师" }, color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Spacer(Modifier.height(6.dp))
         Text("正在回复...", color = Muted)
     }
@@ -1099,12 +1167,13 @@ private fun BranchScreen(
     onInput: (String) -> Unit,
     isLoading: Boolean,
     palette: AppPalette,
+    mentorName: String,
     onSelect: (Int) -> Unit,
     onBack: () -> Unit,
     onSend: () -> Unit
 ) {
     if (activeIndex in branches.indices) {
-        BranchChatScreen(branches[activeIndex], input, onInput, isLoading, palette, onBack, onSend)
+        BranchChatScreen(branches[activeIndex], input, onInput, isLoading, palette, mentorName, onBack, onSend)
         return
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1133,6 +1202,7 @@ private fun BranchChatScreen(
     onInput: (String) -> Unit,
     isLoading: Boolean,
     palette: AppPalette,
+    mentorName: String,
     onBack: () -> Unit,
     onSend: () -> Unit
 ) {
@@ -1162,16 +1232,16 @@ private fun BranchChatScreen(
                 item { InfoCard { Text("输入问题后，AI 会基于创建分支时的主课堂上下文继续讲解。", color = Muted) } }
             }
             items(branch.messages.size) { i ->
-                SimpleMessageCard(branch.messages[i], palette)
+                SimpleMessageCard(branch.messages[i], palette, mentorName)
             }
-            if (isLoading) item { AiThinkingRow(palette) }
+            if (isLoading) item { AiThinkingRow(palette, mentorName) }
         }
         ChatInputBar(input, onInput, isLoading, compact = false, palette = palette, onSend = onSend, onImage = {}, modifier = Modifier.align(Alignment.BottomCenter))
     }
 }
 
 @Composable
-private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette) {
+private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette, mentorName: String) {
     if (message.role == "user") {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Column(
@@ -1188,7 +1258,7 @@ private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette) {
         }
     } else {
         Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
-            Text("AI 分支讲师", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text("${mentorName.ifBlank { "AI 讲师" }} · 分支", color = palette.secondary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             Spacer(Modifier.height(6.dp))
             MarkdownText(message.text)
         }
@@ -1376,6 +1446,8 @@ private fun ModelScreen(
     var ttsModel by remember(config.ttsModel) { mutableStateOf(config.ttsModel) }
     var ttsVoice by remember(config.ttsVoice) { mutableStateOf(config.ttsVoice) }
     var ttsStatus by remember { mutableStateOf("未获取语音模型") }
+    var mentorName by remember(config.mentorName) { mutableStateOf(config.mentorName) }
+    var userAlias by remember(config.userAlias) { mutableStateOf(config.userAlias) }
     var mentorPrompt by remember(config.mentorPrompt) { mutableStateOf(config.mentorPrompt) }
     var efficientMode by remember(config.efficientMode) { mutableStateOf(config.efficientMode) }
     var reverseConversation by remember(config.reverseConversation) { mutableStateOf(config.reverseConversation) }
@@ -1629,6 +1701,11 @@ private fun ModelScreen(
         item {
             SettingsCard("讲师人格与模式模块", expandedModule == "mentor", { expandedModule = if (expandedModule == "mentor") null else "mentor" }) {
                 Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(mentorName, { mentorName = it }, Modifier.weight(1f), label = { Text("讲师名字") }, singleLine = true)
+                    OutlinedTextField(userAlias, { userAlias = it }, Modifier.weight(1f), label = { Text("对你的称呼") }, singleLine = true)
+                }
+                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(mentorPrompt, { mentorPrompt = it }, Modifier.fillMaxWidth(), label = { Text("讲师人格提示词") }, minLines = 4)
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1639,7 +1716,7 @@ private fun ModelScreen(
                 }
                 Text("过滤 NSFW 内容。", color = Muted)
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = { onConfig(config.copy(mentorPrompt = mentorPrompt.trim(), efficientMode = efficientMode)); expandedModule = null }) {
+                Button(onClick = { onConfig(config.copy(mentorName = mentorName.trim().ifBlank { "AI 讲师" }, userAlias = userAlias.trim().ifBlank { "同学" }, mentorPrompt = mentorPrompt.trim(), efficientMode = efficientMode)); expandedModule = null }) {
                     Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("保存讲师人格与模式模块")
@@ -1912,6 +1989,8 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
             ttsBaseUrl = configJson.optString("ttsBaseUrl", "https://api.openai.com/v1"),
             ttsModel = configJson.optString("ttsModel", "tts-1"),
             ttsVoice = configJson.optString("ttsVoice", "alloy"),
+            mentorName = configJson.optString("mentorName", "AI 讲师"),
+            userAlias = configJson.optString("userAlias", "同学"),
             mentorPrompt = configJson.optString("mentorPrompt", ClassroomConfig().mentorPrompt),
             efficientMode = configJson.optBoolean("efficientMode", true),
             reverseConversation = configJson.optBoolean("reverseConversation", false),
@@ -1935,7 +2014,7 @@ private fun Classroom.toJson() = JSONObject().apply {
     put("memories", JSONArray(memories))
     put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("summary", it.summary).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
     put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview) }))
-    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("mentorPrompt", config.mentorPrompt).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("interfaceMode", config.interfaceMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
+    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("mentorName", config.mentorName).put("userAlias", config.userAlias).put("mentorPrompt", config.mentorPrompt).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("interfaceMode", config.interfaceMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
 }
 
 private fun JSONArray?.toMessages(): List<ChatMessage> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ChatMessage(item.optString("role"), item.optString("text")) } }
@@ -2374,7 +2453,7 @@ private fun Color.compositeOn(base: Color): Color = Color(
     alpha = 1f
 )
 
-private const val APP_VERSION = "2.2"
+private const val APP_VERSION = "2.2.1"
 
 private object AppShapes {
     val panel = RoundedCornerShape(22.dp)
@@ -2385,19 +2464,20 @@ private object AppShapes {
 }
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 2.2
+# AI Classroom 2.2.1
 
 # 这次更新
 
-- 隐藏导航按钮下移并改为纯图标，和顶部/底部跳转按钮保持一致风格。
-- 修复到底后按钮状态不能及时切换为“到顶”的问题，现在只用箭头方向表达功能。
-- 皮肤逻辑重构为“二次元”和“自定义”两项，自定义颜色只作用于按钮。
-- 界面颜色可选择自动跟随系统、指定白色或指定黑色，并保持文字反色。
-- 修复二次元皮肤被旧自定义颜色污染后颜色设定失效的问题。
+- 删除顶部 AI Classroom 标题栏，只保留贴合手机状态栏高度的轻量占位。
+- 二级课堂菜单重构为更接近原生 Android 的抽屉列表样式。
+- 菜单顶部新增课堂搜索，可按课堂名或学习内容快速查找。
+- 支持直接修改课堂名字，保存后本地实时生效。
+- 讲师人格新增讲师名字和讲师对用户的称呼。
 
 # 延续优化
 
-- 二次元按钮色固定为 #39C5BB，自定义模式可通过调色盘或 Hex 选择按钮色。
+- 主课堂和分支课堂中的讲师名称会实时跟随设置更新。
+- 用户称呼只写入提示词，不作为界面标题显示。
 - 所有课堂、分支、设置、知识库、记忆和考试记录继续保存在本机。
 """
 private const val USER_MANUAL_TEXT = """
@@ -2440,7 +2520,7 @@ TTS 模块用于保存语音服务配置，包括服务商、API Key、Base URL�
 当前版本先完成 TTS 配置保存，为后续语音朗读和讲师发声功能预留。
 
 ## 讲师人格
-讲师人格提示词可以自定义，例如大学教授、企业工程师、考研老师、幽默导师或二次元导师。保存后当前课堂会持续使用该人格。
+讲师人格提示词可以自定义，例如大学教授、企业工程师、考研老师、幽默导师或二次元导师。讲师名字会实时显示在主课堂和分支课堂中；讲师对你的称呼会写入提示词，让模型在教学时按这个称呼与你互动。保存后当前课堂会持续使用该人格。
 
 ## 高效模式
 高效模式用于过滤 NSFW 等不适合学习场景的内容，默认开启。它本质上是健康模式，适合学习、自习和考试场景。
