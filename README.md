@@ -2,13 +2,13 @@
 
 AI Classroom 是一款面向长期学习场景的 Android AI 课堂 Demo。它围绕“主课堂 + 分支课堂 + 长期记忆 + 知识库”的学习模式，让用户可以在 AI 导师陪伴下持续学习一门课程，并在不打断主线的情况下展开支线探索。
 
-当前最新版本：`2.3`
+当前最新版本：`2.3.1`
 
 ## 下载 APK
 
 最新版 APK 可在 GitHub Releases 下载：
 
-- [AI Classroom 2.3](https://github.com/AHWJ-Alpha/AI-Classroom/releases/tag/v2.3)
+- [AI Classroom 2.3.1](https://github.com/AHWJ-Alpha/AI-Classroom/releases/tag/v2.3.1)
 
 历史版本：
 
@@ -19,6 +19,8 @@ AI Classroom 是一款面向长期学习场景的 Android AI 课堂 Demo。它�
 ### 主课堂
 
 - 用户可自定义学习内容。
+- 空课堂首页显示日期、星期和模型生成的短格言，输入学习要求后进入正式对话界面。
+- 开课前可直接选择是否启用深度思考模型。
 - AI 会围绕当前课堂持续教学。
 - 支持 Markdown 和数学公式文本显示。
 - 支持真实流式输出，AI 回复会边生成边显示。
@@ -79,6 +81,13 @@ AI Classroom 是一款面向长期学习场景的 Android AI 课堂 Demo。它�
 - 讲师名字会显示在课堂消息中，用户称呼会注入提示词。
 
 ## 版本亮点
+
+### 2.3.1
+
+- 主课堂空课堂状态重做为类似 DeepSeek / GPT App 的首页形式。
+- 顶部显示大字号日期和星期，并用 API 模型生成一条短格言作为点缀。
+- 开课前输入框上移，减少空白感，发送学习要求后自动进入原主课堂界面。
+- 新建课堂或刚进入应用时可直接选择是否使用深度思考模型。
 
 ### 2.3
 

@@ -137,6 +137,9 @@ import java.net.URL
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.Base64
+import java.util.Locale
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -257,6 +260,7 @@ private fun AIClassroomApp() {
     var saveNotice by remember { mutableStateOf("所有内容自动保存在本机") }
     var modelStatus by remember { mutableStateOf("未获取模型") }
     var isLoading by remember { mutableStateOf(false) }
+    var homeQuote by remember { mutableStateOf(localStudyQuote()) }
     val classes = remember { mutableStateListOf<Classroom>().apply { addAll(initialClasses) } }
     val models = remember { mutableStateListOf("gpt-4o-mini", "gpt-4o", "deepseek-chat", "qwen-plus") }
     val scope = rememberCoroutineScope()
@@ -277,6 +281,12 @@ private fun AIClassroomApp() {
                     updateInfo = info
                 }
             }
+        }
+    }
+
+    LaunchedEffect(current.name, current.config.apiKey, activeModel) {
+        if (current.messages.isEmpty()) {
+            homeQuote = generateHomeQuote(current.config, activeModelChain).ifBlank { localStudyQuote() }
         }
     }
 
@@ -544,7 +554,9 @@ private fun AIClassroomApp() {
         ) {
             Box(Modifier.fillMaxSize()) {
                 when (tab) {
-                    Tab.Class -> ClassScreen(current, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, onOpenMenu = { classMenuOpen = true }, onSend = { sendMessage() }, onImage = { imageLauncher.launch("image/*") }, onDeleteAfter = { index ->
+                    Tab.Class -> ClassScreen(current, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, homeQuote, onOpenMenu = { classMenuOpen = true }, onDeepThinkingChange = { enabled ->
+                        replaceCurrent(current.copy(config = current.config.copy(deepThinkingEnabled = enabled)), if (enabled) "已启用深度思考" else "已关闭深度思考")
+                    }, onSend = { sendMessage() }, onImage = { imageLauncher.launch("image/*") }, onDeleteAfter = { index ->
                         if (index in current.messages.indices) {
                             for (i in current.messages.lastIndex downTo index) current.messages.removeAt(i)
                             current.chapters.clear()
@@ -775,13 +787,30 @@ private fun ClassScreen(
     jumpToMessageIndex: Int?,
     onJumpHandled: () -> Unit,
     reverseConversation: Boolean,
+    homeQuote: String,
     onOpenMenu: () -> Unit,
+    onDeepThinkingChange: (Boolean) -> Unit,
     onSend: () -> Unit,
     onImage: () -> Unit,
     onDeleteAfter: (Int) -> Unit,
     onSpeak: (String) -> Unit,
     onBranch: (Int) -> Unit
 ) {
+    if (room.messages.isEmpty()) {
+        EmptyClassroomHome(
+            room = room,
+            input = input,
+            onInput = onInput,
+            isLoading = isLoading,
+            palette = palette,
+            quote = homeQuote,
+            onOpenMenu = onOpenMenu,
+            onDeepThinkingChange = onDeepThinkingChange,
+            onSend = onSend,
+            onImage = onImage
+        )
+        return
+    }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val lastItemIndex = room.messages.size + 1
@@ -824,6 +853,84 @@ private fun ClassScreen(
             onClick = { scope.launch { if (isAtBottom) listState.animateScrollToItem(topIndex) else listState.animateScrollToItem(bottomIndex) } },
             modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = if (compactInput) 122.dp else 188.dp),
         )
+    }
+}
+
+@Composable
+private fun EmptyClassroomHome(
+    room: Classroom,
+    input: String,
+    onInput: (String) -> Unit,
+    isLoading: Boolean,
+    palette: AppPalette,
+    quote: String,
+    onOpenMenu: () -> Unit,
+    onDeepThinkingChange: (Boolean) -> Unit,
+    onSend: () -> Unit,
+    onImage: () -> Unit
+) {
+    val dateText = remember { todayDateText() }
+    Box(Modifier.fillMaxSize().padding(horizontal = 6.dp)) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopStart)
+                .padding(top = 34.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(dateText.first, color = palette.ink, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+                    Text(dateText.second, color = palette.muted, fontSize = 14.sp)
+                }
+            }
+            Text(
+                quote.ifBlank { localStudyQuote() },
+                color = palette.muted,
+                fontSize = 13.sp,
+                lineHeight = 19.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .align(Alignment.Center)
+                .offset(y = (-42).dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(room.name, color = palette.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(12.dp))
+            Text("今天想系统学点什么？", color = palette.ink, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(14.dp))
+            Row(
+                Modifier
+                    .clipToBounds()
+                    .background(palette.card, AppShapes.control)
+                    .border(1.dp, palette.outline, AppShapes.control)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Tune, null, tint = palette.button, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("深度思考模型", color = palette.ink, fontSize = 14.sp, modifier = Modifier.weight(1f, fill = false))
+                Spacer(Modifier.width(8.dp))
+                Switch(room.config.deepThinkingEnabled, onDeepThinkingChange)
+            }
+            Spacer(Modifier.height(16.dp))
+            ChatInputBar(
+                input = input,
+                onInput = onInput,
+                isLoading = isLoading,
+                compact = false,
+                palette = palette,
+                onSend = onSend,
+                onImage = onImage,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
 }
 
@@ -2177,6 +2284,18 @@ private suspend fun fetchModels(baseUrl: String, apiKey: String): List<String> =
     }.getOrDefault(emptyList())
 }
 
+private suspend fun generateHomeQuote(config: ClassroomConfig, models: List<String>): String {
+    if (config.apiKey.isBlank()) return ""
+    val result = callChatWithFallback(
+        config,
+        models,
+        "你只输出一句简短中文学习格言，不超过 24 个汉字，不要解释，不要加引号。",
+        listOf(ChatMessage("user", "生成一句适合今天开始学习的短格言。"))
+    ).trim().trim('"', '“', '”')
+    if (result.isBlank() || isApiFailure(result) || result.contains("API Key") || result.contains("调用失败")) return ""
+    return result.replace(Regex("\\s+"), " ").take(36)
+}
+
 private suspend fun checkGitHubUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
     runCatching {
         val connection = URL(GITHUB_LATEST_RELEASE_API).openConnection() as HttpURLConnection
@@ -2213,6 +2332,31 @@ private fun isRemoteVersionNewer(remote: String, local: String): Boolean {
 
 private fun versionParts(value: String): List<Int> =
     Regex("\\d+").findAll(value).map { it.value.toIntOrNull() ?: 0 }.toList()
+
+private fun todayDateText(): Pair<String, String> {
+    val today = LocalDate.now()
+    val week = when (today.dayOfWeek.value) {
+        1 -> "星期一"
+        2 -> "星期二"
+        3 -> "星期三"
+        4 -> "星期四"
+        5 -> "星期五"
+        6 -> "星期六"
+        else -> "星期日"
+    }
+    return today.format(DateTimeFormatter.ofPattern("M月d日", Locale.CHINA)) to week
+}
+
+private fun localStudyQuote(): String {
+    val quotes = listOf(
+        "把今天学透一点，明天就轻一点。",
+        "慢慢来，深一点，稳一点。",
+        "清晰的问题，会带来清晰的进步。",
+        "先进入状态，再交给时间。",
+        "每一轮理解，都会留下痕迹。"
+    )
+    return quotes[LocalDate.now().dayOfYear % quotes.size]
+}
 
 private suspend fun callChat(baseUrl: String, apiKey: String, model: String, system: String, messages: List<ChatMessage>): String = withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) return@withContext "请先填写 API Key。"
@@ -2653,7 +2797,7 @@ private fun truncatePromptSection(text: String, limit: Int): String {
     return clean.take(limit) + "\n[以上资料已按上下文预算截断，截断部分不可臆测。]"
 }
 
-private const val APP_VERSION = "2.3"
+private const val APP_VERSION = "2.3.1"
 
 private object AppShapes {
     val panel = RoundedCornerShape(22.dp)
@@ -2664,18 +2808,18 @@ private object AppShapes {
 }
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 2.3
+# AI Classroom 2.3.1
 
 # 这次更新
 
-- 优化讲师人格提示词模块，用户自定义提示词会作为最高优先级写入系统提示词。
-- 长期记忆、知识库和分支上下文变长时，不再覆盖讲师人格与用户自定义教学要求。
-- 系统提示词首尾都会保留人格优先级提醒，减少超长对话后风格漂移。
-- 保存讲师人格时，如果提示词被误清空，会自动恢复默认中文教学提示词。
+- 主课堂空课堂状态重做为类似 DeepSeek / GPT App 的首页形式。
+- 刚进入应用或新建课堂时，顶部显示大字号日期和星期，并显示一条由 API 模型生成的短格言。
+- 开课前输入框上移，避免首页过空，输入学习要求后自动进入原主课堂对话界面。
+- 开课前可直接选择是否启用深度思考模型，设置会立即保存到当前课堂。
 
 # 延续优化
 
-- 主课堂和分支课堂中的讲师名称继续实时跟随设置更新。
+- 原有主课堂对话、分支、记忆、知识库、TTS 和多模态功能保持不变。
 - 所有课堂、分支、设置、知识库、记忆和考试记录继续保存在本机。
 """
 private const val USER_MANUAL_TEXT = """
@@ -2686,6 +2830,8 @@ private const val USER_MANUAL_TEXT = """
 
 ## 主课堂
 主课堂是一门课程的主线。你可以输入学习目标、追问问题、让 AI 出例题、讲解代码或总结章节。课堂内容、对话、章节索引、摘要和配置都会保存在本地。
+
+刚进入应用或新建课堂时，主课堂会显示日期、星期和一句短格言。你可以在开课前切换是否使用深度思考模型；输入学习要求并发送后，会自动进入正式主课堂对话界面。
 
 主课堂输入框右侧的图片按钮可以上传照片。上传后，应用会把图片交给设置页里的识图或转述模型分析，并把结果保存进当前课堂。
 
