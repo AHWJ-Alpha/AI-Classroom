@@ -554,7 +554,7 @@ private fun AIClassroomApp() {
         ) {
             Box(Modifier.fillMaxSize()) {
                 when (tab) {
-                    Tab.Class -> ClassScreen(current, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, homeQuote, onOpenMenu = { classMenuOpen = true }, onDeepThinkingChange = { enabled ->
+                    Tab.Class -> ClassScreen(current, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, homeQuote, onDeepThinkingChange = { enabled ->
                         replaceCurrent(current.copy(config = current.config.copy(deepThinkingEnabled = enabled)), if (enabled) "已启用深度思考" else "已关闭深度思考")
                     }, onSend = { sendMessage() }, onImage = { imageLauncher.launch("image/*") }, onDeleteAfter = { index ->
                         if (index in current.messages.indices) {
@@ -788,7 +788,6 @@ private fun ClassScreen(
     onJumpHandled: () -> Unit,
     reverseConversation: Boolean,
     homeQuote: String,
-    onOpenMenu: () -> Unit,
     onDeepThinkingChange: (Boolean) -> Unit,
     onSend: () -> Unit,
     onImage: () -> Unit,
@@ -804,7 +803,6 @@ private fun ClassScreen(
             isLoading = isLoading,
             palette = palette,
             quote = homeQuote,
-            onOpenMenu = onOpenMenu,
             onDeepThinkingChange = onDeepThinkingChange,
             onSend = onSend,
             onImage = onImage
@@ -864,7 +862,6 @@ private fun EmptyClassroomHome(
     isLoading: Boolean,
     palette: AppPalette,
     quote: String,
-    onOpenMenu: () -> Unit,
     onDeepThinkingChange: (Boolean) -> Unit,
     onSend: () -> Unit,
     onImage: () -> Unit
@@ -898,38 +895,34 @@ private fun EmptyClassroomHome(
             Modifier
                 .fillMaxWidth()
                 .align(Alignment.Center)
-                .offset(y = (-42).dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .offset(y = (-36).dp),
+            horizontalAlignment = Alignment.Start
         ) {
             Text(room.name, color = palette.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(10.dp))
+            Text("今天想系统学点什么？", color = palette.ink, fontSize = 22.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(12.dp))
-            Text("今天想系统学点什么？", color = palette.ink, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(14.dp))
-            Row(
-                Modifier
-                    .clipToBounds()
-                    .background(palette.card, AppShapes.control)
-                    .border(1.dp, palette.outline, AppShapes.control)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.Tune, null, tint = palette.button, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("深度思考模型", color = palette.ink, fontSize = 14.sp, modifier = Modifier.weight(1f, fill = false))
-                Spacer(Modifier.width(8.dp))
-                Switch(room.config.deepThinkingEnabled, onDeepThinkingChange)
-            }
-            Spacer(Modifier.height(16.dp))
             ChatInputBar(
                 input = input,
                 onInput = onInput,
                 isLoading = isLoading,
-                compact = false,
+                compact = true,
                 palette = palette,
                 onSend = onSend,
                 onImage = onImage,
                 modifier = Modifier.fillMaxWidth()
             )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 6.dp, top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Tune, null, tint = palette.button, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("深度思考模型", color = palette.muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                Switch(room.config.deepThinkingEnabled, onDeepThinkingChange)
+            }
         }
     }
 }
