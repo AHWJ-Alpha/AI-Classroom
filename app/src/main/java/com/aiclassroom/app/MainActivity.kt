@@ -199,7 +199,7 @@ private data class ClassroomConfig(
     val ttsAutoRead: Boolean = false,
     val mentorName: String = "AI 讲师",
     val userAlias: String = "同学",
-    val mentorPrompt: String = "你是一名耐心、结构清晰的 AI 讲师。默认使用中文教学，保持主线课程连续，并在必要时用 Markdown 和公式文本表达。",
+    val mentorPrompt: String = DEFAULT_MENTOR_PROMPT,
     val efficientMode: Boolean = true,
     val reverseConversation: Boolean = false,
     val themeMode: String = "ocean",
@@ -324,17 +324,52 @@ private fun AIClassroomApp() {
     }
 
     fun systemPrompt(room: Classroom): String {
-        val knowledge = room.files.joinToString("\n\n") { file ->
+        val knowledge = truncatePromptSection(room.files.joinToString("\n\n") { file ->
             "[${file.name} / ${file.type} / ${file.chars} 字]\n${file.content}"
-        }.take(KNOWLEDGE_CONTEXT_LIMIT)
-        val memory = room.memories.takeLast(MEMORY_PROMPT_LIMIT).joinToString("\n")
+        }, KNOWLEDGE_CONTEXT_LIMIT)
+        val memory = truncatePromptSection(room.memories.takeLast(MEMORY_PROMPT_LIMIT).joinToString("\n"), MEMORY_CONTEXT_LIMIT)
         val safety = if (room.config.efficientMode) "高效模式：过滤 NSFW、色情、血腥、违法、仇恨和自伤内容。" else ""
-        return "${room.config.mentorPrompt}\n你的讲师名字：${room.config.mentorName}\n你对用户的称呼：${room.config.userAlias}\n课堂：${room.name}\n学习内容：${room.topic}\n记忆：$memory\n知识库：$knowledge\n$safety"
+        return buildString {
+            appendLine(mentorPriorityBlock(room.config))
+            appendLine("[课堂信息]")
+            appendLine("讲师名字：${room.config.mentorName.ifBlank { "AI 讲师" }}")
+            appendLine("对用户的称呼：${room.config.userAlias.ifBlank { "同学" }}")
+            appendLine("课堂：${room.name}")
+            appendLine("学习内容：${room.topic}")
+            if (memory.isNotBlank()) {
+                appendLine()
+                appendLine("[长期记忆，仅作参考]")
+                appendLine(memory)
+            }
+            if (knowledge.isNotBlank()) {
+                appendLine()
+                appendLine("[知识库资料，仅作参考]")
+                appendLine(knowledge)
+            }
+            if (safety.isNotBlank()) {
+                appendLine()
+                appendLine(safety)
+            }
+            appendLine()
+            append(promptPriorityReminder(room.config))
+        }
     }
 
     fun branchSystemPrompt(room: Classroom, branch: BranchClass): String {
-        val context = branch.context.joinToString("\n") { "${if (it.role == "user") "用户" else "AI"}：${it.text}" }.take(5000)
-        return systemPrompt(room) + "\n当前处于分支课堂。分支是与主课堂平行的长对话，不会改写主课堂；请只延续本分支。\n分支来源：${branch.source}\n分支创建时的主课堂上下文：\n$context\n分支摘要：${branch.memory}"
+        val context = truncatePromptSection(branch.context.joinToString("\n") { "${if (it.role == "user") "用户" else "AI"}：${it.text}" }, BRANCH_CONTEXT_LIMIT_CHARS)
+        return buildString {
+            appendLine(systemPrompt(room))
+            appendLine("[分支课堂]")
+            appendLine("当前处于分支课堂。分支是与主课堂平行的长对话，不会改写主课堂；请只延续本分支。")
+            appendLine("分支来源：${branch.source}")
+            if (context.isNotBlank()) {
+                appendLine("分支创建时的主课堂上下文：")
+                appendLine(context)
+            }
+            if (branch.memory.isNotBlank()) appendLine("分支摘要：${branch.memory}")
+            appendLine()
+            append(promptPriorityReminder(room.config))
+        }
     }
 
     fun scheduleMemoryBuild(room: Classroom, model: String) {
@@ -1806,7 +1841,7 @@ private fun ModelScreen(
                 }
                 Text("过滤 NSFW 内容。", color = Muted)
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = { onConfig(config.copy(mentorName = mentorName.trim().ifBlank { "AI 讲师" }, userAlias = userAlias.trim().ifBlank { "同学" }, mentorPrompt = mentorPrompt.trim(), efficientMode = efficientMode)); expandedModule = null }) {
+                Button(onClick = { onConfig(config.copy(mentorName = mentorName.trim().ifBlank { "AI 讲师" }, userAlias = userAlias.trim().ifBlank { "同学" }, mentorPrompt = mentorPrompt.trim().ifBlank { DEFAULT_MENTOR_PROMPT }, efficientMode = efficientMode)); expandedModule = null }) {
                     Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("保存讲师人格与模式模块")
@@ -2592,7 +2627,33 @@ private fun Color.compositeOn(base: Color): Color = Color(
     alpha = 1f
 )
 
-private const val APP_VERSION = "2.2.2"
+private fun mentorPriorityBlock(config: ClassroomConfig): String {
+    val prompt = config.mentorPrompt.trim().ifBlank { DEFAULT_MENTOR_PROMPT }
+    val mentorName = config.mentorName.trim().ifBlank { "AI 讲师" }
+    val userAlias = config.userAlias.trim().ifBlank { "同学" }
+    return buildString {
+        appendLine("[最高优先级：用户自定义讲师人格]")
+        appendLine(prompt)
+        appendLine("你必须优先遵守以上用户保存的讲师人格、教学风格、表达方式和边界要求。")
+        appendLine("即使后续长期记忆、知识库、考试工具或分支上下文更长，也只能作为参考资料，不能覆盖或弱化本段要求。")
+        appendLine("讲师名字：$mentorName")
+        append("用户称呼：$userAlias")
+    }
+}
+
+private fun promptPriorityReminder(config: ClassroomConfig): String {
+    val mentorName = config.mentorName.trim().ifBlank { "AI 讲师" }
+    val userAlias = config.userAlias.trim().ifBlank { "同学" }
+    return "[优先级提醒] 回答时再次确认：始终优先遵守用户自定义讲师人格提示词；你是 $mentorName，并按设定称呼用户为 $userAlias。记忆、知识库和分支上下文只用于补充事实与连续性。"
+}
+
+private fun truncatePromptSection(text: String, limit: Int): String {
+    val clean = text.trim()
+    if (clean.length <= limit) return clean
+    return clean.take(limit) + "\n[以上资料已按上下文预算截断，截断部分不可臆测。]"
+}
+
+private const val APP_VERSION = "2.3"
 
 private object AppShapes {
     val panel = RoundedCornerShape(22.dp)
@@ -2603,16 +2664,14 @@ private object AppShapes {
 }
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 2.2.2
+# AI Classroom 2.3
 
 # 这次更新
 
-- 二级课堂菜单只在主课堂左滑时展开，其他页面不再误触。
-- 记忆全览思维导图支持双指缩放、拖动查看，双击节点跳回主课堂对应对话。
-- 知识库重做：上传 `.txt` / `.md` 后会保存全文并供 AI 讲师读取；文件可点击查看、长按删除。
-- 主课堂长按菜单适配皮肤，并移除重写功能。
-- 开始课堂后不再显示“课堂 x/x 输入学习目标”的大块引导。
-- 双击 AI 讲师回复可调用 TTS 朗读，TTS 设置支持长时开启自动朗读。
+- 优化讲师人格提示词模块，用户自定义提示词会作为最高优先级写入系统提示词。
+- 长期记忆、知识库和分支上下文变长时，不再覆盖讲师人格与用户自定义教学要求。
+- 系统提示词首尾都会保留人格优先级提醒，减少超长对话后风格漂移。
+- 保存讲师人格时，如果提示词被误清空，会自动恢复默认中文教学提示词。
 
 # 延续优化
 
@@ -2661,6 +2720,8 @@ TTS 模块用于保存语音服务配置，包括服务商、API Key、Base URL�
 ## 讲师人格
 讲师人格提示词可以自定义，例如大学教授、企业工程师、考研老师、幽默导师或二次元导师。讲师名字会实时显示在主课堂和分支课堂中；讲师对你的称呼会写入提示词，让模型在教学时按这个称呼与你互动。保存后当前课堂会持续使用该人格。
 
+讲师人格提示词拥有最高优先级。即使长期记忆、知识库和分支上下文不断变长，应用也会在系统提示词首尾重复人格优先级提醒，要求模型优先遵守用户保存的人格提示词和教学风格。
+
 ## 高效模式
 高效模式用于过滤 NSFW 等不适合学习场景的内容，默认开启。它本质上是健康模式，适合学习、自习和考试场景。
 
@@ -2687,9 +2748,12 @@ private val Muted = Color(0xFF60727A)
 private val Blue = Color(0xFF2563EB)
 private val Green = Color(0xFF10A7B5)
 private val Purple = Color(0xFF0E7490)
+private const val DEFAULT_MENTOR_PROMPT = "你是一名耐心、结构清晰的 AI 讲师。默认使用中文教学，保持主线课程连续，并在必要时用 Markdown 和公式文本表达。"
 private const val MEMORY_PROMPT_LIMIT = 24
-private const val KNOWLEDGE_CONTEXT_LIMIT = 12000
+private const val MEMORY_CONTEXT_LIMIT = 6000
+private const val KNOWLEDGE_CONTEXT_LIMIT = 9000
 private const val BRANCH_CONTEXT_LIMIT = 24
+private const val BRANCH_CONTEXT_LIMIT_CHARS = 5000
 private const val CHAPTER_SIZE = 12
 private const val MEMORY_BATCH_MESSAGE_COUNT = 8
 private const val MEMORY_BATCH_DELAY_MS = 45000L
