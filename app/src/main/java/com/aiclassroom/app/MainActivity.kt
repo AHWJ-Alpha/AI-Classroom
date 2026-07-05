@@ -338,17 +338,27 @@ private fun AIClassroomApp() {
             "[${file.name} / ${file.type} / ${file.chars} 字]\n${file.content}"
         }, KNOWLEDGE_CONTEXT_LIMIT)
         val memory = truncatePromptSection(room.memories.takeLast(MEMORY_PROMPT_LIMIT).joinToString("\n"), MEMORY_CONTEXT_LIMIT)
+        val chapterIndex = truncatePromptSection(room.chapters.takeLast(CHAPTER_PROMPT_LIMIT).joinToString("\n") { chapter ->
+            "第 ${chapter.startIndex + 1}-${chapter.endIndex + 1} 条｜${chapter.title}：${chapter.summary}"
+        }, CHAPTER_CONTEXT_LIMIT)
         val safety = if (room.config.efficientMode) "高效模式：过滤 NSFW、色情、血腥、违法、仇恨和自伤内容。" else ""
         return buildString {
             appendLine(mentorPriorityBlock(room.config))
+            appendLine()
+            appendLine(conversationConsistencyRules())
             appendLine("[课堂信息]")
             appendLine("讲师名字：${room.config.mentorName.ifBlank { "AI 讲师" }}")
             appendLine("对用户的称呼：${room.config.userAlias.ifBlank { "同学" }}")
             appendLine("课堂：${room.name}")
             appendLine("学习内容：${room.topic}")
+            if (chapterIndex.isNotBlank()) {
+                appendLine()
+                appendLine("[章节索引，仅用于定位长期进度，不代表完整原文]")
+                appendLine(chapterIndex)
+            }
             if (memory.isNotBlank()) {
                 appendLine()
-                appendLine("[长期记忆，仅作参考]")
+                appendLine("[长期记忆，仅作参考；若与最近连续对话冲突，以最近连续对话为准]")
                 appendLine(memory)
             }
             if (knowledge.isNotBlank()) {
@@ -415,7 +425,7 @@ private fun AIClassroomApp() {
             val assistantIndex = room.messages.size
             room.messages.add(ChatMessage("assistant", ""))
             var streamed = ""
-            val result = callChatStreamWithFallback(room.config, activeModelChain, systemPrompt(room) + "\n" + EXAM_TOOL_PROMPT + "\n" + EXAM_TOOL_PROMPT_V2, room.messages.dropLast(1).toList()) { delta ->
+            val result = callChatStreamWithFallback(room.config, activeModelChain, systemPrompt(room) + "\n" + EXAM_TOOL_PROMPT + "\n" + EXAM_TOOL_PROMPT_V2, promptMessagesForRoom(room, room.messages.dropLast(1).toList())) { delta ->
                 streamed += delta
                 room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(stripExamBlock(streamed), room.config.efficientMode))
             }
@@ -478,7 +488,7 @@ private fun AIClassroomApp() {
             val assistantIndex = branch.messages.size
             branch.messages.add(ChatMessage("assistant", ""))
             var streamed = ""
-            val chatHistory = branch.context.takeLast(BRANCH_CONTEXT_LIMIT) + branch.messages.dropLast(1)
+            val chatHistory = promptMessagesForBranch(branch.context, branch.messages.dropLast(1).toList())
             val result = callChatStreamWithFallback(room.config, activeModelChain, branchSystemPrompt(room, branch), chatHistory) { delta ->
                 streamed += delta
                 branch.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(streamed, room.config.efficientMode))
@@ -2362,7 +2372,7 @@ private suspend fun callChat(baseUrl: String, apiKey: String, model: String, sys
         connection.setRequestProperty("Content-Type", "application/json")
         connection.connectTimeout = 20000
         connection.readTimeout = 60000
-        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages.takeLast(16))) }
+        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages)) }
         Regex("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").find(readBody(connection))?.groupValues?.get(1)?.unescapeJson() ?: "模型没有返回内容。"
     }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
 }
@@ -2386,7 +2396,7 @@ private suspend fun callChatStream(
         connection.setRequestProperty("Accept", "text/event-stream")
         connection.connectTimeout = 20000
         connection.readTimeout = 120000
-        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages.takeLast(16), stream = true)) }
+        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages, stream = true)) }
         if (connection.responseCode !in 200..299) return@runCatching readBody(connection).ifBlank { "调用失败：HTTP ${connection.responseCode}" }
         val builder = StringBuilder()
         BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).useLines { lines ->
@@ -2551,9 +2561,9 @@ private suspend fun buildConversationChapters(messages: List<ChatMessage>, confi
         if (config.apiKey.isBlank() || model.isBlank()) {
             local
         } else {
-            val prompt = "请把下面这段课堂对话总结成一个章节标题和一句话摘要。只返回 JSON：{\"title\":\"...\",\"summary\":\"...\"}\n" +
+            val prompt = "请把下面这段课堂对话整理成长期记忆索引。只返回 JSON：{\"title\":\"...\",\"summary\":\"...\",\"facts\":[\"明确事实\"],\"open\":[\"待确认问题\"]}。summary 必须只写对话中明确出现的内容，不要补充、推断或编造。\n" +
                 chunk.joinToString("\n") { "${if (it.role == "user") "用户" else "AI"}：${it.text}" }.take(4000)
-            val result = callChat(config.baseUrl, config.apiKey, model, "你负责为 AI 课堂生成简洁的对话章节索引。", listOf(ChatMessage("user", prompt)))
+            val result = callChat(config.baseUrl, config.apiKey, model, "你负责为 AI 课堂生成保守、可追溯的对话章节索引。不得编造对话中没有出现的事实。", listOf(ChatMessage("user", prompt)))
             parseChapter(result, start, end) ?: local
         }
     }
@@ -2640,7 +2650,14 @@ private fun parseChapter(raw: String, start: Int, end: Int): ConversationChapter
     val json = JSONObject(jsonText)
     val title = json.optString("title").ifBlank { return@runCatching null }
     val summary = json.optString("summary").ifBlank { return@runCatching null }
-    ConversationChapter(title.take(28), summary.take(120), start, end)
+    val facts = json.optJSONArray("facts").toStrings().filter { it.isNotBlank() }.take(3)
+    val open = json.optJSONArray("open").toStrings().filter { it.isNotBlank() }.take(2)
+    val enriched = buildString {
+        append(summary)
+        if (facts.isNotEmpty()) append(" 明确事实：${facts.joinToString("；")}")
+        if (open.isNotEmpty()) append(" 待确认：${open.joinToString("；")}")
+    }
+    ConversationChapter(title.take(28), enriched.take(220), start, end)
 }.getOrNull()
 
 private fun readBody(connection: HttpURLConnection): String {
@@ -2651,7 +2668,7 @@ private fun readBody(connection: HttpURLConnection): String {
 private fun buildJson(model: String, system: String, messages: List<ChatMessage>, stream: Boolean = false): String {
     val all = listOf(ChatMessage("system", system)) + messages
     val jsonMessages = all.joinToString(",") { "{\"role\":\"${it.role}\",\"content\":\"${it.text.escapeJson()}\"}" }
-    return "{\"model\":\"${model.escapeJson()}\",\"messages\":[$jsonMessages],\"temperature\":0.7,\"stream\":$stream}"
+    return "{\"model\":\"${model.escapeJson()}\",\"messages\":[$jsonMessages],\"temperature\":0.35,\"stream\":$stream}"
 }
 
 private fun buildVisionJson(model: String, system: String, prompt: String, dataUrl: String): String {
@@ -2784,13 +2801,46 @@ private fun promptPriorityReminder(config: ClassroomConfig): String {
     return "[优先级提醒] 回答时再次确认：始终优先遵守用户自定义讲师人格提示词；你是 $mentorName，并按设定称呼用户为 $userAlias。记忆、知识库和分支上下文只用于补充事实与连续性。"
 }
 
+private fun conversationConsistencyRules(): String = """
+[长期对话一致性规则]
+1. 回答必须优先依据最近连续对话，其次参考长期记忆、章节索引和知识库。
+2. 长期记忆和章节索引只代表压缩摘要，不能当作完整原文；若摘要与最近连续对话冲突，以最近连续对话为准。
+3. 不要编造用户没有说过的学习目标、进度、结论、考试结果或知识库内容。
+4. 当上下文不足、指代不清或记忆冲突时，先明确说明不确定并追问，不要硬接硬编。
+5. 延续教学时要保持当前章节、当前问题和上一轮回答逻辑一致。
+""".trimIndent()
+
+private fun promptMessagesForRoom(room: Classroom, history: List<ChatMessage>): List<ChatMessage> {
+    val recent = history.takeLast(RECENT_MESSAGE_CONTEXT_LIMIT)
+    val state = buildString {
+        appendLine("[当前课堂状态包]")
+        appendLine("课堂名：${room.name}")
+        appendLine("学习内容：${room.topic}")
+        appendLine("总消息数：${history.size}")
+        room.chapters.lastOrNull()?.let { appendLine("当前最近章节：${it.title}｜${it.summary}") }
+        history.lastOrNull { it.role == "user" }?.let { appendLine("最近用户问题：${it.text.take(600)}") }
+        append("请只把这个状态包作为定位信息，真正展开回答时优先遵守后面的最近连续对话。")
+    }
+    return listOf(ChatMessage("system", state)) + recent
+}
+
+private fun promptMessagesForBranch(context: List<ChatMessage>, history: List<ChatMessage>): List<ChatMessage> {
+    val branchAnchor = context.takeLast(BRANCH_CONTEXT_LIMIT).joinToString("\n") { "${if (it.role == "user") "用户" else "AI"}：${it.text.take(700)}" }
+    val state = buildString {
+        appendLine("[分支课堂状态包]")
+        appendLine("分支创建时的主课堂锚点如下，仅用于理解分支起点，不要把分支回答写回主课堂：")
+        append(branchAnchor.ifBlank { "暂无锚点。" })
+    }
+    return listOf(ChatMessage("system", state)) + history.takeLast(RECENT_MESSAGE_CONTEXT_LIMIT)
+}
+
 private fun truncatePromptSection(text: String, limit: Int): String {
     val clean = text.trim()
     if (clean.length <= limit) return clean
     return clean.take(limit) + "\n[以上资料已按上下文预算截断，截断部分不可臆测。]"
 }
 
-private const val APP_VERSION = "2.3.1"
+private const val APP_VERSION = "2.3.2"
 
 private object AppShapes {
     val panel = RoundedCornerShape(22.dp)
@@ -2801,18 +2851,19 @@ private object AppShapes {
 }
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 2.3.1
+# AI Classroom 2.3.2
 
 # 这次更新
 
-- 主课堂空课堂状态重做为类似 DeepSeek / GPT App 的首页形式。
-- 刚进入应用或新建课堂时，顶部显示大字号日期和星期，并显示一条由 API 模型生成的短格言。
-- 开课前输入框上移，避免首页过空，输入学习要求后自动进入原主课堂对话界面。
-- 开课前可直接选择是否启用深度思考模型，设置会立即保存到当前课堂。
+- 优化长对话底层上下文逻辑，减少记忆混乱、前后矛盾和生编硬造。
+- 新增课堂状态包和最近连续对话窗口，模型回答时优先依据最近上下文。
+- 长期记忆和章节索引被明确标记为压缩摘要，只作为参考，不再覆盖最近对话。
+- 记忆整理新增“明确事实”和“待确认事项”，降低摘要误导。
+- 降低对话温度，让课堂回答更稳、更贴合上下文。
 
 # 延续优化
 
-- 原有主课堂对话、分支、记忆、知识库、TTS 和多模态功能保持不变。
+- 原有主课堂对话、分支、知识库、TTS 和多模态功能保持不变。
 - 所有课堂、分支、设置、知识库、记忆和考试记录继续保存在本机。
 """
 private const val USER_MANUAL_TEXT = """
@@ -2837,6 +2888,8 @@ private const val USER_MANUAL_TEXT = """
 记忆页用于快速查找长期对话。应用会在后台按批次整理课堂内容，生成章节标题和一句话摘要，不会在每一句对话后阻塞前台回复。
 
 全览模式会生成实时向量思维导图，章节按摘要相似度自动连接；章节模式可双击章节跳回主课堂对应位置。
+
+长对话回答时，应用会把最近连续对话作为最高优先的上下文，同时把长期记忆和章节索引作为压缩参考。若记忆摘要与最近对话冲突，模型会被要求优先遵守最近对话；如果上下文不足，应先说明不确定或追问，而不是编造内容。
 
 ## 知识库
 知识库目前可直接读取 `.md` 和 `.txt` 文件。上传后文件会保存在本地列表中，点击可查看全文，长按可删除。AI 讲师会读取知识库正文的可控长度片段，并结合你的材料教学。
@@ -2890,6 +2943,9 @@ private val Purple = Color(0xFF0E7490)
 private const val DEFAULT_MENTOR_PROMPT = "你是一名耐心、结构清晰的 AI 讲师。默认使用中文教学，保持主线课程连续，并在必要时用 Markdown 和公式文本表达。"
 private const val MEMORY_PROMPT_LIMIT = 24
 private const val MEMORY_CONTEXT_LIMIT = 6000
+private const val CHAPTER_PROMPT_LIMIT = 32
+private const val CHAPTER_CONTEXT_LIMIT = 5000
+private const val RECENT_MESSAGE_CONTEXT_LIMIT = 32
 private const val KNOWLEDGE_CONTEXT_LIMIT = 9000
 private const val BRANCH_CONTEXT_LIMIT = 24
 private const val BRANCH_CONTEXT_LIMIT_CHARS = 5000
