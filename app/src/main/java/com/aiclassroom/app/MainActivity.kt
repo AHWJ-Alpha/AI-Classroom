@@ -5,6 +5,7 @@ import android.content.res.Configuration
 import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
+import android.media.MediaPlayer
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -20,6 +21,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -101,6 +103,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -126,6 +129,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -154,7 +158,7 @@ private enum class Tab(val title: String, val icon: ImageVector) {
 
 private data class ChatMessage(val role: String, val text: String)
 private data class BranchClass(val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String, val context: MutableList<ChatMessage> = mutableStateListOf())
-private data class KnowledgeFile(val name: String, val type: String, val chars: Int, val preview: String)
+private data class KnowledgeFile(val name: String, val type: String, val chars: Int, val preview: String, val content: String = preview)
 private data class ConversationChapter(val title: String, val summary: String, val startIndex: Int, val endIndex: Int)
 private data class ExamQuestion(val premise: String, val question: String, val answer: String = "", val unknown: Boolean = false)
 private data class ExamSession(val title: String, val questions: MutableList<ExamQuestion>, val draft: String = "", val submitted: Boolean = false)
@@ -192,6 +196,7 @@ private data class ClassroomConfig(
     val ttsBaseUrl: String = "https://api.openai.com/v1",
     val ttsModel: String = "tts-1",
     val ttsVoice: String = "alloy",
+    val ttsAutoRead: Boolean = false,
     val mentorName: String = "AI 讲师",
     val userAlias: String = "同学",
     val mentorPrompt: String = "你是一名耐心、结构清晰的 AI 讲师。默认使用中文教学，保持主线课程连续，并在必要时用 Markdown 和公式文本表达。",
@@ -319,7 +324,9 @@ private fun AIClassroomApp() {
     }
 
     fun systemPrompt(room: Classroom): String {
-        val knowledge = room.files.joinToString("\n") { "[${it.name}] ${it.preview}" }.take(3000)
+        val knowledge = room.files.joinToString("\n\n") { file ->
+            "[${file.name} / ${file.type} / ${file.chars} 字]\n${file.content}"
+        }.take(KNOWLEDGE_CONTEXT_LIMIT)
         val memory = room.memories.takeLast(MEMORY_PROMPT_LIMIT).joinToString("\n")
         val safety = if (room.config.efficientMode) "高效模式：过滤 NSFW、色情、血腥、违法、仇恨和自伤内容。" else ""
         return "${room.config.mentorPrompt}\n你的讲师名字：${room.config.mentorName}\n你对用户的称呼：${room.config.userAlias}\n课堂：${room.name}\n学习内容：${room.topic}\n记忆：$memory\n知识库：$knowledge\n$safety"
@@ -373,6 +380,7 @@ private fun AIClassroomApp() {
             detectedExam?.let { examSession = it }
             isLoading = false
             persist("回复已保存，记忆将在后台整理")
+            if (room.config.ttsAutoRead && visibleResult.isNotBlank()) speakText(context, room.config, visibleResult)
             scheduleMemoryBuild(room, activeModel)
         }
     }
@@ -402,6 +410,7 @@ private fun AIClassroomApp() {
             room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(result, room.config.efficientMode))
             isLoading = false
             persist("图片分析已保存")
+            if (room.config.ttsAutoRead && result.isNotBlank()) speakText(context, room.config, result)
             scheduleMemoryBuild(room, activeModel)
         }
     }
@@ -432,6 +441,7 @@ private fun AIClassroomApp() {
             branch.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(result, room.config.efficientMode))
             branchLoading = false
             persist("分支回复已保存")
+            if (room.config.ttsAutoRead && result.isNotBlank()) speakText(context, room.config, result)
         }
     }
 
@@ -484,12 +494,12 @@ private fun AIClassroomApp() {
                 .fillMaxSize()
                 .padding(padding)
                 .padding(horizontal = 10.dp)
-                .pointerInput(classes.size, classIndex, classMenuOpen) {
+                .pointerInput(classes.size, classIndex, classMenuOpen, tab) {
                     var total = 0f
                     detectHorizontalDragGestures(
                         onDragEnd = {
-                            if (!classMenuOpen && total > 80f) classMenuOpen = true
-                            if (classMenuOpen && total < -80f) classMenuOpen = false
+                            if (tab == Tab.Class && !classMenuOpen && total > 80f) classMenuOpen = true
+                            if (tab == Tab.Class && classMenuOpen && total < -80f) classMenuOpen = false
                             total = 0f
                         },
                         onHorizontalDrag = { _, dragAmount -> total += dragAmount }
@@ -499,18 +509,14 @@ private fun AIClassroomApp() {
         ) {
             Box(Modifier.fillMaxSize()) {
                 when (tab) {
-                    Tab.Class -> ClassScreen(current, classIndex, classes.size, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, onOpenMenu = { classMenuOpen = true }, onSend = { sendMessage() }, onImage = { imageLauncher.launch("image/*") }, onDeleteAfter = { index ->
+                    Tab.Class -> ClassScreen(current, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, onOpenMenu = { classMenuOpen = true }, onSend = { sendMessage() }, onImage = { imageLauncher.launch("image/*") }, onDeleteAfter = { index ->
                         if (index in current.messages.indices) {
                             for (i in current.messages.lastIndex downTo index) current.messages.removeAt(i)
                             current.chapters.clear()
                             persist("已删除后续对话")
                         }
-                    }, onRewrite = { index, text ->
-                        if (index in current.messages.indices) {
-                            current.messages[index] = current.messages[index].copy(text = text)
-                            current.chapters.clear()
-                            persist("对话已重写")
-                        }
+                    }, onSpeak = { text ->
+                        speakText(context, current.config, text)
                     }) { index ->
                         val selected = current.messages.take(index + 1)
                         val branchMessages = mutableStateListOf<ChatMessage>()
@@ -727,8 +733,6 @@ private fun RenameClassroomDialog(initial: String, onClose: () -> Unit, onSave: 
 @Composable
 private fun ClassScreen(
     room: Classroom,
-    index: Int,
-    count: Int,
     input: String,
     onInput: (String) -> Unit,
     isLoading: Boolean,
@@ -740,12 +744,11 @@ private fun ClassScreen(
     onSend: () -> Unit,
     onImage: () -> Unit,
     onDeleteAfter: (Int) -> Unit,
-    onRewrite: (Int, String) -> Unit,
+    onSpeak: (String) -> Unit,
     onBranch: (Int) -> Unit
 ) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    var rewriteTarget by remember { mutableStateOf<Pair<Int, String>?>(null) }
     val lastItemIndex = room.messages.size + 1
     val bottomIndex = if (reverseConversation) 0 else lastItemIndex
     val topIndex = if (reverseConversation) lastItemIndex else 0
@@ -766,16 +769,7 @@ private fun ClassScreen(
     }
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = reverseConversation, contentPadding = PaddingValues(top = 10.dp, bottom = if (compactInput) 76.dp else 142.dp, start = 2.dp, end = 2.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            item {
-                InfoCard {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("课堂 ${index + 1}/$count", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                        OutlinedButton(onClick = onOpenMenu) { Text("切换") }
-                    }
-                    Text(room.topic, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-            items(room.messages.size) { i -> MessageCard(i, room.messages[i], palette, room.config.mentorName, onBranch, onDeleteAfter, { rewriteTarget = i to room.messages[i].text }) }
+            items(room.messages.size) { i -> MessageCard(i, room.messages[i], palette, room.config.mentorName, onBranch, onDeleteAfter, onSpeak) }
             if (isLoading) item { AiThinkingRow(palette, room.config.mentorName) }
         }
         ChatInputBar(
@@ -795,16 +789,6 @@ private fun ClassScreen(
             onClick = { scope.launch { if (isAtBottom) listState.animateScrollToItem(topIndex) else listState.animateScrollToItem(bottomIndex) } },
             modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = if (compactInput) 122.dp else 188.dp),
         )
-        rewriteTarget?.let { target ->
-            RewriteDialog(
-                initial = target.second,
-                onClose = { rewriteTarget = null },
-                onSave = { newText ->
-                    onRewrite(target.first, newText)
-                    rewriteTarget = null
-                }
-            )
-        }
     }
 }
 
@@ -900,10 +884,14 @@ private fun MessageCard(
     mentorName: String,
     onBranch: (Int) -> Unit,
     onDeleteAfter: (Int) -> Unit,
-    onRewrite: (Int) -> Unit
+    onSpeak: (String) -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
-    val actionModifier = Modifier.combinedClickable(onClick = {}, onLongClick = { menuOpen = true })
+    val actionModifier = Modifier.combinedClickable(
+        onClick = {},
+        onDoubleClick = { if (message.role == "assistant") onSpeak(message.text) },
+        onLongClick = { menuOpen = true }
+    )
     Box(Modifier.fillMaxWidth()) {
     if (message.role == "user") {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -929,24 +917,28 @@ private fun MessageCard(
             TextButton(onClick = { onBranch(index) }) { Text("从这里开分支") }
         }
     }
-        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-            DropdownMenuItem(text = { Text("从这里开分支") }, onClick = { menuOpen = false; onBranch(index) })
-            DropdownMenuItem(text = { Text("重写这段内容") }, leadingIcon = { Icon(Icons.Default.Edit, null) }, onClick = { menuOpen = false; onRewrite(index) })
-            DropdownMenuItem(text = { Text("删除此处及之后") }, leadingIcon = { Icon(Icons.Default.Delete, null) }, onClick = { menuOpen = false; onDeleteAfter(index) })
-        }
+        MessageActionMenu(menuOpen, palette, onDismiss = { menuOpen = false }, onBranch = { onBranch(index) }, onDeleteAfter = { onDeleteAfter(index) })
     }
 }
 
 @Composable
-private fun RewriteDialog(initial: String, onClose: () -> Unit, onSave: (String) -> Unit) {
-    var text by remember(initial) { mutableStateOf(initial) }
-    AlertDialog(
-        onDismissRequest = onClose,
-        title = { Text("重写对话内容", fontWeight = FontWeight.Bold) },
-        text = { OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth(), minLines = 5) },
-        confirmButton = { Button(onClick = { onSave(text) }) { Text("保存") } },
-        dismissButton = { TextButton(onClick = onClose) { Text("取消") } }
-    )
+private fun MessageActionMenu(expanded: Boolean, palette: AppPalette, onDismiss: () -> Unit, onBranch: () -> Unit, onDeleteAfter: () -> Unit) {
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+        modifier = Modifier.background(palette.surface)
+    ) {
+        DropdownMenuItem(
+            text = { Text("从这里开分支", color = palette.ink) },
+            leadingIcon = { Icon(Icons.Default.AccountTree, null, tint = palette.button) },
+            onClick = { onDismiss(); onBranch() }
+        )
+        DropdownMenuItem(
+            text = { Text("删除此处及之后", color = palette.ink) },
+            leadingIcon = { Icon(Icons.Default.Delete, null, tint = palette.button) },
+            onClick = { onDismiss(); onDeleteAfter() }
+        )
+    }
 }
 
 @Composable
@@ -1327,58 +1319,75 @@ private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<Cha
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MemoryMindMap(chapters: List<ConversationChapter>, onJump: (Int) -> Unit) {
     val nodes = chapters.take(18)
     val links = remember(nodes) { buildChapterLinks(nodes) }
-    val width = 320.dp
     val height = 420.dp
+    var scale by remember { mutableStateOf(1f) }
+    var pan by remember { mutableStateOf(Offset.Zero) }
+    val button = MaterialTheme.colorScheme.primary
+    val surface = MaterialTheme.colorScheme.surface
     InfoCard {
         Text("实时向量思维导图", fontWeight = FontWeight.Bold)
-        Text("章节会按摘要关键词相似度自动连接，点击节点可跳回对应对话。", color = Muted, fontSize = 13.sp)
+        Text("双指可任意放大缩小，拖动查看；双击节点跳到主课堂对应对话。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
         Spacer(Modifier.height(10.dp))
-        Box(Modifier.fillMaxWidth().height(height)) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(height)
+                .background(MaterialTheme.colorScheme.surfaceVariant, AppShapes.card)
+                .clipToBounds()
+                .pointerInput(nodes.size) {
+                    detectTransformGestures { _, panChange, zoom, _ ->
+                        scale = (scale * zoom).coerceIn(0.45f, 4f)
+                        pan += panChange
+                    }
+                }
+        ) {
             Canvas(Modifier.fillMaxSize()) {
                 val center = Offset(size.width / 2f, size.height / 2f)
-                val radius = size.minDimension * 0.36f
+                val radius = size.minDimension * 0.38f * scale
+                val shiftedCenter = center + pan
                 val positions = nodes.indices.associateWith { index ->
-                    if (nodes.size == 1) center else Offset(
-                        center.x + cos((index * 2.0 * Math.PI / nodes.size) - Math.PI / 2).toFloat() * radius,
-                        center.y + sin((index * 2.0 * Math.PI / nodes.size) - Math.PI / 2).toFloat() * radius
+                    if (nodes.size == 1) shiftedCenter else Offset(
+                        shiftedCenter.x + cos((index * 2.0 * Math.PI / nodes.size) - Math.PI / 2).toFloat() * radius,
+                        shiftedCenter.y + sin((index * 2.0 * Math.PI / nodes.size) - Math.PI / 2).toFloat() * radius
                     )
                 }
                 links.forEach { (from, to, weight) ->
                     val a = positions[from] ?: return@forEach
                     val b = positions[to] ?: return@forEach
-                    drawLine(Color(0xFF00AEEF).copy(alpha = (0.18f + weight * 0.34f).coerceIn(0.18f, 0.52f)), a, b, strokeWidth = 2.5f + weight * 3f, cap = StrokeCap.Round)
+                    drawLine(button.copy(alpha = (0.18f + weight * 0.34f).coerceIn(0.18f, 0.52f)), a, b, strokeWidth = (2.5f + weight * 3f) * scale.coerceIn(0.7f, 1.6f), cap = StrokeCap.Round)
                 }
                 positions.values.forEach { point ->
-                    drawCircle(Color(0xFF39C5BB).copy(alpha = 0.18f), radius = 34f, center = point)
-                    drawCircle(Color(0xFF00AEEF), radius = 12f, center = point)
+                    drawCircle(button.copy(alpha = 0.18f), radius = 34f * scale.coerceIn(0.7f, 1.6f), center = point)
+                    drawCircle(button, radius = 12f * scale.coerceIn(0.7f, 1.6f), center = point)
                 }
             }
             nodes.forEachIndexed { index, chapter ->
                 val angle = if (nodes.size == 1) -Math.PI / 2 else (index * 2.0 * Math.PI / nodes.size) - Math.PI / 2
-                val x = 50 + (cos(angle) * 118).roundToInt()
-                val y = 178 + (sin(angle) * 156).roundToInt()
+                val x = (160 + pan.x / 2.8f + cos(angle).toFloat() * 126f * scale).roundToInt()
+                val y = (178 + pan.y / 2.8f + sin(angle).toFloat() * 162f * scale).roundToInt()
                 Surface(
-                    onClick = { onJump(chapter.startIndex) },
                     modifier = Modifier
-                        .width(116.dp)
-                        .offset(x.dp, y.dp),
-                    shape = RoundedCornerShape(9.dp),
-                    color = MaterialTheme.colorScheme.surface,
+                        .width((116 * scale.coerceIn(0.78f, 1.35f)).dp)
+                        .offset(x.dp, y.dp)
+                        .combinedClickable(onClick = {}, onDoubleClick = { onJump(chapter.startIndex) }),
+                    shape = AppShapes.control,
+                    color = surface,
                     shadowElevation = 2.dp,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00AEEF).copy(alpha = 0.2f))
+                    border = androidx.compose.foundation.BorderStroke(1.dp, button.copy(alpha = 0.22f))
                 ) {
                     Column(Modifier.padding(8.dp)) {
                         Text(chapter.title, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(chapter.summary, color = Muted, fontSize = 11.sp, lineHeight = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        Text(chapter.summary, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, lineHeight = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
         }
-        if (nodes.size < chapters.size) Text("已显示最近 ${nodes.size} 个章节。", color = Muted, fontSize = 12.sp)
+        if (nodes.size < chapters.size) Text("已显示最近 ${nodes.size} 个章节。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
     }
 }
 
@@ -1421,20 +1430,73 @@ private val COMMON_MEMORY_WORDS = setOf("用户", "课堂", "内容", "学习", 
 @Composable
 private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Unit) {
     val context = LocalContext.current
+    var viewing by remember { mutableStateOf<KnowledgeFile?>(null) }
+    var deleteTarget by remember { mutableStateOf<KnowledgeFile?>(null) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
         val name = uri.lastPathSegment?.substringAfterLast('/') ?: "knowledge"
         val ext = name.substringAfterLast('.', "").lowercase()
         if (ext == "md" || ext == "txt") {
             val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }.orEmpty()
-            files.add(KnowledgeFile(name, ext, text.length, text.take(1000)))
+            files.add(KnowledgeFile(name, ext, text.length, text.take(1000), text))
             onSave()
         }
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { InfoCard { Text("可直接读取：.md、.txt", fontWeight = FontWeight.Bold); Spacer(Modifier.height(8.dp)); Button(onClick = { launcher.launch("text/*") }) { Text("读取文件") } } }
-        items(files) { file -> InfoCard { Text(file.name, fontWeight = FontWeight.Bold); Text("${file.type} · ${file.chars} 字", color = Muted, fontSize = 13.sp); Spacer(Modifier.height(6.dp)); MarkdownText(file.preview) } }
+        item {
+            InfoCard {
+                Text("知识库", fontWeight = FontWeight.Bold)
+                Text("可直接读取：.md、.txt。上传后会进入课堂提示词，AI 讲师可结合文件内容回答。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, lineHeight = 19.sp)
+                Spacer(Modifier.height(10.dp))
+                Button(onClick = { launcher.launch("text/*") }, shape = AppShapes.button) { Text("上传文件") }
+            }
+        }
+        if (files.isEmpty()) item { InfoCard { Text("还没有上传知识库文件。", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+        items(files, key = { it.name + it.chars }) { file ->
+            KnowledgeFileRow(file, onOpen = { viewing = file }, onDelete = { deleteTarget = file })
+        }
     }
+    viewing?.let { file -> KnowledgeFileDialog(file, onClose = { viewing = null }) }
+    deleteTarget?.let { file ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("删除文件", fontWeight = FontWeight.Bold) },
+            text = { Text("确定从知识库删除 ${file.name} 吗？") },
+            confirmButton = { Button(onClick = { files.remove(file); deleteTarget = null; onSave() }) { Text("删除") } },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } }
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun KnowledgeFileRow(file: KnowledgeFile, onOpen: () -> Unit, onDelete: () -> Unit) {
+    InfoCard {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = onOpen, onLongClick = onDelete)
+        ) {
+            Text(file.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("${file.type} · ${file.chars} 字", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            Spacer(Modifier.height(6.dp))
+            MarkdownText(file.preview)
+        }
+    }
+}
+
+@Composable
+private fun KnowledgeFileDialog(file: KnowledgeFile, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(file.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        text = {
+            LazyColumn(Modifier.height(460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item { MarkdownText(file.content) }
+            }
+        },
+        confirmButton = { Button(onClick = onClose) { Text("关闭") } }
+    )
 }
 
 @Composable
@@ -1465,6 +1527,7 @@ private fun ModelScreen(
     var ttsBaseUrl by remember(config.ttsBaseUrl) { mutableStateOf(config.ttsBaseUrl) }
     var ttsModel by remember(config.ttsModel) { mutableStateOf(config.ttsModel) }
     var ttsVoice by remember(config.ttsVoice) { mutableStateOf(config.ttsVoice) }
+    var ttsAutoRead by remember(config.ttsAutoRead) { mutableStateOf(config.ttsAutoRead) }
     var ttsStatus by remember { mutableStateOf("未获取语音模型") }
     var mentorName by remember(config.mentorName) { mutableStateOf(config.mentorName) }
     var userAlias by remember(config.userAlias) { mutableStateOf(config.userAlias) }
@@ -1597,8 +1660,15 @@ private fun ModelScreen(
                     OutlinedTextField(ttsVoice, { ttsVoice = it }, Modifier.weight(1f), label = { Text("音色") }, singleLine = true)
                 }
                 Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.RecordVoiceOver, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("长时开启 AI 回复朗读", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                    Switch(ttsAutoRead, { ttsAutoRead = it })
+                }
+                Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Button(onClick = { onConfig(config.copy(ttsProvider = ttsProvider, ttsApiKey = ttsApiKey.trim(), ttsBaseUrl = ttsBaseUrl.trim(), ttsModel = ttsModel.trim(), ttsVoice = ttsVoice.trim())); expandedModule = null }) {
+                    Button(onClick = { onConfig(config.copy(ttsProvider = ttsProvider, ttsApiKey = ttsApiKey.trim(), ttsBaseUrl = ttsBaseUrl.trim(), ttsModel = ttsModel.trim(), ttsVoice = ttsVoice.trim(), ttsAutoRead = ttsAutoRead)); expandedModule = null }) {
                         Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("保存 TTS 模块")
@@ -1921,7 +1991,7 @@ private fun InfoCard(content: @Composable ColumnScope.() -> Unit) {
 private fun newClassroom(number: Int, config: ClassroomConfig = ClassroomConfig()) = Classroom(
     name = "课堂 $number",
     topic = "自定义学习内容",
-    messages = mutableStateListOf(ChatMessage("assistant", "输入学习目标，我会开始主课堂教学。支持 Markdown 与公式文本，例如 `f(x)=x^2` 或 ${'$'}E=mc^2${'$'}。")),
+    messages = mutableStateListOf(),
     branches = mutableStateListOf(),
     memories = mutableStateListOf("等待开始。"),
     chapters = mutableStateListOf(),
@@ -1986,7 +2056,7 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
     return Classroom(
         name = optString("name", "课堂 $number"),
         topic = optString("topic", "自定义学习内容"),
-        messages = optJSONArray("messages").toMessages().toMutableStateList(),
+        messages = optJSONArray("messages").toMessages().filterNot { it.isLegacyWelcomeMessage() }.toMutableStateList(),
         branches = optJSONArray("branches").toBranches().toMutableStateList(),
         memories = optJSONArray("memories").toStrings().ifEmpty { listOf("等待开始。") }.toMutableStateList(),
         chapters = optJSONArray("chapters").toChapters().toMutableStateList(),
@@ -2009,6 +2079,7 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
             ttsBaseUrl = configJson.optString("ttsBaseUrl", "https://api.openai.com/v1"),
             ttsModel = configJson.optString("ttsModel", "tts-1"),
             ttsVoice = configJson.optString("ttsVoice", "alloy"),
+            ttsAutoRead = configJson.optBoolean("ttsAutoRead", false),
             mentorName = configJson.optString("mentorName", "AI 讲师"),
             userAlias = configJson.optString("userAlias", "同学"),
             mentorPrompt = configJson.optString("mentorPrompt", ClassroomConfig().mentorPrompt),
@@ -2033,11 +2104,12 @@ private fun Classroom.toJson() = JSONObject().apply {
     }))
     put("memories", JSONArray(memories))
     put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("summary", it.summary).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
-    put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview) }))
-    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("mentorName", config.mentorName).put("userAlias", config.userAlias).put("mentorPrompt", config.mentorPrompt).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("interfaceMode", config.interfaceMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
+    put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview).put("content", it.content) }))
+    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("ttsAutoRead", config.ttsAutoRead).put("mentorName", config.mentorName).put("userAlias", config.userAlias).put("mentorPrompt", config.mentorPrompt).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("interfaceMode", config.interfaceMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
 }
 
 private fun JSONArray?.toMessages(): List<ChatMessage> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ChatMessage(item.optString("role"), item.optString("text")) } }
+private fun ChatMessage.isLegacyWelcomeMessage(): Boolean = role == "assistant" && text.startsWith("输入学习目标，我会开始主课堂教学。")
 private fun JSONArray?.toBranches(): List<BranchClass> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item ->
     val messages = item.optJSONArray("messages").toMessages().toMutableStateList()
     val context = item.optJSONArray("context").toMessages().ifEmpty { messages.take(BRANCH_CONTEXT_LIMIT) }.toMutableStateList()
@@ -2045,7 +2117,10 @@ private fun JSONArray?.toBranches(): List<BranchClass> = if (this == null) empty
 } }
 private fun JSONArray?.toStrings(): List<String> = if (this == null) emptyList() else List(length()) { optString(it) }
 private fun JSONArray?.toChapters(): List<ConversationChapter> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ConversationChapter(item.optString("title"), item.optString("summary"), item.optInt("startIndex"), item.optInt("endIndex")) } }
-private fun JSONArray?.toFiles(): List<KnowledgeFile> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> KnowledgeFile(item.optString("name"), item.optString("type"), item.optInt("chars"), item.optString("preview")) } }
+private fun JSONArray?.toFiles(): List<KnowledgeFile> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item ->
+    val preview = item.optString("preview")
+    KnowledgeFile(item.optString("name"), item.optString("type"), item.optInt("chars"), preview, item.optString("content", preview))
+} }
 private fun <T> List<T>.toMutableStateList() = mutableStateListOf<T>().also { it.addAll(this) }
 
 private fun defaultBaseUrl(provider: String) = when (provider) {
@@ -2214,6 +2289,50 @@ private suspend fun callVision(baseUrl: String, apiKey: String, model: String, s
         Regex("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").find(readBody(connection))?.groupValues?.get(1)?.unescapeJson() ?: "模型没有返回内容。"
     }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
 }
+
+private fun speakText(context: Context, config: ClassroomConfig, text: String) {
+    if (config.ttsApiKey.isBlank() || config.ttsModel.isBlank()) return
+    val clean = stripMarkdownForSpeech(text).take(1800)
+    if (clean.isBlank()) return
+    kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+        val audio = callTts(config, clean)
+        if (audio.isEmpty()) return@launch
+        runCatching {
+            val file = File(context.cacheDir, "ai_classroom_tts.mp3")
+            FileOutputStream(file).use { it.write(audio) }
+            withContext(Dispatchers.Main) {
+                MediaPlayer().apply {
+                    setDataSource(file.absolutePath)
+                    setOnCompletionListener { player -> player.release() }
+                    setOnErrorListener { player, _, _ -> player.release(); true }
+                    prepare()
+                    start()
+                }
+            }
+        }
+    }
+}
+
+private suspend fun callTts(config: ClassroomConfig, text: String): ByteArray = withContext(Dispatchers.IO) {
+    runCatching {
+        val connection = URL(config.ttsBaseUrl.trimEnd('/') + "/audio/speech").openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.doOutput = true
+        connection.setRequestProperty("Authorization", "Bearer ${config.ttsApiKey}")
+        connection.setRequestProperty("Content-Type", "application/json")
+        connection.connectTimeout = 20000
+        connection.readTimeout = 90000
+        val body = "{\"model\":\"${config.ttsModel.escapeJson()}\",\"voice\":\"${config.ttsVoice.escapeJson()}\",\"input\":\"${text.escapeJson()}\"}"
+        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body) }
+        if (connection.responseCode !in 200..299) ByteArray(0) else connection.inputStream.use { it.readBytes() }
+    }.getOrDefault(ByteArray(0))
+}
+
+private fun stripMarkdownForSpeech(text: String): String = sanitizeMathText(text)
+    .replace(Regex("```[\\s\\S]*?```"), " ")
+    .replace(Regex("[#>*_`\\[\\]()]"), " ")
+    .replace(Regex("\\s+"), " ")
+    .trim()
 
 private fun isApiFailure(result: String): Boolean {
     val text = result.lowercase()
@@ -2473,7 +2592,7 @@ private fun Color.compositeOn(base: Color): Color = Color(
     alpha = 1f
 )
 
-private const val APP_VERSION = "2.2.1"
+private const val APP_VERSION = "2.2.2"
 
 private object AppShapes {
     val panel = RoundedCornerShape(22.dp)
@@ -2484,20 +2603,20 @@ private object AppShapes {
 }
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 2.2.1
+# AI Classroom 2.2.2
 
 # 这次更新
 
-- 删除顶部 AI Classroom 标题栏，只保留贴合手机状态栏高度的轻量占位。
-- 二级课堂菜单重构为更接近原生 Android 的抽屉列表样式。
-- 菜单顶部新增课堂搜索，可按课堂名或学习内容快速查找。
-- 支持直接修改课堂名字，保存后本地实时生效。
-- 讲师人格新增讲师名字和讲师对用户的称呼。
+- 二级课堂菜单只在主课堂左滑时展开，其他页面不再误触。
+- 记忆全览思维导图支持双指缩放、拖动查看，双击节点跳回主课堂对应对话。
+- 知识库重做：上传 `.txt` / `.md` 后会保存全文并供 AI 讲师读取；文件可点击查看、长按删除。
+- 主课堂长按菜单适配皮肤，并移除重写功能。
+- 开始课堂后不再显示“课堂 x/x 输入学习目标”的大块引导。
+- 双击 AI 讲师回复可调用 TTS 朗读，TTS 设置支持长时开启自动朗读。
 
 # 延续优化
 
-- 主课堂和分支课堂中的讲师名称会实时跟随设置更新。
-- 用户称呼只写入提示词，不作为界面标题显示。
+- 主课堂和分支课堂中的讲师名称继续实时跟随设置更新。
 - 所有课堂、分支、设置、知识库、记忆和考试记录继续保存在本机。
 """
 private const val USER_MANUAL_TEXT = """
@@ -2522,7 +2641,7 @@ private const val USER_MANUAL_TEXT = """
 全览模式会生成实时向量思维导图，章节按摘要相似度自动连接；章节模式可双击章节跳回主课堂对应位置。
 
 ## 知识库
-知识库目前可直接读取 `.md` 和 `.txt` 文件。文件摘要会加入课堂上下文，帮助 AI 结合你的材料教学。
+知识库目前可直接读取 `.md` 和 `.txt` 文件。上传后文件会保存在本地列表中，点击可查看全文，长按可删除。AI 讲师会读取知识库正文的可控长度片段，并结合你的材料教学。
 
 ## API 与模型
 模型模块用于保存普通课堂对话的服务商、Base URL、API Key 和模型名。它支持自动获取模型，也可以手动输入模型名。
@@ -2537,7 +2656,7 @@ private const val USER_MANUAL_TEXT = """
 ## TTS
 TTS 模块用于保存语音服务配置，包括服务商、API Key、Base URL、模型和音色。预设服务商可快速填入常见 Base URL，也可以选择自定义。获取模型按钮会尝试从兼容接口读取模型列表；如果失败，可以手动填写模型名。
 
-当前版本先完成 TTS 配置保存，为后续语音朗读和讲师发声功能预留。
+双击 AI 讲师回复会调用 TTS 朗读。开启“长时开启 AI 回复朗读”后，新的 AI 回复会在生成完成后自动朗读。
 
 ## 讲师人格
 讲师人格提示词可以自定义，例如大学教授、企业工程师、考研老师、幽默导师或二次元导师。讲师名字会实时显示在主课堂和分支课堂中；讲师对你的称呼会写入提示词，让模型在教学时按这个称呼与你互动。保存后当前课堂会持续使用该人格。
@@ -2569,6 +2688,7 @@ private val Blue = Color(0xFF2563EB)
 private val Green = Color(0xFF10A7B5)
 private val Purple = Color(0xFF0E7490)
 private const val MEMORY_PROMPT_LIMIT = 24
+private const val KNOWLEDGE_CONTEXT_LIMIT = 12000
 private const val BRANCH_CONTEXT_LIMIT = 24
 private const val CHAPTER_SIZE = 12
 private const val MEMORY_BATCH_MESSAGE_COUNT = 8
