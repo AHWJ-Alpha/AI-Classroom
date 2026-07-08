@@ -163,6 +163,8 @@ private data class ChatMessage(val role: String, val text: String)
 private data class BranchClass(val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String, val context: MutableList<ChatMessage> = mutableStateListOf())
 private data class KnowledgeFile(val name: String, val type: String, val chars: Int, val preview: String, val content: String = preview)
 private data class ConversationChapter(val title: String, val summary: String, val startIndex: Int, val endIndex: Int)
+private data class MemoryCard(val title: String, val summary: String, val keywords: List<String>, val type: String, val priority: Int, val startIndex: Int, val endIndex: Int)
+private data class LearningMemoryPack(val corePremises: List<String>, val cards: List<MemoryCard>)
 private data class ExamQuestion(val premise: String, val question: String, val answer: String = "", val unknown: Boolean = false)
 private data class ExamSession(val title: String, val questions: MutableList<ExamQuestion>, val draft: String = "", val submitted: Boolean = false)
 private data class UpdateInfo(val version: String, val name: String, val url: String, val notes: String)
@@ -203,6 +205,7 @@ private data class ClassroomConfig(
     val mentorName: String = "AI 讲师",
     val userAlias: String = "同学",
     val mentorPrompt: String = DEFAULT_MENTOR_PROMPT,
+    val worldBook: String = "",
     val efficientMode: Boolean = true,
     val reverseConversation: Boolean = false,
     val themeMode: String = "ocean",
@@ -233,6 +236,8 @@ private data class Classroom(
     val messages: MutableList<ChatMessage>,
     val branches: MutableList<BranchClass>,
     val memories: MutableList<String>,
+    val corePremises: MutableList<String>,
+    val memoryCards: MutableList<MemoryCard>,
     val chapters: MutableList<ConversationChapter>,
     val files: MutableList<KnowledgeFile>,
     val config: ClassroomConfig
@@ -338,6 +343,8 @@ private fun AIClassroomApp() {
             "[${file.name} / ${file.type} / ${file.chars} 字]\n${file.content}"
         }, KNOWLEDGE_CONTEXT_LIMIT)
         val memory = truncatePromptSection(room.memories.takeLast(MEMORY_PROMPT_LIMIT).joinToString("\n"), MEMORY_CONTEXT_LIMIT)
+        val corePremises = truncatePromptSection(room.corePremises.takeLast(CORE_PREMISE_LIMIT).joinToString("\n") { "- $it" }, CORE_PREMISE_CONTEXT_LIMIT)
+        val worldBook = truncatePromptSection(room.config.worldBook, WORLD_BOOK_CONTEXT_LIMIT)
         val chapterIndex = truncatePromptSection(room.chapters.takeLast(CHAPTER_PROMPT_LIMIT).joinToString("\n") { chapter ->
             "第 ${chapter.startIndex + 1}-${chapter.endIndex + 1} 条｜${chapter.title}：${chapter.summary}"
         }, CHAPTER_CONTEXT_LIMIT)
@@ -351,6 +358,16 @@ private fun AIClassroomApp() {
             appendLine("对用户的称呼：${room.config.userAlias.ifBlank { "同学" }}")
             appendLine("课堂：${room.name}")
             appendLine("学习内容：${room.topic}")
+            if (worldBook.isNotBlank()) {
+                appendLine()
+                appendLine("[用户手写世界书，优先级低于讲师人格，高于自动摘要]")
+                appendLine(worldBook)
+            }
+            if (corePremises.isNotBlank()) {
+                appendLine()
+                appendLine("[常驻极简前提，每次对话都必须用于维持长期连续性]")
+                appendLine(corePremises)
+            }
             if (chapterIndex.isNotBlank()) {
                 appendLine()
                 appendLine("[章节索引，仅用于定位长期进度，不代表完整原文]")
@@ -400,9 +417,14 @@ private fun AIClassroomApp() {
             delay(MEMORY_BATCH_DELAY_MS)
             val snapshot = room.messages.toList()
             val chapters = buildConversationChapters(snapshot, room.config, model)
+            val memoryPack = buildLearningMemoryPack(snapshot, room.config, model)
             val branchMemory = room.memories.filterNot { it.startsWith(MAIN_MEMORY_PREFIX) }
             room.chapters.clear()
             room.chapters.addAll(chapters)
+            room.corePremises.clear()
+            room.corePremises.addAll(memoryPack.corePremises.takeLast(CORE_PREMISE_LIMIT))
+            room.memoryCards.clear()
+            room.memoryCards.addAll(mergeMemoryCards(memoryPack.cards).takeLast(MEMORY_CARD_STORE_LIMIT))
             room.memories.clear()
             room.memories.addAll(branchMemory.takeLast(MEMORY_PROMPT_LIMIT / 2))
             room.memories.addAll(chapters.takeLast(MEMORY_PROMPT_LIMIT).map { chapter ->
@@ -1677,6 +1699,7 @@ private fun ModelScreen(
     var mentorName by remember(config.mentorName) { mutableStateOf(config.mentorName) }
     var userAlias by remember(config.userAlias) { mutableStateOf(config.userAlias) }
     var mentorPrompt by remember(config.mentorPrompt) { mutableStateOf(config.mentorPrompt) }
+    var worldBook by remember(config.worldBook) { mutableStateOf(config.worldBook) }
     var efficientMode by remember(config.efficientMode) { mutableStateOf(config.efficientMode) }
     var reverseConversation by remember(config.reverseConversation) { mutableStateOf(config.reverseConversation) }
     var themeMode by remember(config.themeMode) { mutableStateOf(normalizeThemeMode(config.themeMode)) }
@@ -1943,6 +1966,9 @@ private fun ModelScreen(
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(mentorPrompt, { mentorPrompt = it }, Modifier.fillMaxWidth(), label = { Text("讲师人格提示词") }, minLines = 4)
                 Spacer(Modifier.height(8.dp))
+                OutlinedTextField(worldBook, { worldBook = it }, Modifier.fillMaxWidth(), label = { Text("手写世界书") }, minLines = 4)
+                Text("可写入长期固定设定、课程边界、你的学习习惯或必须遵守的课堂规则。", color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+                Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.HealthAndSafety, null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
@@ -1951,7 +1977,7 @@ private fun ModelScreen(
                 }
                 Text("过滤 NSFW 内容。", color = Muted)
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = { onConfig(config.copy(mentorName = mentorName.trim().ifBlank { "AI 讲师" }, userAlias = userAlias.trim().ifBlank { "同学" }, mentorPrompt = mentorPrompt.trim().ifBlank { DEFAULT_MENTOR_PROMPT }, efficientMode = efficientMode)); expandedModule = null }) {
+                Button(onClick = { onConfig(config.copy(mentorName = mentorName.trim().ifBlank { "AI 讲师" }, userAlias = userAlias.trim().ifBlank { "同学" }, mentorPrompt = mentorPrompt.trim().ifBlank { DEFAULT_MENTOR_PROMPT }, worldBook = worldBook.trim(), efficientMode = efficientMode)); expandedModule = null }) {
                     Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("保存讲师人格与模式模块")
@@ -2139,6 +2165,8 @@ private fun newClassroom(number: Int, config: ClassroomConfig = ClassroomConfig(
     messages = mutableStateListOf(),
     branches = mutableStateListOf(),
     memories = mutableStateListOf("等待开始。"),
+    corePremises = mutableStateListOf(),
+    memoryCards = mutableStateListOf(),
     chapters = mutableStateListOf(),
     files = mutableStateListOf(),
     config = config
@@ -2204,6 +2232,8 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
         messages = optJSONArray("messages").toMessages().filterNot { it.isLegacyWelcomeMessage() }.toMutableStateList(),
         branches = optJSONArray("branches").toBranches().toMutableStateList(),
         memories = optJSONArray("memories").toStrings().ifEmpty { listOf("等待开始。") }.toMutableStateList(),
+        corePremises = optJSONArray("corePremises").toStrings().toMutableStateList(),
+        memoryCards = optJSONArray("memoryCards").toMemoryCards().toMutableStateList(),
         chapters = optJSONArray("chapters").toChapters().toMutableStateList(),
         files = optJSONArray("files").toFiles().toMutableStateList(),
         config = ClassroomConfig(
@@ -2228,6 +2258,7 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
             mentorName = configJson.optString("mentorName", "AI 讲师"),
             userAlias = configJson.optString("userAlias", "同学"),
             mentorPrompt = configJson.optString("mentorPrompt", ClassroomConfig().mentorPrompt),
+            worldBook = configJson.optString("worldBook", ""),
             efficientMode = configJson.optBoolean("efficientMode", true),
             reverseConversation = configJson.optBoolean("reverseConversation", false),
             themeMode = normalizeThemeMode(configJson.optString("themeMode", "ocean")),
@@ -2248,9 +2279,11 @@ private fun Classroom.toJson() = JSONObject().apply {
             .put("context", JSONArray(branch.context.map { JSONObject().put("role", it.role).put("text", it.text) }))
     }))
     put("memories", JSONArray(memories))
+    put("corePremises", JSONArray(corePremises))
+    put("memoryCards", JSONArray(memoryCards.map { JSONObject().put("title", it.title).put("summary", it.summary).put("keywords", JSONArray(it.keywords)).put("type", it.type).put("priority", it.priority).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
     put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("summary", it.summary).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
     put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview).put("content", it.content) }))
-    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("ttsAutoRead", config.ttsAutoRead).put("mentorName", config.mentorName).put("userAlias", config.userAlias).put("mentorPrompt", config.mentorPrompt).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("interfaceMode", config.interfaceMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
+    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("ttsAutoRead", config.ttsAutoRead).put("mentorName", config.mentorName).put("userAlias", config.userAlias).put("mentorPrompt", config.mentorPrompt).put("worldBook", config.worldBook).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("interfaceMode", config.interfaceMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
 }
 
 private fun JSONArray?.toMessages(): List<ChatMessage> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ChatMessage(item.optString("role"), item.optString("text")) } }
@@ -2262,6 +2295,9 @@ private fun JSONArray?.toBranches(): List<BranchClass> = if (this == null) empty
 } }
 private fun JSONArray?.toStrings(): List<String> = if (this == null) emptyList() else List(length()) { optString(it) }
 private fun JSONArray?.toChapters(): List<ConversationChapter> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ConversationChapter(item.optString("title"), item.optString("summary"), item.optInt("startIndex"), item.optInt("endIndex")) } }
+private fun JSONArray?.toMemoryCards(): List<MemoryCard> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item ->
+    MemoryCard(item.optString("title"), item.optString("summary"), item.optJSONArray("keywords").toStrings().filter { word -> word.isNotBlank() }, item.optString("type", "concept"), item.optInt("priority", 1), item.optInt("startIndex", 0), item.optInt("endIndex", 0))
+} }
 private fun JSONArray?.toFiles(): List<KnowledgeFile> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item ->
     val preview = item.optString("preview")
     KnowledgeFile(item.optString("name"), item.optString("type"), item.optInt("chars"), preview, item.optString("content", preview))
@@ -2569,6 +2605,100 @@ private suspend fun buildConversationChapters(messages: List<ChatMessage>, confi
     }
 }
 
+private suspend fun buildLearningMemoryPack(messages: List<ChatMessage>, config: ClassroomConfig, model: String): LearningMemoryPack = withContext(Dispatchers.IO) {
+    val recent = messages.takeLast(MEMORY_CARD_BUILD_MESSAGE_LIMIT)
+    val local = localLearningMemoryPack(messages)
+    if (recent.isEmpty() || config.apiKey.isBlank() || model.isBlank()) return@withContext local
+    val prompt = buildString {
+        appendLine("请把下面课堂对话整理为可长期使用的学习世界书。只返回 JSON，不要解释。")
+        appendLine("格式：{\"corePremises\":[\"极简前提\"],\"cards\":[{\"title\":\"标题\",\"summary\":\"保守摘要\",\"keywords\":[\"关键词\"],\"type\":\"concept/mistake/progress/preference/exam/branch\",\"priority\":1}]}")
+        appendLine("要求：corePremises 是每次对话都适合携带的极简事实，最多 12 条；cards 是可按关键词召回的记忆卡，最多 12 张。只写对话明确出现的内容，不要推断用户已掌握，不要编造。")
+        appendLine("课堂对话：")
+        append(recent.joinToString("\n") { "${if (it.role == "user") "用户" else "AI"}：${it.text}" }.take(7000))
+    }
+    val result = callChat(config.baseUrl, config.apiKey, model, "你负责为 AI 课堂维护保守、可追溯的长期学习世界书。", listOf(ChatMessage("user", prompt)))
+    val parsed = parseLearningMemoryPack(result, messages.size - recent.size, messages.lastIndex)
+    if (parsed != null && (parsed.corePremises.isNotEmpty() || parsed.cards.isNotEmpty())) parsed else local
+}
+
+private fun parseLearningMemoryPack(raw: String, start: Int, end: Int): LearningMemoryPack? = runCatching {
+    val jsonText = Regex("""\{[\s\S]*\}""").find(raw)?.value ?: return@runCatching null
+    val json = JSONObject(jsonText)
+    val premises = json.optJSONArray("corePremises").toStrings()
+        .map { it.replace(Regex("\\s+"), " ").trim() }
+        .filter { it.length in 4..120 }
+        .distinct()
+        .take(CORE_PREMISE_LIMIT)
+    val cardsJson = json.optJSONArray("cards") ?: JSONArray()
+    val cards = List(cardsJson.length()) { index ->
+        val item = cardsJson.getJSONObject(index)
+        val title = item.optString("title").replace(Regex("\\s+"), " ").trim().take(36)
+        val summary = item.optString("summary").replace(Regex("\\s+"), " ").trim().take(260)
+        val keywords = item.optJSONArray("keywords").toStrings().flatMap { extractKeywords(it) }.distinct().take(12)
+        MemoryCard(title.ifBlank { "长期记忆" }, summary, keywords, item.optString("type", "concept").ifBlank { "concept" }, item.optInt("priority", 1).coerceIn(1, 5), start, end)
+    }.filter { it.summary.isNotBlank() }
+    LearningMemoryPack(premises, cards)
+}.getOrNull()
+
+private fun localLearningMemoryPack(messages: List<ChatMessage>): LearningMemoryPack {
+    val recent = messages.takeLast(MEMORY_CARD_BUILD_MESSAGE_LIMIT)
+    val topicLine = recent.lastOrNull { it.role == "user" }?.text?.replace(Regex("\\s+"), " ")?.take(80).orEmpty()
+    val keywords = extractKeywords(recent.joinToString(" ") { it.text })
+    val premises = listOfNotNull(
+        topicLine.takeIf { it.isNotBlank() }?.let { "最近用户正在围绕“$it”继续学习。" },
+        keywords.take(5).joinToString("、").takeIf { it.isNotBlank() }?.let { "近期高频主题包括：$it。" }
+    )
+    val card = MemoryCard(
+        title = topicLine.ifBlank { "近期课堂内容" }.take(28),
+        summary = recent.joinToString(" ") { it.text }.replace(Regex("\\s+"), " ").take(220).ifBlank { "暂无可整理内容。" },
+        keywords = keywords.take(12),
+        type = "concept",
+        priority = 1,
+        startIndex = (messages.size - recent.size).coerceAtLeast(0),
+        endIndex = messages.lastIndex.coerceAtLeast(0)
+    )
+    return LearningMemoryPack(premises, listOf(card).filter { it.summary.isNotBlank() })
+}
+
+private fun mergeMemoryCards(cards: List<MemoryCard>): List<MemoryCard> = cards
+    .filter { it.summary.isNotBlank() }
+    .groupBy { it.title.lowercase(Locale.ROOT) }
+    .map { (_, group) ->
+        val latest = group.last()
+        latest.copy(keywords = group.flatMap { it.keywords }.distinct().take(14), priority = group.maxOf { it.priority })
+    }
+
+private fun recallMemoryCards(cards: List<MemoryCard>, query: String, limit: Int): List<MemoryCard> {
+    val queryWords = extractKeywords(query).toSet()
+    if (queryWords.isEmpty()) return cards.sortedByDescending { it.priority }.take(limit)
+    return cards.map { card ->
+        val titleWords = extractKeywords(card.title).toSet()
+        val summaryWords = extractKeywords(card.summary).toSet()
+        val keywordHits = card.keywords.count { it in queryWords } * 4
+        val titleHits = titleWords.count { it in queryWords } * 3
+        val summaryHits = summaryWords.count { it in queryWords }
+        val score = keywordHits + titleHits + summaryHits + card.priority
+        card to score
+    }.filter { it.second > 0 }
+        .sortedWith(compareByDescending<Pair<MemoryCard, Int>> { it.second }.thenByDescending { it.first.endIndex })
+        .map { it.first }
+        .take(limit)
+}
+
+private fun extractKeywords(text: String): List<String> {
+    val cleaned = text.lowercase(Locale.ROOT)
+    val latin = Regex("[a-zA-Z][a-zA-Z0-9_+#.-]{1,28}").findAll(cleaned).map { it.value }.toList()
+    val chinese = Regex("[\\u4e00-\\u9fa5]{2,8}").findAll(cleaned).map { it.value }.toList()
+    val stop = setOf("这个", "那个", "什么", "为什么", "怎么", "如何", "可以", "进行", "一个", "我们", "你是", "用户", "讲师", "回答", "问题", "课堂", "学习", "内容", "需要")
+    return (latin + chinese)
+        .map { it.trim('，', '。', '、', '：', ':', ';', '；', '.', ',', '?', '？', '!', '！', '“', '”', '"') }
+        .filter { it.length >= 2 && it !in stop && !it.all { ch -> ch.isDigit() } }
+        .groupingBy { it }.eachCount()
+        .entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key.length })
+        .map { it.key }
+        .take(40)
+}
+
 private fun isExamRequest(text: String): Boolean {
     val triggers = listOf("考试", "测验", "测试", "考我", "出题", "随堂", "模拟考", "quiz", "exam", "test")
     return triggers.any { text.contains(it, ignoreCase = true) }
@@ -2798,7 +2928,7 @@ private fun mentorPriorityBlock(config: ClassroomConfig): String {
 private fun promptPriorityReminder(config: ClassroomConfig): String {
     val mentorName = config.mentorName.trim().ifBlank { "AI 讲师" }
     val userAlias = config.userAlias.trim().ifBlank { "同学" }
-    return "[优先级提醒] 回答时再次确认：始终优先遵守用户自定义讲师人格提示词；你是 $mentorName，并按设定称呼用户为 $userAlias。记忆、知识库和分支上下文只用于补充事实与连续性。"
+    return "[优先级提醒] 回答时再次确认：始终优先遵守用户自定义讲师人格提示词；你是 $mentorName，并按设定称呼用户为 $userAlias。用户手写世界书用于补充固定设定；自动记忆、知识库和分支上下文只用于补充事实与连续性。"
 }
 
 private fun conversationConsistencyRules(): String = """
@@ -2812,6 +2942,8 @@ private fun conversationConsistencyRules(): String = """
 
 private fun promptMessagesForRoom(room: Classroom, history: List<ChatMessage>): List<ChatMessage> {
     val recent = history.takeLast(RECENT_MESSAGE_CONTEXT_LIMIT)
+    val retrievalQuery = (history.takeLast(4).joinToString("\n") { it.text } + "\n" + room.topic).take(2400)
+    val recalledCards = recallMemoryCards(room.memoryCards, retrievalQuery, MEMORY_CARD_RECALL_LIMIT)
     val state = buildString {
         appendLine("[当前课堂状态包]")
         appendLine("课堂名：${room.name}")
@@ -2819,6 +2951,13 @@ private fun promptMessagesForRoom(room: Classroom, history: List<ChatMessage>): 
         appendLine("总消息数：${history.size}")
         room.chapters.lastOrNull()?.let { appendLine("当前最近章节：${it.title}｜${it.summary}") }
         history.lastOrNull { it.role == "user" }?.let { appendLine("最近用户问题：${it.text.take(600)}") }
+        if (recalledCards.isNotEmpty()) {
+            appendLine()
+            appendLine("[本轮按关键词召回的世界书记忆卡；它们是历史摘要，不是完整原文]")
+            recalledCards.forEach { card ->
+                appendLine("- ${card.title}｜关键词：${card.keywords.take(8).joinToString("、")}｜${card.summary}")
+            }
+        }
         append("请只把这个状态包作为定位信息，真正展开回答时优先遵守后面的最近连续对话。")
     }
     return listOf(ChatMessage("system", state)) + recent
@@ -2840,7 +2979,7 @@ private fun truncatePromptSection(text: String, limit: Int): String {
     return clean.take(limit) + "\n[以上资料已按上下文预算截断，截断部分不可臆测。]"
 }
 
-private const val APP_VERSION = "2.3.2"
+private const val APP_VERSION = "2.4.0"
 
 private object AppShapes {
     val panel = RoundedCornerShape(22.dp)
@@ -2851,15 +2990,14 @@ private object AppShapes {
 }
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 2.3.2
+# AI Classroom 2.4.0
 
 # 这次更新
 
-- 优化长对话底层上下文逻辑，减少记忆混乱、前后矛盾和生编硬造。
-- 新增课堂状态包和最近连续对话窗口，模型回答时优先依据最近上下文。
-- 长期记忆和章节索引被明确标记为压缩摘要，只作为参考，不再覆盖最近对话。
-- 记忆整理新增“明确事实”和“待确认事项”，降低摘要误导。
-- 降低对话温度，让课堂回答更稳、更贴合上下文。
+- 新增长对话世界书系统，后台提炼常驻极简前提和关键词记忆卡。
+- 对话时自动插入常驻前提，并按当前问题召回相关记忆卡。
+- 讲师人格模块新增手写世界书，用户可额外添加长期固定设定。
+- 记忆整理继续遵守保守规则，摘要不能覆盖最近连续对话，也不能编造用户进度。
 
 # 延续优化
 
@@ -2889,7 +3027,7 @@ private const val USER_MANUAL_TEXT = """
 
 全览模式会生成实时向量思维导图，章节按摘要相似度自动连接；章节模式可双击章节跳回主课堂对应位置。
 
-长对话回答时，应用会把最近连续对话作为最高优先的上下文，同时把长期记忆和章节索引作为压缩参考。若记忆摘要与最近对话冲突，模型会被要求优先遵守最近对话；如果上下文不足，应先说明不确定或追问，而不是编造内容。
+长对话回答时，应用会把最近连续对话作为最高优先的上下文，同时插入自动提炼的常驻极简前提，并根据当前问题召回相关关键词记忆卡。长期记忆、世界书卡片和章节索引都是压缩参考；若它们与最近对话冲突，模型会被要求优先遵守最近对话；如果上下文不足，应先说明不确定或追问，而不是编造内容。
 
 ## 知识库
 知识库目前可直接读取 `.md` 和 `.txt` 文件。上传后文件会保存在本地列表中，点击可查看全文，长按可删除。AI 讲师会读取知识库正文的可控长度片段，并结合你的材料教学。
@@ -2910,9 +3048,9 @@ TTS 模块用于保存语音服务配置，包括服务商、API Key、Base URL�
 双击 AI 讲师回复会调用 TTS 朗读。开启“长时开启 AI 回复朗读”后，新的 AI 回复会在生成完成后自动朗读。
 
 ## 讲师人格
-讲师人格提示词可以自定义，例如大学教授、企业工程师、考研老师、幽默导师或二次元导师。讲师名字会实时显示在主课堂和分支课堂中；讲师对你的称呼会写入提示词，让模型在教学时按这个称呼与你互动。保存后当前课堂会持续使用该人格。
+讲师人格提示词可以自定义，例如大学教授、企业工程师、考研老师、幽默导师或二次元导师。讲师名字会实时显示在主课堂和分支课堂中；讲师对你的称呼会写入提示词，让模型在教学时按这个称呼与你互动。手写世界书可以保存长期固定设定、课程边界、学习习惯或必须遵守的课堂规则。保存后当前课堂会持续使用这些设定。
 
-讲师人格提示词拥有最高优先级。即使长期记忆、知识库和分支上下文不断变长，应用也会在系统提示词首尾重复人格优先级提醒，要求模型优先遵守用户保存的人格提示词和教学风格。
+讲师人格提示词拥有最高优先级。即使长期记忆、知识库、世界书卡片和分支上下文不断变长，应用也会在系统提示词首尾重复人格优先级提醒，要求模型优先遵守用户保存的人格提示词和教学风格。
 
 ## 高效模式
 高效模式用于过滤 NSFW 等不适合学习场景的内容，默认开启。它本质上是健康模式，适合学习、自习和考试场景。
@@ -2943,6 +3081,12 @@ private val Purple = Color(0xFF0E7490)
 private const val DEFAULT_MENTOR_PROMPT = "你是一名耐心、结构清晰的 AI 讲师。默认使用中文教学，保持主线课程连续，并在必要时用 Markdown 和公式文本表达。"
 private const val MEMORY_PROMPT_LIMIT = 24
 private const val MEMORY_CONTEXT_LIMIT = 6000
+private const val CORE_PREMISE_LIMIT = 16
+private const val CORE_PREMISE_CONTEXT_LIMIT = 1800
+private const val WORLD_BOOK_CONTEXT_LIMIT = 3000
+private const val MEMORY_CARD_RECALL_LIMIT = 8
+private const val MEMORY_CARD_STORE_LIMIT = 120
+private const val MEMORY_CARD_BUILD_MESSAGE_LIMIT = 36
 private const val CHAPTER_PROMPT_LIMIT = 32
 private const val CHAPTER_CONTEXT_LIMIT = 5000
 private const val RECENT_MESSAGE_CONTEXT_LIMIT = 32
