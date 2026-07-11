@@ -163,7 +163,19 @@ private data class ChatMessage(val role: String, val text: String)
 private data class BranchClass(val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String, val context: MutableList<ChatMessage> = mutableStateListOf())
 private data class KnowledgeFile(val name: String, val type: String, val chars: Int, val preview: String, val content: String = preview)
 private data class ConversationChapter(val title: String, val summary: String, val startIndex: Int, val endIndex: Int)
-private data class MemoryCard(val title: String, val summary: String, val keywords: List<String>, val type: String, val priority: Int, val startIndex: Int, val endIndex: Int)
+private data class MemoryCard(
+    val title: String,
+    val summary: String,
+    val keywords: List<String>,
+    val type: String,
+    val priority: Int,
+    val startIndex: Int,
+    val endIndex: Int,
+    val visibility: String = "public",
+    val knownBy: List<String> = emptyList(),
+    val unknownBy: List<String> = emptyList(),
+    val evidence: String = ""
+)
 private data class LearningMemoryPack(val corePremises: List<String>, val cards: List<MemoryCard>)
 private data class ExamQuestion(val premise: String, val question: String, val answer: String = "", val unknown: Boolean = false)
 private data class ExamSession(val title: String, val questions: MutableList<ExamQuestion>, val draft: String = "", val submitted: Boolean = false)
@@ -1967,7 +1979,7 @@ private fun ModelScreen(
                 OutlinedTextField(mentorPrompt, { mentorPrompt = it }, Modifier.fillMaxWidth(), label = { Text("讲师人格提示词") }, minLines = 4)
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(worldBook, { worldBook = it }, Modifier.fillMaxWidth(), label = { Text("手写世界书") }, minLines = 4)
-                Text("可写入长期固定设定、课程边界、你的学习习惯或必须遵守的课堂规则。", color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+                Text("可写入长期固定设定、课程边界、学习习惯或叙事隔离规则；例如“作者私密信息不得被未知角色直接利用”。", color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.HealthAndSafety, null, tint = MaterialTheme.colorScheme.primary)
@@ -2280,7 +2292,7 @@ private fun Classroom.toJson() = JSONObject().apply {
     }))
     put("memories", JSONArray(memories))
     put("corePremises", JSONArray(corePremises))
-    put("memoryCards", JSONArray(memoryCards.map { JSONObject().put("title", it.title).put("summary", it.summary).put("keywords", JSONArray(it.keywords)).put("type", it.type).put("priority", it.priority).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
+    put("memoryCards", JSONArray(memoryCards.map { JSONObject().put("title", it.title).put("summary", it.summary).put("keywords", JSONArray(it.keywords)).put("type", it.type).put("priority", it.priority).put("startIndex", it.startIndex).put("endIndex", it.endIndex).put("visibility", it.visibility).put("knownBy", JSONArray(it.knownBy)).put("unknownBy", JSONArray(it.unknownBy)).put("evidence", it.evidence) }))
     put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("summary", it.summary).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
     put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview).put("content", it.content) }))
     put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("ttsAutoRead", config.ttsAutoRead).put("mentorName", config.mentorName).put("userAlias", config.userAlias).put("mentorPrompt", config.mentorPrompt).put("worldBook", config.worldBook).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("interfaceMode", config.interfaceMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
@@ -2296,7 +2308,19 @@ private fun JSONArray?.toBranches(): List<BranchClass> = if (this == null) empty
 private fun JSONArray?.toStrings(): List<String> = if (this == null) emptyList() else List(length()) { optString(it) }
 private fun JSONArray?.toChapters(): List<ConversationChapter> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ConversationChapter(item.optString("title"), item.optString("summary"), item.optInt("startIndex"), item.optInt("endIndex")) } }
 private fun JSONArray?.toMemoryCards(): List<MemoryCard> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item ->
-    MemoryCard(item.optString("title"), item.optString("summary"), item.optJSONArray("keywords").toStrings().filter { word -> word.isNotBlank() }, item.optString("type", "concept"), item.optInt("priority", 1), item.optInt("startIndex", 0), item.optInt("endIndex", 0))
+    MemoryCard(
+        item.optString("title"),
+        item.optString("summary"),
+        item.optJSONArray("keywords").toStrings().filter { word -> word.isNotBlank() },
+        item.optString("type", "concept"),
+        item.optInt("priority", 1),
+        item.optInt("startIndex", 0),
+        item.optInt("endIndex", 0),
+        normalizeVisibility(item.optString("visibility", "public")),
+        item.optJSONArray("knownBy").toStrings().map { name -> name.trim() }.filter { name -> name.isNotBlank() }.distinct(),
+        item.optJSONArray("unknownBy").toStrings().map { name -> name.trim() }.filter { name -> name.isNotBlank() }.distinct(),
+        item.optString("evidence", "")
+    )
 } }
 private fun JSONArray?.toFiles(): List<KnowledgeFile> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item ->
     val preview = item.optString("preview")
@@ -2611,8 +2635,9 @@ private suspend fun buildLearningMemoryPack(messages: List<ChatMessage>, config:
     if (recent.isEmpty() || config.apiKey.isBlank() || model.isBlank()) return@withContext local
     val prompt = buildString {
         appendLine("请把下面课堂对话整理为可长期使用的学习世界书。只返回 JSON，不要解释。")
-        appendLine("格式：{\"corePremises\":[\"极简前提\"],\"cards\":[{\"title\":\"标题\",\"summary\":\"保守摘要\",\"keywords\":[\"关键词\"],\"type\":\"concept/mistake/progress/preference/exam/branch\",\"priority\":1}]}")
+        appendLine("格式：{\"corePremises\":[\"极简前提\"],\"cards\":[{\"title\":\"标题\",\"summary\":\"保守摘要\",\"keywords\":[\"关键词\"],\"type\":\"concept/mistake/progress/preference/exam/branch/narrative\",\"priority\":1,\"visibility\":\"public/author_private/character_private\",\"knownBy\":[\"知道者\"],\"unknownBy\":[\"不知道者\"],\"evidence\":\"角色知道该信息的依据\"}]}")
         appendLine("要求：corePremises 是每次对话都适合携带的极简事实，最多 12 条；cards 是可按关键词召回的记忆卡，最多 12 张。只写对话明确出现的内容，不要推断用户已掌握，不要编造。")
+        appendLine("叙事隔离要求：如果用户描述心理活动、暗中策划、幕后设定、作者补充、对方不知道等内容，必须标为 author_private 或 character_private，并填写 knownBy/unknownBy/evidence。模型知道不等于角色知道；不要把私密信息整理成公开事实。")
         appendLine("课堂对话：")
         append(recent.joinToString("\n") { "${if (it.role == "user") "用户" else "AI"}：${it.text}" }.take(7000))
     }
@@ -2635,7 +2660,19 @@ private fun parseLearningMemoryPack(raw: String, start: Int, end: Int): Learning
         val title = item.optString("title").replace(Regex("\\s+"), " ").trim().take(36)
         val summary = item.optString("summary").replace(Regex("\\s+"), " ").trim().take(260)
         val keywords = item.optJSONArray("keywords").toStrings().flatMap { extractKeywords(it) }.distinct().take(12)
-        MemoryCard(title.ifBlank { "长期记忆" }, summary, keywords, item.optString("type", "concept").ifBlank { "concept" }, item.optInt("priority", 1).coerceIn(1, 5), start, end)
+        MemoryCard(
+            title.ifBlank { "长期记忆" },
+            summary,
+            keywords,
+            item.optString("type", "concept").ifBlank { "concept" },
+            item.optInt("priority", 1).coerceIn(1, 5),
+            start,
+            end,
+            normalizeVisibility(item.optString("visibility", inferVisibility(summary))),
+            item.optJSONArray("knownBy").toStrings().map { name -> name.trim() }.filter { name -> name.isNotBlank() }.distinct().take(12),
+            item.optJSONArray("unknownBy").toStrings().map { name -> name.trim() }.filter { name -> name.isNotBlank() }.distinct().take(12),
+            item.optString("evidence", "").replace(Regex("\\s+"), " ").trim().take(160)
+        )
     }.filter { it.summary.isNotBlank() }
     LearningMemoryPack(premises, cards)
 }.getOrNull()
@@ -2643,7 +2680,9 @@ private fun parseLearningMemoryPack(raw: String, start: Int, end: Int): Learning
 private fun localLearningMemoryPack(messages: List<ChatMessage>): LearningMemoryPack {
     val recent = messages.takeLast(MEMORY_CARD_BUILD_MESSAGE_LIMIT)
     val topicLine = recent.lastOrNull { it.role == "user" }?.text?.replace(Regex("\\s+"), " ")?.take(80).orEmpty()
-    val keywords = extractKeywords(recent.joinToString(" ") { it.text })
+    val fullText = recent.joinToString(" ") { it.text }
+    val keywords = extractKeywords(fullText)
+    val visibility = inferVisibility(fullText)
     val premises = listOfNotNull(
         topicLine.takeIf { it.isNotBlank() }?.let { "最近用户正在围绕“$it”继续学习。" },
         keywords.take(5).joinToString("、").takeIf { it.isNotBlank() }?.let { "近期高频主题包括：$it。" }
@@ -2652,20 +2691,30 @@ private fun localLearningMemoryPack(messages: List<ChatMessage>): LearningMemory
         title = topicLine.ifBlank { "近期课堂内容" }.take(28),
         summary = recent.joinToString(" ") { it.text }.replace(Regex("\\s+"), " ").take(220).ifBlank { "暂无可整理内容。" },
         keywords = keywords.take(12),
-        type = "concept",
+        type = if (visibility == "public") "concept" else "narrative",
         priority = 1,
         startIndex = (messages.size - recent.size).coerceAtLeast(0),
-        endIndex = messages.lastIndex.coerceAtLeast(0)
+        endIndex = messages.lastIndex.coerceAtLeast(0),
+        visibility = visibility,
+        knownBy = if (visibility == "public") emptyList() else listOf("作者"),
+        unknownBy = if (visibility == "public") emptyList() else listOf("未获知该秘密的角色"),
+        evidence = if (visibility == "public") "公开课堂内容" else "用户叙述中出现心理、暗中、幕后或对方不知道等私密信号"
     )
     return LearningMemoryPack(premises, listOf(card).filter { it.summary.isNotBlank() })
 }
 
 private fun mergeMemoryCards(cards: List<MemoryCard>): List<MemoryCard> = cards
     .filter { it.summary.isNotBlank() }
-    .groupBy { it.title.lowercase(Locale.ROOT) }
+    .groupBy { "${it.title.lowercase(Locale.ROOT)}|${it.visibility}|${it.knownBy.joinToString(",")}|${it.unknownBy.joinToString(",")}" }
     .map { (_, group) ->
         val latest = group.last()
-        latest.copy(keywords = group.flatMap { it.keywords }.distinct().take(14), priority = group.maxOf { it.priority })
+        latest.copy(
+            keywords = group.flatMap { it.keywords }.distinct().take(14),
+            priority = group.maxOf { it.priority },
+            knownBy = group.flatMap { it.knownBy }.distinct().take(16),
+            unknownBy = group.flatMap { it.unknownBy }.distinct().take(16),
+            evidence = group.map { it.evidence }.lastOrNull { it.isNotBlank() }.orEmpty()
+        )
     }
 
 private fun recallMemoryCards(cards: List<MemoryCard>, query: String, limit: Int): List<MemoryCard> {
@@ -2697,6 +2746,19 @@ private fun extractKeywords(text: String): List<String> {
         .entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key.length })
         .map { it.key }
         .take(40)
+}
+
+private fun normalizeVisibility(raw: String): String = when (raw.trim().lowercase(Locale.ROOT)) {
+    "author_private", "private", "author", "作者私密", "幕后", "幕后设定" -> "author_private"
+    "character_private", "character", "角色私密", "心理", "心理活动" -> "character_private"
+    else -> "public"
+}
+
+private fun inferVisibility(text: String): String {
+    val privateSignals = listOf("作者私密", "幕后", "暗中", "偷偷", "秘密", "心理", "内心", "策划", "计划", "对方不知道", "不知道", "不可让", "不能让", "隐瞒", "伪装", "假装", "背叛")
+    val characterSignals = listOf("心理", "内心", "想法", "打算", "盘算")
+    if (privateSignals.none { text.contains(it, ignoreCase = true) }) return "public"
+    return if (characterSignals.any { text.contains(it, ignoreCase = true) }) "character_private" else "author_private"
 }
 
 private fun isExamRequest(text: String): Boolean {
@@ -2938,6 +3000,7 @@ private fun conversationConsistencyRules(): String = """
 3. 不要编造用户没有说过的学习目标、进度、结论、考试结果或知识库内容。
 4. 当上下文不足、指代不清或记忆冲突时，先明确说明不确定并追问，不要硬接硬编。
 5. 延续教学时要保持当前章节、当前问题和上一轮回答逻辑一致。
+6. 若处于故事、角色扮演或剧情写作，模型知道的信息不等于角色知道的信息。角色只能依据公开事实、自己已知信息、明确证据和合理推理行动；作者私密、心理活动、暗中计划、幕后设定、对方不知道的信息不得让未知角色直接利用。
 """.trimIndent()
 
 private fun promptMessagesForRoom(room: Classroom, history: List<ChatMessage>): List<ChatMessage> {
@@ -2954,8 +3017,9 @@ private fun promptMessagesForRoom(room: Classroom, history: List<ChatMessage>): 
         if (recalledCards.isNotEmpty()) {
             appendLine()
             appendLine("[本轮按关键词召回的世界书记忆卡；它们是历史摘要，不是完整原文]")
+            appendLine("叙事隔离：可见性为 author_private 或 character_private 的内容只能作为作者/对应角色私密信息维持逻辑，未知角色不得提前知道、说破、防备或针对性行动。")
             recalledCards.forEach { card ->
-                appendLine("- ${card.title}｜关键词：${card.keywords.take(8).joinToString("、")}｜${card.summary}")
+                appendLine("- ${card.title}｜可见性：${card.visibility}｜知道者：${card.knownBy.ifEmpty { listOf("未标注") }.joinToString("、")}｜不知道者：${card.unknownBy.ifEmpty { listOf("未标注") }.joinToString("、")}｜依据：${card.evidence.ifBlank { "未标注" }}｜关键词：${card.keywords.take(8).joinToString("、")}｜${card.summary}")
             }
         }
         append("请只把这个状态包作为定位信息，真正展开回答时优先遵守后面的最近连续对话。")
@@ -2979,7 +3043,7 @@ private fun truncatePromptSection(text: String, limit: Int): String {
     return clean.take(limit) + "\n[以上资料已按上下文预算截断，截断部分不可臆测。]"
 }
 
-private const val APP_VERSION = "2.4.0"
+private const val APP_VERSION = "2.5.0"
 
 private object AppShapes {
     val panel = RoundedCornerShape(22.dp)
@@ -2990,14 +3054,14 @@ private object AppShapes {
 }
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 2.4.0
+# AI Classroom 2.5.0
 
 # 这次更新
 
-- 新增长对话世界书系统，后台提炼常驻极简前提和关键词记忆卡。
-- 对话时自动插入常驻前提，并按当前问题召回相关记忆卡。
-- 讲师人格模块新增手写世界书，用户可额外添加长期固定设定。
-- 记忆整理继续遵守保守规则，摘要不能覆盖最近连续对话，也不能编造用户进度。
+- 世界书新增角色感知能力，后台自动分析哪些角色知道、哪些角色不知道。
+- 故事、角色扮演和剧情写作中，作者私密、心理活动、暗中计划不会再被未知角色直接利用。
+- 记忆卡新增可见性、知道者、不知道者和证据字段，并会影响下一轮对话。
+- 保持原有自然输入逻辑，也支持用户用“作者私密”“角色可见”等标记进一步增强稳定性。
 
 # 延续优化
 
@@ -3027,7 +3091,7 @@ private const val USER_MANUAL_TEXT = """
 
 全览模式会生成实时向量思维导图，章节按摘要相似度自动连接；章节模式可双击章节跳回主课堂对应位置。
 
-长对话回答时，应用会把最近连续对话作为最高优先的上下文，同时插入自动提炼的常驻极简前提，并根据当前问题召回相关关键词记忆卡。长期记忆、世界书卡片和章节索引都是压缩参考；若它们与最近对话冲突，模型会被要求优先遵守最近对话；如果上下文不足，应先说明不确定或追问，而不是编造内容。
+长对话回答时，应用会把最近连续对话作为最高优先的上下文，同时插入自动提炼的常驻极简前提，并根据当前问题召回相关关键词记忆卡。世界书卡片会保存可见性、知道者、不知道者和证据；在故事或角色扮演中，作者私密、心理活动、暗中计划不会被未知角色直接利用。长期记忆、世界书卡片和章节索引都是压缩参考；若它们与最近对话冲突，模型会被要求优先遵守最近对话；如果上下文不足，应先说明不确定或追问，而不是编造内容。
 
 ## 知识库
 知识库目前可直接读取 `.md` 和 `.txt` 文件。上传后文件会保存在本地列表中，点击可查看全文，长按可删除。AI 讲师会读取知识库正文的可控长度片段，并结合你的材料教学。
@@ -3048,7 +3112,7 @@ TTS 模块用于保存语音服务配置，包括服务商、API Key、Base URL�
 双击 AI 讲师回复会调用 TTS 朗读。开启“长时开启 AI 回复朗读”后，新的 AI 回复会在生成完成后自动朗读。
 
 ## 讲师人格
-讲师人格提示词可以自定义，例如大学教授、企业工程师、考研老师、幽默导师或二次元导师。讲师名字会实时显示在主课堂和分支课堂中；讲师对你的称呼会写入提示词，让模型在教学时按这个称呼与你互动。手写世界书可以保存长期固定设定、课程边界、学习习惯或必须遵守的课堂规则。保存后当前课堂会持续使用这些设定。
+讲师人格提示词可以自定义，例如大学教授、企业工程师、考研老师、幽默导师或二次元导师。讲师名字会实时显示在主课堂和分支课堂中；讲师对你的称呼会写入提示词，让模型在教学时按这个称呼与你互动。手写世界书可以保存长期固定设定、课程边界、学习习惯、角色知识边界或必须遵守的课堂规则。保存后当前课堂会持续使用这些设定。
 
 讲师人格提示词拥有最高优先级。即使长期记忆、知识库、世界书卡片和分支上下文不断变长，应用也会在系统提示词首尾重复人格优先级提醒，要求模型优先遵守用户保存的人格提示词和教学风格。
 
