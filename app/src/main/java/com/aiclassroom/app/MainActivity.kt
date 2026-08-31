@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -288,6 +289,7 @@ private fun AIClassroomApp() {
     val activeModel = current.config.primaryModel()
     val activeModelChain = current.config.orderedModels()
     val systemDark = (LocalConfiguration.current.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    val darkInterface = isDarkInterface(current.config, systemDark)
     val palette = remember(current.config, systemDark) { paletteFor(current.config, systemDark) }
 
     LaunchedEffect(Unit) {
@@ -343,10 +345,14 @@ private fun AIClassroomApp() {
             classes[0] = newClassroom(1, classes[0].config)
             classIndex = 0
         } else {
+            val previousIndex = classIndex
             classes.removeAt(deleteIndex)
-            classIndex = classIndex.coerceAtMost(classes.lastIndex)
+            classIndex = when {
+                deleteIndex < previousIndex -> (previousIndex - 1).coerceAtLeast(0)
+                previousIndex > classes.lastIndex -> classes.lastIndex
+                else -> previousIndex
+            }
         }
-        classMenuOpen = false
         persist("课堂已删除")
     }
 
@@ -365,6 +371,7 @@ private fun AIClassroomApp() {
             appendLine(mentorPriorityBlock(room.config))
             appendLine()
             appendLine(conversationConsistencyRules())
+            appendLine(responseBoundaryRules())
             appendLine("[课堂信息]")
             appendLine("讲师名字：${room.config.mentorName.ifBlank { "AI 讲师" }}")
             appendLine("对用户的称呼：${room.config.userAlias.ifBlank { "同学" }}")
@@ -535,22 +542,7 @@ private fun AIClassroomApp() {
     }
 
     MaterialTheme(
-        colorScheme = androidx.compose.material3.lightColorScheme(
-            primary = palette.button,
-            secondary = palette.button,
-            tertiary = palette.button,
-            background = palette.page,
-            surface = palette.surface,
-            surfaceVariant = palette.card,
-            primaryContainer = palette.button.copy(alpha = 0.14f).compositeOn(palette.surface),
-            secondaryContainer = palette.button.copy(alpha = 0.10f).compositeOn(palette.surface),
-            outline = palette.outline,
-            onPrimary = palette.onButton,
-            onSecondary = palette.onButton,
-            onBackground = palette.ink,
-            onSurface = palette.ink,
-            onSurfaceVariant = palette.muted
-        )
+        colorScheme = appColorScheme(palette, darkInterface)
     ) {
     Scaffold(
         topBar = {
@@ -766,13 +758,16 @@ private fun ClassroomMenu(
                 items(filtered) { i ->
                     val room = classes[i]
                     Surface(
-                        onClick = { onSelect(i) },
                         modifier = Modifier.fillMaxWidth(),
                         color = if (i == classIndex) palette.button.copy(alpha = 0.12f).compositeOn(MaterialTheme.colorScheme.surface) else Color.Transparent,
                         shape = AppShapes.card
                     ) {
                         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().clickable { onSelect(i) },
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
                                 Surface(Modifier.size(38.dp), shape = RoundedCornerShape(14.dp), color = if (i == classIndex) palette.button else MaterialTheme.colorScheme.surfaceVariant) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Text((i + 1).toString(), color = if (i == classIndex) palette.onButton else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
@@ -814,6 +809,9 @@ private fun RenameClassroomDialog(initial: String, onClose: () -> Unit, onSave: 
     var name by remember(initial) { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onClose,
+        containerColor = MaterialTheme.colorScheme.surface,
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        textContentColor = MaterialTheme.colorScheme.onSurface,
         title = { Text("修改课堂名字", fontWeight = FontWeight.Bold) },
         text = { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("课堂名字") }, singleLine = true) },
         confirmButton = { Button(onClick = { onSave(name.trim().ifBlank { initial }) }) { Text("保存") } },
@@ -1157,6 +1155,9 @@ private fun ReleaseNotesDialog(palette: AppPalette, onClose: () -> Unit) {
 private fun UpdateDialog(info: UpdateInfo, onClose: () -> Unit) {
     AlertDialog(
         onDismissRequest = onClose,
+        containerColor = MaterialTheme.colorScheme.surface,
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        textContentColor = MaterialTheme.colorScheme.onSurface,
         title = { Text("发现新版本", fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1211,7 +1212,7 @@ private fun ExamOverlay(
     LaunchedEffect(isLandscape) {
         if (!isLandscape) sidePanel = null
     }
-    Surface(Modifier.fillMaxSize(), color = Page) {
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         if (isLandscape) {
             Row(Modifier.fillMaxSize().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 ExamQuestionList(session, Modifier.weight(if (sidePanel == null) 1f else 0.58f).fillMaxHeight(), true, sidePanel, onSidePanel = { sidePanel = if (sidePanel == it) null else it }, onClose, onSubmit, onUpdate, onUnknown)
@@ -1329,10 +1330,11 @@ private fun ExamSidePanel(
 @Composable
 private fun DrawPad(strokes: MutableList<DrawStroke>, modifier: Modifier) {
     var current by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    val strokeColor = MaterialTheme.colorScheme.onSurface
     Canvas(
         modifier
             .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-            .border(1.dp, Color(0xFFE1E6EF), RoundedCornerShape(8.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { current = listOf(it) },
@@ -1345,7 +1347,7 @@ private fun DrawPad(strokes: MutableList<DrawStroke>, modifier: Modifier) {
             }
     ) {
         (strokes.map { it.points } + listOf(current)).forEach { points ->
-            points.zipWithNext().forEach { (from, to) -> drawLine(Color(0xFF111827), from, to, strokeWidth = 4f, cap = StrokeCap.Round) }
+            points.zipWithNext().forEach { (from, to) -> drawLine(strokeColor, from, to, strokeWidth = 4f, cap = StrokeCap.Round) }
         }
     }
 }
@@ -1483,14 +1485,17 @@ private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<Cha
                         .fillMaxWidth()
                         .combinedClickable(onClick = {}, onDoubleClick = { onJump(chapter.startIndex) }),
                     shape = RoundedCornerShape(8.dp),
-                    colors = CardDefaults.cardColors(MaterialTheme.colorScheme.surface),
-                    elevation = CardDefaults.cardElevation(1.dp)
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    ),
+                    elevation = CardDefaults.cardElevation(0.dp)
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Text(chapter.title, fontWeight = FontWeight.Bold)
-                        Text("第 ${chapter.startIndex + 1} 到 ${chapter.endIndex + 1} 条", color = Muted, fontSize = 12.sp)
+                        Text("第 ${chapter.startIndex + 1} 到 ${chapter.endIndex + 1} 条", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                         Spacer(Modifier.height(6.dp))
-                        Text(chapter.summary, color = Ink, lineHeight = 21.sp)
+                        Text(chapter.summary, color = MaterialTheme.colorScheme.onSurface, lineHeight = 21.sp)
                     }
                 }
             }
@@ -1639,6 +1644,9 @@ private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Uni
     deleteTarget?.let { file ->
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
+            textContentColor = MaterialTheme.colorScheme.onSurface,
             title = { Text("删除文件", fontWeight = FontWeight.Bold) },
             text = { Text("确定从知识库删除 ${file.name} 吗？") },
             confirmButton = { Button(onClick = { files.remove(file); deleteTarget = null; onSave() }) { Text("删除") } },
@@ -1668,6 +1676,9 @@ private fun KnowledgeFileRow(file: KnowledgeFile, onOpen: () -> Unit, onDelete: 
 private fun KnowledgeFileDialog(file: KnowledgeFile, onClose: () -> Unit) {
     AlertDialog(
         onDismissRequest = onClose,
+        containerColor = MaterialTheme.colorScheme.surface,
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        textContentColor = MaterialTheme.colorScheme.onSurface,
         title = { Text(file.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         text = {
             LazyColumn(Modifier.height(460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1898,7 +1909,10 @@ private fun ModelScreen(
                 Spacer(Modifier.height(6.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("system" to "自动", "light" to "白色", "dark" to "黑色").forEach { option ->
-                        AppFilterChip(interfaceMode == option.first, { interfaceMode = option.first }) { Text(option.second) }
+                        AppFilterChip(interfaceMode == option.first, {
+                            interfaceMode = option.first
+                            onConfig(config.copy(interfaceMode = normalizeInterfaceMode(option.first)))
+                        }) { Text(option.second) }
                     }
                 }
                 Spacer(Modifier.height(10.dp))
@@ -2166,7 +2180,15 @@ private fun buildInlineMarkdown(line: String) = buildAnnotatedString {
 
 @Composable
 private fun InfoCard(content: @Composable ColumnScope.() -> Unit) {
-    Card(Modifier.fillMaxWidth(), shape = AppShapes.card, colors = CardDefaults.cardColors(MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(1.dp)) {
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = AppShapes.card,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            contentColor = MaterialTheme.colorScheme.onSurface
+        ),
+        elevation = CardDefaults.cardElevation(0.dp)
+    ) {
         Column(Modifier.padding(12.dp), content = content)
     }
 }
@@ -2888,12 +2910,79 @@ private fun AIClassroomTheme(content: @Composable () -> Unit) {
     )
 }
 
+private fun isDarkInterface(config: ClassroomConfig, systemDark: Boolean): Boolean = when (normalizeInterfaceMode(config.interfaceMode)) {
+    "dark" -> true
+    "light" -> false
+    else -> systemDark
+}
+
+private fun appColorScheme(palette: AppPalette, dark: Boolean) = if (dark) {
+    androidx.compose.material3.darkColorScheme(
+        primary = palette.button,
+        onPrimary = palette.onButton,
+        primaryContainer = palette.button.copy(alpha = 0.18f).compositeOn(palette.surface),
+        onPrimaryContainer = palette.ink,
+        secondary = palette.button,
+        onSecondary = palette.onButton,
+        secondaryContainer = palette.button.copy(alpha = 0.12f).compositeOn(palette.surface),
+        onSecondaryContainer = palette.ink,
+        tertiary = palette.button,
+        onTertiary = palette.onButton,
+        background = palette.page,
+        onBackground = palette.ink,
+        surface = palette.surface,
+        onSurface = palette.ink,
+        surfaceVariant = palette.card,
+        onSurfaceVariant = palette.muted,
+        surfaceTint = Color.Transparent,
+        surfaceBright = palette.card,
+        surfaceDim = palette.page,
+        surfaceContainer = palette.card,
+        surfaceContainerHigh = palette.card,
+        surfaceContainerHighest = palette.card,
+        surfaceContainerLow = palette.surface,
+        surfaceContainerLowest = palette.page,
+        inverseSurface = palette.ink,
+        inverseOnSurface = palette.page,
+        outline = palette.outline,
+        outlineVariant = palette.outline,
+        scrim = Color.Black
+    )
+} else {
+    androidx.compose.material3.lightColorScheme(
+        primary = palette.button,
+        onPrimary = palette.onButton,
+        primaryContainer = palette.button.copy(alpha = 0.14f).compositeOn(palette.surface),
+        onPrimaryContainer = palette.ink,
+        secondary = palette.button,
+        onSecondary = palette.onButton,
+        secondaryContainer = palette.button.copy(alpha = 0.10f).compositeOn(palette.surface),
+        onSecondaryContainer = palette.ink,
+        tertiary = palette.button,
+        onTertiary = palette.onButton,
+        background = palette.page,
+        onBackground = palette.ink,
+        surface = palette.surface,
+        onSurface = palette.ink,
+        surfaceVariant = palette.card,
+        onSurfaceVariant = palette.muted,
+        surfaceTint = Color.Transparent,
+        surfaceBright = palette.surface,
+        surfaceDim = palette.card,
+        surfaceContainer = palette.card,
+        surfaceContainerHigh = palette.card,
+        surfaceContainerHighest = palette.card,
+        surfaceContainerLow = palette.surface,
+        surfaceContainerLowest = palette.page,
+        inverseSurface = palette.ink,
+        inverseOnSurface = palette.page,
+        outline = palette.outline,
+        outlineVariant = palette.outline
+    )
+}
+
 private fun paletteFor(config: ClassroomConfig, systemDark: Boolean): AppPalette {
-    val dark = when (normalizeInterfaceMode(config.interfaceMode)) {
-        "dark" -> true
-        "light" -> false
-        else -> systemDark
-    }
+    val dark = isDarkInterface(config, systemDark)
     val button = when (normalizeThemeMode(config.themeMode)) {
         "custom" -> colorFromLong(config.primaryColor)
         else -> Color(0xFF39C5BB)
@@ -3003,17 +3092,47 @@ private fun conversationConsistencyRules(): String = """
 6. 若处于故事、角色扮演或剧情写作，模型知道的信息不等于角色知道的信息。角色只能依据公开事实、自己已知信息、明确证据和合理推理行动；作者私密、心理活动、暗中计划、幕后设定、对方不知道的信息不得让未知角色直接利用。
 """.trimIndent()
 
+private fun responseBoundaryRules(): String = """
+[回答边界与剧情推进规则]
+1. 默认只回应用户当前明确表达的内容，不要在末尾强行添加“接下来你应该……”“我建议你……”等强引导式外拓。
+2. 用户没有明确询问下一步、后续安排、继续剧情、如何推进、该怎么办时，不要替用户规划行动路线、立场结论或外部目标。
+3. 可以自然收束回答，但不要用强迫式问题或引导句结尾；除非确实缺少继续回答所必需的关键信息。
+4. 如果用户明确要求继续、推进、安排事件、生成后续剧情，或当前剧情明显停在必须由事件承接的位置，则根据世界书、角色可知信息、剧情因果和当前气氛策划一个完整合理事件。
+5. 策划事件时必须保持角色知识边界：未知角色不能因为作者私密信息而提前防备；事件要通过可见线索、行动、误会、证据或合理推理推进。
+6. 若不确定用户要“解释/评价”还是“继续剧情”，优先短促回应当前内容，不要主动夺取叙事方向。
+""".trimIndent()
+
+private fun detectsForwardPlanningIntent(text: String): Boolean {
+    val normalized = text.trim()
+    if (normalized.isBlank()) return false
+    val triggers = listOf(
+        "下一步", "接下来", "往后", "后续", "继续", "推进", "然后呢", "该怎么办", "怎么办",
+        "发生什么", "剧情发展", "安排事件", "设计事件", "策划", "完整事件", "往下写", "继续写",
+        "续写", "下一段", "下一幕", "下一章", "怎么发展", "如何发展"
+    )
+    return triggers.any { normalized.contains(it, ignoreCase = true) }
+}
+
 private fun promptMessagesForRoom(room: Classroom, history: List<ChatMessage>): List<ChatMessage> {
     val recent = history.takeLast(RECENT_MESSAGE_CONTEXT_LIMIT)
     val retrievalQuery = (history.takeLast(4).joinToString("\n") { it.text } + "\n" + room.topic).take(2400)
     val recalledCards = recallMemoryCards(room.memoryCards, retrievalQuery, MEMORY_CARD_RECALL_LIMIT)
+    val latestUserText = history.lastOrNull { it.role == "user" }?.text.orEmpty()
+    val wantsForwardPlanning = detectsForwardPlanningIntent(latestUserText)
     val state = buildString {
         appendLine("[当前课堂状态包]")
         appendLine("课堂名：${room.name}")
         appendLine("学习内容：${room.topic}")
         appendLine("总消息数：${history.size}")
         room.chapters.lastOrNull()?.let { appendLine("当前最近章节：${it.title}｜${it.summary}") }
-        history.lastOrNull { it.role == "user" }?.let { appendLine("最近用户问题：${it.text.take(600)}") }
+        if (latestUserText.isNotBlank()) appendLine("最近用户问题：${latestUserText.take(600)}")
+        appendLine(
+            if (wantsForwardPlanning) {
+                "用户意图判断：检测到明确的后续推进、事件策划或续写请求；可以在遵守世界书和角色知识边界的前提下生成完整合理事件。"
+            } else {
+                "用户意图判断：未检测到明确后续推进请求；请避免强引导式外拓，只回应当前内容，除非剧情已明显需要事件承接。"
+            }
+        )
         if (recalledCards.isNotEmpty()) {
             appendLine()
             appendLine("[本轮按关键词召回的世界书记忆卡；它们是历史摘要，不是完整原文]")
@@ -3043,7 +3162,7 @@ private fun truncatePromptSection(text: String, limit: Int): String {
     return clean.take(limit) + "\n[以上资料已按上下文预算截断，截断部分不可臆测。]"
 }
 
-private const val APP_VERSION = "2.5.0"
+private const val APP_VERSION = "2.5.2"
 
 private object AppShapes {
     val panel = RoundedCornerShape(22.dp)
@@ -3054,18 +3173,18 @@ private object AppShapes {
 }
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 2.5.0
+# AI Classroom 2.5.2
 
 # 这次更新
 
-- 世界书新增角色感知能力，后台自动分析哪些角色知道、哪些角色不知道。
-- 故事、角色扮演和剧情写作中，作者私密、心理活动、暗中计划不会再被未知角色直接利用。
-- 记忆卡新增可见性、知道者、不知道者和证据字段，并会影响下一轮对话。
-- 保持原有自然输入逻辑，也支持用户用“作者私密”“角色可见”等标记进一步增强稳定性。
+- 修复切换到黑夜模式后，设置页、记忆页等卡片背景仍保持白色的问题。
+- 切换黑色 / 白色 / 自动时，界面会立即按新的明暗刷新，不必先点保存。
+- 修复侧栏里删除非当前课堂时，点击会被当成切换课堂、无法真正删除的问题。
+- 删除靠前的课堂后，会继续停留在原来的课堂，而不会误跳到别的课堂。
 
 # 延续优化
 
-- 原有主课堂对话、分支、知识库、TTS 和多模态功能保持不变。
+- 2.5.1 的回答边界、角色感知世界书、主课堂、分支、知识库、TTS 和多模态功能保持不变。
 - 所有课堂、分支、设置、知识库、记忆和考试记录继续保存在本机。
 """
 private const val USER_MANUAL_TEXT = """
@@ -3092,6 +3211,8 @@ private const val USER_MANUAL_TEXT = """
 全览模式会生成实时向量思维导图，章节按摘要相似度自动连接；章节模式可双击章节跳回主课堂对应位置。
 
 长对话回答时，应用会把最近连续对话作为最高优先的上下文，同时插入自动提炼的常驻极简前提，并根据当前问题召回相关关键词记忆卡。世界书卡片会保存可见性、知道者、不知道者和证据；在故事或角色扮演中，作者私密、心理活动、暗中计划不会被未知角色直接利用。长期记忆、世界书卡片和章节索引都是压缩参考；若它们与最近对话冲突，模型会被要求优先遵守最近对话；如果上下文不足，应先说明不确定或追问，而不是编造内容。
+
+回答边界会额外判断用户是否明确要求继续、推进、策划事件或往后发展。未检测到这类请求时，AI 会避免在末尾添加强引导性建议；如果用户明确要求推进，或当前剧情确实需要承接，AI 会结合世界书、角色可知信息和剧情因果生成完整合理事件。
 
 ## 知识库
 知识库目前可直接读取 `.md` 和 `.txt` 文件。上传后文件会保存在本地列表中，点击可查看全文，长按可删除。AI 讲师会读取知识库正文的可控长度片段，并结合你的材料教学。
@@ -3125,7 +3246,7 @@ TTS 模块用于保存语音服务配置，包括服务商、API Key、Base URL�
 界面明暗可选择自动跟随系统、白色或黑色，应用会自动保持文字反色，保证可读性。
 
 ## 多课堂
-在主界面从左向右滑出课堂菜单，可以切换课堂、新建课堂、删除课堂，也可以复制其他课堂配置。每个课堂都可以有独立 API、模型、人格、皮肤和知识库配置。
+在主界面从左向右滑出课堂菜单，可以切换课堂、新建课堂、删除任意课堂，也可以复制其他课堂配置。点课堂标题可切换，点删除只会删除该课堂，不会先跳进那个课堂。每个课堂都可以有独立 API、模型、人格、皮肤和知识库配置。
 
 ## 考试工具
 考试不是普通入口。AI 明确要进行考试、测试或模拟测验时，应用会自动进入沉浸式考试界面。
