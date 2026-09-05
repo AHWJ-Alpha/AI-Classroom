@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.Configuration
 import android.content.SharedPreferences
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.os.Bundle
 import android.media.MediaPlayer
 import androidx.activity.ComponentActivity
@@ -1697,14 +1698,30 @@ private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Uni
     val context = LocalContext.current
     var viewing by remember { mutableStateOf<KnowledgeFile?>(null) }
     var deleteTarget by remember { mutableStateOf<KnowledgeFile?>(null) }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
-        val name = uri.lastPathSegment?.substringAfterLast('/') ?: "knowledge"
-        val ext = name.substringAfterLast('.', "").lowercase()
-        if (ext == "md" || ext == "txt") {
-            val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }.orEmpty()
-            files.add(KnowledgeFile(name, ext, text.length, text.take(1000), text))
-            onSave()
+        val resolver = context.contentResolver
+        val displayName = runCatching {
+            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull().orEmpty().ifBlank { uri.lastPathSegment?.substringAfterLast('/') ?: "knowledge" }
+        val ext = displayName.substringAfterLast('.', "").lowercase().ifBlank {
+            when (resolver.getType(uri)?.lowercase()) {
+                "text/markdown" -> "md"
+                else -> "txt"
+            }
+        }
+        if (ext == "md" || ext == "txt" || resolver.getType(uri)?.startsWith("text/") == true) {
+            val text = runCatching {
+                resolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            }.getOrDefault("")
+            if (text.isNotBlank()) {
+                val normalizedName = if (displayName.contains('.')) displayName else "$displayName.$ext"
+                files.removeAll { it.name == normalizedName }
+                files.add(KnowledgeFile(normalizedName, ext, text.length, text.take(1000), text))
+                onSave()
+            }
         }
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1713,7 +1730,7 @@ private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Uni
                 Text("知识库", fontWeight = FontWeight.Bold)
                 Text("可直接读取：.md、.txt。上传后会进入课堂提示词，AI 讲师可结合文件内容回答。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, lineHeight = 19.sp)
                 Spacer(Modifier.height(10.dp))
-                Button(onClick = { launcher.launch("text/*") }, shape = AppShapes.button) { Text("上传文件") }
+                Button(onClick = { launcher.launch(arrayOf("text/plain", "text/markdown", "application/octet-stream")) }, shape = AppShapes.button) { Text("上传文件") }
             }
         }
         if (files.isEmpty()) item { InfoCard { Text("还没有上传知识库文件。", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
