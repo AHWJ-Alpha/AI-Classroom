@@ -19,6 +19,16 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            val signingPath = providers.environmentVariable("AI_CLASSROOM_KEYSTORE").orNull
+            val signingPassword = providers.environmentVariable("AI_CLASSROOM_KEYSTORE_PASSWORD").orNull
+            val signingAlias = providers.environmentVariable("AI_CLASSROOM_KEY_ALIAS").orNull
+            if (!signingPath.isNullOrBlank() && !signingPassword.isNullOrBlank() && !signingAlias.isNullOrBlank()) {
+                signingConfig = signingConfigs.create("releaseDeveloper")
+                signingConfig?.storeFile = file(signingPath)
+                signingConfig?.storePassword = signingPassword
+                signingConfig?.keyAlias = signingAlias
+                signingConfig?.keyPassword = signingPassword
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
