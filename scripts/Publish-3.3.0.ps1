@@ -27,8 +27,13 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 if ($LASTEXITCODE -ne 0) { throw "git push failed." }
 
-& $gh release view $tag *> $null
-if ($LASTEXITCODE -eq 0) {
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& $gh release view $tag --json tagName 2>$null | Out-Null
+$releaseExists = $LASTEXITCODE -eq 0
+$ErrorActionPreference = $previousErrorActionPreference
+
+if ($releaseExists) {
     & $gh release upload $tag $apk --clobber
     & $gh release edit $tag --title "AI Classroom 3.3.0" --notes-file $notes
 } else {
