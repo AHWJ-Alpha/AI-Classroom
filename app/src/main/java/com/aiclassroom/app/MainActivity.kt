@@ -6,6 +6,7 @@ import android.content.SharedPreferences
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.os.Bundle
+import android.view.HapticFeedbackConstants
 import android.media.MediaPlayer
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -80,6 +81,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Slider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -113,6 +115,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -163,7 +166,14 @@ private enum class Tab(val title: String, val icon: ImageVector) {
 
 private data class ChatMessage(val role: String, val text: String)
 private data class BranchClass(val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String, val context: MutableList<ChatMessage> = mutableStateListOf())
-private data class KnowledgeFile(val name: String, val type: String, val chars: Int, val preview: String, val content: String = preview)
+private data class KnowledgeFile(
+    val name: String,
+    val type: String,
+    val chars: Int,
+    val preview: String,
+    val content: String = preview,
+    val kind: String = "reference"
+)
 private data class ConversationChapter(val title: String, val summary: String, val startIndex: Int, val endIndex: Int)
 private data class MemoryCard(
     val title: String,
@@ -206,6 +216,8 @@ private data class ClassroomConfig(
     val modelChain: String = "gpt-4o-mini",
     val deepThinkingEnabled: Boolean = false,
     val deepThinkingModel: String = "",
+    val reasoningEffort: String = "medium",
+    val activeChatModel: String = "",
     val visionProvider: String = "OpenAI",
     val visionApiKey: String = "",
     val visionBaseUrl: String = "https://api.openai.com/v1",
@@ -228,6 +240,12 @@ private data class ClassroomConfig(
     val secondaryColor: Long = 0xFF667085
 ) {
     fun primaryModel(): String = orderedModels().firstOrNull().orEmpty()
+
+    fun chatModels(): List<String> {
+        val base = orderedModels()
+        val selected = activeChatModel.trim()
+        return if (selected.isBlank()) base else listOf(selected) + base.filterNot { it == selected }
+    }
 
     fun orderedModels(): List<String> {
         val normalModels = modelChain
@@ -279,6 +297,7 @@ private fun AIClassroomApp() {
     var saveNotice by remember { mutableStateOf("所有内容自动保存在本机") }
     var modelStatus by remember { mutableStateOf("未获取模型") }
     var isLoading by remember { mutableStateOf(false) }
+    var immersiveMode by remember { mutableStateOf(false) }
     var homeQuote by remember { mutableStateOf(localStudyQuote()) }
     val classes = remember { mutableStateListOf<Classroom>().apply { addAll(initialClasses) } }
     val models = remember { mutableStateListOf("gpt-4o-mini", "gpt-4o", "deepseek-chat", "qwen-plus") }
@@ -287,8 +306,8 @@ private fun AIClassroomApp() {
     val memoryWatermarks = remember { java.util.IdentityHashMap<Classroom, Int>() }
     if (classIndex > classes.lastIndex) classIndex = classes.lastIndex.coerceAtLeast(0)
     val current = classes[classIndex]
-    val activeModel = current.config.primaryModel()
-    val activeModelChain = current.config.orderedModels()
+    val activeModel = current.config.chatModels().firstOrNull().orEmpty()
+    val activeModelChain = current.config.chatModels()
     val systemDark = (LocalConfiguration.current.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
     val darkInterface = isDarkInterface(current.config, systemDark)
     val palette = remember(current.config, systemDark) { paletteFor(current.config, systemDark) }
@@ -358,9 +377,7 @@ private fun AIClassroomApp() {
     }
 
     fun systemPrompt(room: Classroom): String {
-        val knowledge = truncatePromptSection(room.files.joinToString("\n\n") { file ->
-            "[${file.name} / ${file.type} / ${file.chars} 字]\n${file.content}"
-        }, KNOWLEDGE_CONTEXT_LIMIT)
+        val characterCards = formatCharacterCards(room.files.filter { it.kind == "character_card" })
         val memory = truncatePromptSection(room.memories.takeLast(MEMORY_PROMPT_LIMIT).joinToString("\n"), MEMORY_CONTEXT_LIMIT)
         val corePremises = truncatePromptSection(room.corePremises.takeLast(CORE_PREMISE_LIMIT).joinToString("\n") { "- $it" }, CORE_PREMISE_CONTEXT_LIMIT)
         val worldBook = truncatePromptSection(room.config.worldBook, WORLD_BOOK_CONTEXT_LIMIT)
@@ -399,10 +416,11 @@ private fun AIClassroomApp() {
                 appendLine("记忆视角：当前回答者是讲师/作者协调视角，可以读取私密记忆来维持因果，但不得把 author_private 或 character_private 内容当作公开事实，也不得让未知角色据此行动或发言。")
                 appendLine(memory)
             }
-            if (knowledge.isNotBlank()) {
+            if (characterCards.isNotBlank()) {
                 appendLine()
-                appendLine("[知识库资料，仅作参考]")
-                appendLine(knowledge)
+                appendLine("[小说创作角色卡｜作者级人物参考]")
+                appendLine("以下角色卡用于保持人物设定、关系、口吻、动机、行为边界和情绪反应连续。不要机械复述角色卡；角色只能根据自身可见事实和已知信息行动。角色卡与最近连续对话已发生的事实冲突时，以最近连续对话为准并自然协调。角色卡中的私密内容不能变成其他角色的知识。")
+                appendLine(characterCards)
             }
             if (safety.isNotBlank()) {
                 appendLine()
@@ -543,7 +561,7 @@ private fun AIClassroomApp() {
             val assistantIndex = branch.messages.size
             branch.messages.add(ChatMessage("assistant", ""))
             var streamed = ""
-            val chatHistory = promptMessagesForBranch(branch.context, branch.messages.dropLast(1).toList())
+            val chatHistory = promptMessagesForBranch(room, branch.context, branch.messages.dropLast(1).toList())
             val result = callChatStreamWithFallback(room.config, activeModelChain, branchSystemPrompt(room, branch), chatHistory) { delta ->
                 streamed += delta
                 branch.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(streamed, room.config.efficientMode))
@@ -559,7 +577,7 @@ private fun AIClassroomApp() {
         colorScheme = appColorScheme(palette, darkInterface)
     ) {
     Scaffold(
-        topBar = {
+        topBar = { if (!immersiveMode) {
             Surface(
                 Modifier.fillMaxWidth(),
                 color = palette.surface,
@@ -609,8 +627,9 @@ private fun AIClassroomApp() {
                     }
                 }
             }
+        }
         },
-        bottomBar = {
+        bottomBar = { if (!immersiveMode) {
             NavigationBar(
                 containerColor = palette.surface,
                 tonalElevation = 0.dp,
@@ -632,6 +651,7 @@ private fun AIClassroomApp() {
                     )
                 }
             }
+        }
         }
     ) { padding ->
         Surface(
@@ -656,6 +676,13 @@ private fun AIClassroomApp() {
                 when (tab) {
                     Tab.Class -> ClassScreen(current, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, homeQuote, onDeepThinkingChange = { enabled ->
                         replaceCurrent(current.copy(config = current.config.copy(deepThinkingEnabled = enabled)), if (enabled) "已启用深度思考" else "已关闭深度思考")
+                    }, onModelChange = { model ->
+                        replaceCurrent(current.copy(config = current.config.copy(activeChatModel = model)), "对话模型已切换")
+                    }, onReasoningEffortChange = { effort ->
+                        replaceCurrent(current.copy(config = current.config.copy(reasoningEffort = effort)), "推理强度已调整")
+                    }, immersiveMode = immersiveMode, onImmersiveChange = { immersiveMode = it }, onQuickThemeToggle = {
+                        val nextMode = if (darkInterface) "light" else "dark"
+                        replaceCurrent(current.copy(config = current.config.copy(interfaceMode = nextMode)), if (nextMode == "dark") "已切换深色界面" else "已切换浅色界面")
                     }, onSend = { sendMessage() }, onImage = { imageLauncher.launch("image/*") }, onDeleteAfter = { index ->
                         if (index in current.messages.indices) {
                             for (i in current.messages.lastIndex downTo index) current.messages.removeAt(i)
@@ -929,6 +956,11 @@ private fun ClassScreen(
     reverseConversation: Boolean,
     homeQuote: String,
     onDeepThinkingChange: (Boolean) -> Unit,
+    onModelChange: (String) -> Unit,
+    onReasoningEffortChange: (String) -> Unit,
+    immersiveMode: Boolean,
+    onImmersiveChange: (Boolean) -> Unit,
+    onQuickThemeToggle: () -> Unit,
     onSend: () -> Unit,
     onImage: () -> Unit,
     onDeleteAfter: (Int) -> Unit,
@@ -944,6 +976,11 @@ private fun ClassScreen(
             palette = palette,
             quote = homeQuote,
             onDeepThinkingChange = onDeepThinkingChange,
+            onModelChange = onModelChange,
+            onReasoningEffortChange = onReasoningEffortChange,
+            immersiveMode = immersiveMode,
+            onImmersiveChange = onImmersiveChange,
+            onQuickThemeToggle = onQuickThemeToggle,
             onSend = onSend,
             onImage = onImage
         )
@@ -982,6 +1019,13 @@ private fun ClassScreen(
             palette = palette,
             onSend = onSend,
             onImage = onImage,
+            roomConfig = room.config,
+            onModelChange = onModelChange,
+            onDeepThinkingChange = onDeepThinkingChange,
+            onReasoningEffortChange = onReasoningEffortChange,
+            immersiveMode = immersiveMode,
+            onImmersiveChange = onImmersiveChange,
+            onQuickThemeToggle = onQuickThemeToggle,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
         FloatingIconAction(
@@ -1003,6 +1047,11 @@ private fun EmptyClassroomHome(
     palette: AppPalette,
     quote: String,
     onDeepThinkingChange: (Boolean) -> Unit,
+    onModelChange: (String) -> Unit,
+    onReasoningEffortChange: (String) -> Unit,
+    immersiveMode: Boolean,
+    onImmersiveChange: (Boolean) -> Unit,
+    onQuickThemeToggle: () -> Unit,
     onSend: () -> Unit,
     onImage: () -> Unit
 ) {
@@ -1025,10 +1074,91 @@ private fun EmptyClassroomHome(
             palette = palette,
             onSend = onSend,
             onImage = onImage,
+            roomConfig = room.config,
+            onModelChange = onModelChange,
+            onDeepThinkingChange = onDeepThinkingChange,
+            onReasoningEffortChange = onReasoningEffortChange,
+            immersiveMode = immersiveMode,
+            onImmersiveChange = onImmersiveChange,
+            onQuickThemeToggle = onQuickThemeToggle,
             modifier = Modifier.fillMaxWidth().align(Alignment.Center).padding(top = 28.dp)
         )
     }
 }
+
+@Composable
+private fun ChatControls(
+    config: ClassroomConfig,
+    palette: AppPalette,
+    onModelChange: (String) -> Unit,
+    onDeepThinkingChange: (Boolean) -> Unit,
+    onReasoningEffortChange: (String) -> Unit,
+    immersiveMode: Boolean,
+    onImmersiveChange: (Boolean) -> Unit,
+    onQuickThemeToggle: () -> Unit
+) {
+    var modelMenuOpen by remember { mutableStateOf(false) }
+    var reasoningMenuOpen by remember { mutableStateOf(false) }
+    val models = config.chatModels().ifEmpty { listOf(config.selectedModel) }
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.End
+    ) {
+        Box {
+            IconButton(onClick = { modelMenuOpen = true }, modifier = Modifier.size(34.dp)) {
+                Icon(Icons.Default.Memory, contentDescription = "切换模型", tint = palette.muted, modifier = Modifier.size(18.dp))
+            }
+            DropdownMenu(expanded = modelMenuOpen, onDismissRequest = { modelMenuOpen = false }) {
+                Text("选择模型", color = palette.muted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                models.forEach { model ->
+                    DropdownMenuItem(
+                        text = { Text(model.shortModelName()) },
+                        leadingIcon = { if (model == models.first()) Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                        onClick = { modelMenuOpen = false; onModelChange(model) }
+                    )
+                }
+            }
+        }
+        Box {
+            IconButton(onClick = { reasoningMenuOpen = true }, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    Icons.Default.Tune,
+                    contentDescription = "推理设置",
+                    tint = if (config.deepThinkingEnabled) palette.button else palette.muted,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            DropdownMenu(expanded = reasoningMenuOpen, onDismissRequest = { reasoningMenuOpen = false }) {
+                DropdownMenuItem(
+                    text = { Text("深度思考") },
+                    trailingIcon = { Switch(config.deepThinkingEnabled, onCheckedChange = null) },
+                    onClick = { onDeepThinkingChange(!config.deepThinkingEnabled) }
+                )
+                if (config.deepThinkingEnabled) {
+                    Text("推理强度", color = palette.muted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                    listOf("low" to "低", "medium" to "中", "high" to "高").forEach { (value, label) ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            leadingIcon = { if (config.reasoningEffort == value) Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                            onClick = { onReasoningEffortChange(value); reasoningMenuOpen = false }
+                        )
+                    }
+                }
+            }
+        }
+        if (immersiveMode) {
+            IconButton(onClick = onQuickThemeToggle, modifier = Modifier.size(34.dp)) {
+                Icon(Icons.Default.ColorLens, contentDescription = "切换明暗", tint = palette.muted, modifier = Modifier.size(18.dp))
+            }
+        }
+        IconButton(onClick = { onImmersiveChange(!immersiveMode) }, modifier = Modifier.size(34.dp)) {
+            Icon(if (immersiveMode) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = if (immersiveMode) "退出沉浸模式" else "进入沉浸模式", tint = palette.muted, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
+private fun String.shortModelName(): String = substringAfterLast('/').take(20)
 
 @Composable
 private fun FloatingIconAction(icon: ImageVector, visible: Boolean, palette: AppPalette, onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -1054,6 +1184,13 @@ private fun ChatInputBar(
     palette: AppPalette,
     onSend: () -> Unit,
     onImage: () -> Unit,
+    roomConfig: ClassroomConfig? = null,
+    onModelChange: (String) -> Unit = {},
+    onDeepThinkingChange: (Boolean) -> Unit = {},
+    onReasoningEffortChange: (String) -> Unit = {},
+    immersiveMode: Boolean = false,
+    onImmersiveChange: (Boolean) -> Unit = {},
+    onQuickThemeToggle: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -1063,8 +1200,10 @@ private fun ChatInputBar(
         shadowElevation = 0.dp,
         border = null
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(8.dp),
+        Column(Modifier.fillMaxWidth().padding(8.dp)) {
+            if (roomConfig != null) ChatControls(roomConfig, palette, onModelChange, onDeepThinkingChange, onReasoningEffortChange, immersiveMode, onImmersiveChange, onQuickThemeToggle)
+            Row(
+            Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.Bottom
         ) {
@@ -1111,6 +1250,7 @@ private fun ChatInputBar(
             }
         }
     }
+}
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1696,10 +1836,11 @@ private val COMMON_MEMORY_WORDS = setOf("用户", "课堂", "内容", "学习", 
 @Composable
 private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Unit) {
     val context = LocalContext.current
+    val view = LocalView.current
     var viewing by remember { mutableStateOf<KnowledgeFile?>(null) }
     var deleteTarget by remember { mutableStateOf<KnowledgeFile?>(null) }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        uri ?: return@rememberLauncherForActivityResult
+    var importNotice by remember { mutableStateOf<String?>(null) }
+    fun importFile(uri: Uri, kind: String): Boolean {
         val resolver = context.contentResolver
         val displayName = runCatching {
             resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
@@ -1709,32 +1850,58 @@ private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Uni
         val ext = displayName.substringAfterLast('.', "").lowercase().ifBlank {
             when (resolver.getType(uri)?.lowercase()) {
                 "text/markdown" -> "md"
+                "application/json", "text/json" -> "json"
+                "image/png" -> "png"
                 else -> "txt"
             }
         }
-        if (ext == "md" || ext == "txt" || resolver.getType(uri)?.startsWith("text/") == true) {
-            val text = runCatching {
-                resolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            }.getOrDefault("")
+        val cardTypeAllowed = ext == "md" || ext == "json" || ext == "png"
+        val referenceTypeAllowed = ext == "md" || ext == "txt" || resolver.getType(uri)?.startsWith("text/") == true
+        if ((kind == "character_card" && !cardTypeAllowed) || (kind == "reference" && !referenceTypeAllowed)) {
+            importNotice = if (kind == "character_card") "角色卡仅支持 .md、.json、.png 文件" else "资料仅支持 .md 或 .txt 文件"
+            return false
+        }
+        run {
+            val bytes = runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+            if (bytes == null) { importNotice = "无法读取文件"; return false }
+            val text = when (ext) {
+                "json" -> normalizeCharacterCardJson(bytes.toString(Charsets.UTF_8))
+                "png" -> extractPngCardText(bytes)
+                else -> bytes.toString(Charsets.UTF_8)
+            }
+            if (ext == "png" && text.isBlank()) { importNotice = "PNG 中未找到角色卡文本元数据"; return false }
             if (text.isNotBlank()) {
                 val normalizedName = if (displayName.contains('.')) displayName else "$displayName.$ext"
-                files.removeAll { it.name == normalizedName }
-                files.add(KnowledgeFile(normalizedName, ext, text.length, text.take(1000), text))
+                files.removeAll { it.name == normalizedName && it.kind == kind }
+                files.add(KnowledgeFile(normalizedName, ext, text.length, text.take(1000), text, kind))
                 onSave()
-            }
+                importNotice = if (kind == "character_card") "已导入角色卡：$normalizedName" else "已导入资料：$normalizedName"
+                view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                return true
+            } else { importNotice = "文件为空，未导入"; return false }
         }
+    }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) { view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY); uris.count { importFile(it, "reference") }.let { importNotice = "已导入 $it/${uris.size} 个资料文件" } }
+    }
+    val cardLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) { view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY); uris.count { importFile(it, "character_card") }.let { importNotice = "已导入 $it/${uris.size} 张角色卡" } }
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             InfoCard {
                 Text("知识库", fontWeight = FontWeight.Bold)
-                Text("可直接读取：.md、.txt。上传后会进入课堂提示词，AI 讲师可结合文件内容回答。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, lineHeight = 19.sp)
+                Text("资料按当前问题检索；角色卡支持 .md、.json、.png，可批量导入并持续作为人物参照。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, lineHeight = 19.sp)
                 Spacer(Modifier.height(10.dp))
-                Button(onClick = { launcher.launch(arrayOf("text/plain", "text/markdown", "application/octet-stream")) }, shape = AppShapes.button) { Text("上传文件") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { launcher.launch(arrayOf("text/plain", "text/markdown", "application/json", "image/png", "application/octet-stream")) }, shape = AppShapes.button) { Text("批量上传资料") }
+                    OutlinedButton(onClick = { cardLauncher.launch(arrayOf("text/markdown", "application/json", "image/png", "text/plain")) }, shape = AppShapes.button) { Text("批量导入角色卡") }
+                }
+                importNotice?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
             }
         }
         if (files.isEmpty()) item { InfoCard { Text("还没有上传知识库文件。", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-        items(files, key = { it.name + it.chars }) { file ->
+        items(files, key = { it.kind + it.name + it.chars }) { file ->
             KnowledgeFileRow(file, onOpen = { viewing = file }, onDelete = { deleteTarget = file })
         }
     }
@@ -1747,7 +1914,7 @@ private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Uni
             textContentColor = MaterialTheme.colorScheme.onSurface,
             title = { Text("删除文件", fontWeight = FontWeight.Bold) },
             text = { Text("确定从知识库删除 ${file.name} 吗？") },
-            confirmButton = { Button(onClick = { files.remove(file); deleteTarget = null; onSave() }) { Text("删除") } },
+            confirmButton = { Button(onClick = { files.remove(file); deleteTarget = null; onSave(); view.performHapticFeedback(HapticFeedbackConstants.CONFIRM) }) { Text("删除") } },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } }
         )
     }
@@ -1763,7 +1930,7 @@ private fun KnowledgeFileRow(file: KnowledgeFile, onOpen: () -> Unit, onDelete: 
                 .combinedClickable(onClick = onOpen, onLongClick = onDelete)
         ) {
             Text(file.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("${file.type} · ${file.chars} 字", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            Text("${if (file.kind == "character_card") "角色卡" else "资料"} · ${file.type} · ${file.chars} 字", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
             Spacer(Modifier.height(6.dp))
             MarkdownText(file.preview)
         }
@@ -2377,6 +2544,8 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
             modelChain = configJson.optString("modelChain", configJson.optString("customModel", configJson.optString("selectedModel", "gpt-4o-mini"))),
             deepThinkingEnabled = configJson.optBoolean("deepThinkingEnabled", false),
             deepThinkingModel = configJson.optString("deepThinkingModel", ""),
+            reasoningEffort = configJson.optString("reasoningEffort", "medium"),
+            activeChatModel = configJson.optString("activeChatModel", ""),
             visionProvider = configJson.optString("visionProvider", configJson.optString("provider", "OpenAI")),
             visionApiKey = configJson.optString("visionApiKey", configJson.optString("apiKey", "")),
             visionBaseUrl = configJson.optString("visionBaseUrl", configJson.optString("baseUrl", "https://api.openai.com/v1")),
@@ -2415,8 +2584,8 @@ private fun Classroom.toJson() = JSONObject().apply {
     put("corePremises", JSONArray(corePremises))
     put("memoryCards", JSONArray(memoryCards.map { JSONObject().put("title", it.title).put("summary", it.summary).put("keywords", JSONArray(it.keywords)).put("type", it.type).put("priority", it.priority).put("startIndex", it.startIndex).put("endIndex", it.endIndex).put("visibility", it.visibility).put("knownBy", JSONArray(it.knownBy)).put("unknownBy", JSONArray(it.unknownBy)).put("evidence", it.evidence) }))
     put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("summary", it.summary).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
-    put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview).put("content", it.content) }))
-    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("ttsAutoRead", config.ttsAutoRead).put("mentorName", config.mentorName).put("userAlias", config.userAlias).put("mentorPrompt", config.mentorPrompt).put("worldBook", config.worldBook).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("interfaceMode", config.interfaceMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
+    put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview).put("content", it.content).put("kind", it.kind) }))
+    put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("reasoningEffort", config.reasoningEffort).put("activeChatModel", config.activeChatModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("ttsAutoRead", config.ttsAutoRead).put("mentorName", config.mentorName).put("userAlias", config.userAlias).put("mentorPrompt", config.mentorPrompt).put("worldBook", config.worldBook).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("interfaceMode", config.interfaceMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
 }
 
 private fun JSONArray?.toMessages(): List<ChatMessage> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ChatMessage(item.optString("role"), item.optString("text")) } }
@@ -2445,7 +2614,7 @@ private fun JSONArray?.toMemoryCards(): List<MemoryCard> = if (this == null) emp
 } }
 private fun JSONArray?.toFiles(): List<KnowledgeFile> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item ->
     val preview = item.optString("preview")
-    KnowledgeFile(item.optString("name"), item.optString("type"), item.optInt("chars"), preview, item.optString("content", preview))
+    KnowledgeFile(item.optString("name"), item.optString("type"), item.optInt("chars"), preview, item.optString("content", preview), item.optString("kind", "reference"))
 } }
 private fun <T> List<T>.toMutableStateList() = mutableStateListOf<T>().also { it.addAll(this) }
 
@@ -2542,7 +2711,7 @@ private fun localStudyQuote(): String {
     return quotes[LocalDate.now().dayOfYear % quotes.size]
 }
 
-private suspend fun callChat(baseUrl: String, apiKey: String, model: String, system: String, messages: List<ChatMessage>): String = withContext(Dispatchers.IO) {
+private suspend fun callChat(baseUrl: String, apiKey: String, model: String, system: String, messages: List<ChatMessage>, deepThinkingEnabled: Boolean = false, reasoningEffort: String = "medium"): String = withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) return@withContext "请先填写 API Key。"
     if (model.isBlank()) return@withContext "请先选择或填写模型名。"
     runCatching {
@@ -2553,7 +2722,7 @@ private suspend fun callChat(baseUrl: String, apiKey: String, model: String, sys
         connection.setRequestProperty("Content-Type", "application/json")
         connection.connectTimeout = 20000
         connection.readTimeout = 60000
-        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages)) }
+        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages, deepThinkingEnabled = deepThinkingEnabled, reasoningEffort = reasoningEffort)) }
         Regex("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").find(readBody(connection))?.groupValues?.get(1)?.unescapeJson() ?: "模型没有返回内容。"
     }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
 }
@@ -2564,7 +2733,9 @@ private suspend fun callChatStream(
     model: String,
     system: String,
     messages: List<ChatMessage>,
-    onDelta: (String) -> Unit
+    onDelta: (String) -> Unit,
+    deepThinkingEnabled: Boolean = false,
+    reasoningEffort: String = "medium"
 ): String = withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) return@withContext "请先填写 API Key。"
     if (model.isBlank()) return@withContext "请先选择或填写模型名。"
@@ -2577,7 +2748,7 @@ private suspend fun callChatStream(
         connection.setRequestProperty("Accept", "text/event-stream")
         connection.connectTimeout = 20000
         connection.readTimeout = 120000
-        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages, stream = true)) }
+        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages, stream = true, deepThinkingEnabled = deepThinkingEnabled, reasoningEffort = reasoningEffort)) }
         if (connection.responseCode !in 200..299) return@runCatching readBody(connection).ifBlank { "调用失败：HTTP ${connection.responseCode}" }
         val builder = StringBuilder()
         BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).useLines { lines ->
@@ -2600,7 +2771,7 @@ private suspend fun callChatWithFallback(config: ClassroomConfig, models: List<S
     val candidates = models.ifEmpty { config.orderedModels() }
     var last = "请先选择或填写模型名。"
     candidates.forEach { model ->
-        val result = callChat(config.baseUrl, config.apiKey, model, system, messages)
+        val result = callChat(config.baseUrl, config.apiKey, model, system, messages, config.deepThinkingEnabled, config.reasoningEffort)
         if (!isApiFailure(result)) return result
         last = result
     }
@@ -2670,7 +2841,7 @@ private suspend fun callChatStreamWithFallback(
     val candidates = models.ifEmpty { config.orderedModels() }
     var last = "请先选择或填写模型名。"
     candidates.forEach { model ->
-        val result = callChatStream(config.baseUrl, config.apiKey, model, system, messages, onDelta)
+        val result = callChatStream(config.baseUrl, config.apiKey, model, system, messages, onDelta, config.deepThinkingEnabled, config.reasoningEffort)
         if (!isApiFailure(result)) return result
         last = result
     }
@@ -2922,6 +3093,94 @@ private fun extractKeywords(text: String): List<String> {
         .take(40)
 }
 
+private data class KnowledgeSnippet(val fileName: String, val text: String, val score: Int)
+
+private fun characterCardName(file: KnowledgeFile): String =
+    Regex("(?m)^#\\s+(.+)$").find(file.content)?.groupValues?.getOrNull(1)?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?: file.name.substringBeforeLast('.').ifBlank { "未命名角色" }
+
+private fun normalizeCharacterCardJson(raw: String): String {
+    val root = runCatching { JSONObject(raw) }.getOrNull() ?: return raw
+    val keys = listOf("name", "description", "personality", "scenario", "first_mes", "mes_example", "system_prompt", "data")
+    val source = root.optJSONObject("data") ?: root
+    return buildString {
+        keys.forEach { key ->
+            val value = source.optString(key, "").trim()
+            if (value.isNotBlank()) appendLine("## ${key.replace('_', ' ').replaceFirstChar { it.uppercase() }}\n$value")
+        }
+        if (isBlank()) append(raw)
+    }
+}
+
+private fun extractPngCardText(bytes: ByteArray): String {
+    val raw = bytes.toString(Charsets.ISO_8859_1)
+    val markers = listOf("chara", "character", "description", "personality", "scenario", "first_mes")
+    val hits = markers.flatMap { marker ->
+        Regex("(?i)$marker[^\\u0000-\\u001f]{0,4000}").findAll(raw).map { it.value }.toList()
+    }
+    return hits.joinToString("\n").replace(Regex("[^\\u0009\\u000A\\u000D\\u0020-\\u007E\\u4E00-\\u9FFF]"), " ").trim()
+}
+
+private fun formatCharacterCards(cards: List<KnowledgeFile>): String {
+    if (cards.isEmpty()) return ""
+    val perCardLimit = (CHARACTER_CARD_CONTEXT_LIMIT / cards.size).coerceIn(700, 2200)
+    return truncatePromptSection(cards.joinToString("\n\n") { file ->
+        "[角色：${characterCardName(file)}｜来源：${file.name}]\n" + truncatePromptSection(file.content, perCardLimit)
+    }, CHARACTER_CARD_CONTEXT_LIMIT)
+}
+
+private fun splitKnowledgeChunks(text: String, chunkSize: Int = KNOWLEDGE_CHUNK_SIZE): List<String> {
+    val paragraphs = text.replace("\r\n", "\n").split(Regex("\\n\\s*\\n"))
+        .map { it.trim() }.filter { it.isNotBlank() }
+    if (paragraphs.isEmpty()) return emptyList()
+    val chunks = mutableListOf<String>()
+    val current = StringBuilder()
+    fun flush() { if (current.isNotBlank()) { chunks += current.toString().trim(); current.clear() } }
+    paragraphs.forEach { paragraph ->
+        if (paragraph.length > chunkSize) {
+            flush()
+            paragraph.chunked(chunkSize).forEach { chunks += it }
+        } else {
+            if (current.length + paragraph.length + 2 > chunkSize) flush()
+            if (current.isNotEmpty()) current.append("\n\n")
+            current.append(paragraph)
+        }
+    }
+    flush()
+    return chunks
+}
+
+private fun recallKnowledgeSnippets(files: List<KnowledgeFile>, query: String, limit: Int = KNOWLEDGE_SNIPPET_RECALL_LIMIT): List<KnowledgeSnippet> {
+    val queryWords = extractKeywords(query).take(24)
+    val candidates = files.filter { it.kind != "character_card" }.flatMap { file ->
+        splitKnowledgeChunks(file.content).mapIndexed { index, chunk ->
+            val lowerChunk = chunk.lowercase(Locale.ROOT)
+            val hits = queryWords.fold(0) { total, word -> total + if (lowerChunk.contains(word)) 2 else 0 }
+            val nameHits = queryWords.count { word -> file.name.lowercase(Locale.ROOT).contains(word) } * 3
+            KnowledgeSnippet(file.name, chunk, hits + nameHits - (index / 12))
+        }
+    }
+    if (candidates.isEmpty()) return emptyList()
+    val ranked = candidates.sortedByDescending { it.score }
+    val selected = if (ranked.first().score > 0) {
+        ranked
+    } else {
+        candidates.groupBy { it.fileName }
+            .values
+            .mapNotNull { it.firstOrNull() }
+    }
+    val output = mutableListOf<KnowledgeSnippet>()
+    var used = 0
+    selected.forEach { snippet ->
+        if (output.size < limit && used + snippet.text.length <= KNOWLEDGE_SNIPPET_CONTEXT_LIMIT) {
+            output += snippet
+            used += snippet.text.length
+        }
+    }
+    return output
+}
+
 private fun normalizeVisibility(raw: String): String = when (raw.trim().lowercase(Locale.ROOT)) {
     "author_private", "private", "author", "作者私密", "幕后", "幕后设定" -> "author_private"
     "character_private", "character", "角色私密", "心理", "心理活动" -> "character_private"
@@ -3031,10 +3290,16 @@ private fun readBody(connection: HttpURLConnection): String {
     return BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
 }
 
-private fun buildJson(model: String, system: String, messages: List<ChatMessage>, stream: Boolean = false): String {
+private fun buildJson(model: String, system: String, messages: List<ChatMessage>, stream: Boolean = false, deepThinkingEnabled: Boolean = false, reasoningEffort: String = "medium"): String {
     val all = listOf(ChatMessage("system", system)) + messages
     val jsonMessages = all.joinToString(",") { "{\"role\":\"${it.role}\",\"content\":\"${it.text.escapeJson()}\"}" }
-    return "{\"model\":\"${model.escapeJson()}\",\"messages\":[$jsonMessages],\"temperature\":0.35,\"stream\":$stream}"
+    val normalizedEffort = reasoningEffort.lowercase()
+    val safeEffort = when (normalizedEffort) {
+        "low", "medium", "high" -> normalizedEffort
+        else -> "medium"
+    }
+    val reasoning = if (deepThinkingEnabled) ",\"reasoning_effort\":\"$safeEffort\"" else ""
+    return "{\"model\":\"${model.escapeJson()}\",\"messages\":[$jsonMessages],\"temperature\":0.35,\"stream\":$stream$reasoning}"
 }
 
 private fun buildVisionJson(model: String, system: String, prompt: String, dataUrl: String): String {
@@ -3276,6 +3541,7 @@ private fun promptMessagesForRoom(room: Classroom, history: List<ChatMessage>): 
     val recent = history.takeLast(RECENT_MESSAGE_CONTEXT_LIMIT)
     val retrievalQuery = (history.takeLast(4).joinToString("\n") { it.text } + "\n" + room.topic).take(2400)
     val recalledCards = recallMemoryCards(room.memoryCards, retrievalQuery, MEMORY_CARD_RECALL_LIMIT)
+    val knowledgeSnippets = recallKnowledgeSnippets(room.files, retrievalQuery)
     val latestUserText = history.lastOrNull { it.role == "user" }?.text.orEmpty()
     val wantsForwardPlanning = detectsForwardPlanningIntent(latestUserText)
     val state = buildString {
@@ -3300,17 +3566,35 @@ private fun promptMessagesForRoom(room: Classroom, history: List<ChatMessage>): 
                 appendLine("- ${card.title}｜可见性：${card.visibility}｜知道者：${card.knownBy.ifEmpty { listOf("未标注") }.joinToString("、")}｜不知道者：${card.unknownBy.ifEmpty { listOf("未标注") }.joinToString("、")}｜依据：${card.evidence.ifBlank { "未标注" }}｜关键词：${card.keywords.take(8).joinToString("、")}｜${card.summary}")
             }
         }
+        if (knowledgeSnippets.isNotEmpty()) {
+            appendLine()
+            appendLine("[本轮资料检索｜只依据下列片段回答，不要补造成资料中没有的事实]")
+            knowledgeSnippets.forEach { snippet ->
+                appendLine("- 来源：${snippet.fileName}")
+                appendLine(snippet.text)
+            }
+        }
         append("请只把这个状态包作为定位信息，真正展开回答时优先遵守后面的最近连续对话。")
     }
     return listOf(ChatMessage("system", state)) + recent
 }
 
-private fun promptMessagesForBranch(context: List<ChatMessage>, history: List<ChatMessage>): List<ChatMessage> {
+private fun promptMessagesForBranch(room: Classroom, context: List<ChatMessage>, history: List<ChatMessage>): List<ChatMessage> {
     val branchAnchor = context.takeLast(BRANCH_CONTEXT_LIMIT).joinToString("\n") { "${if (it.role == "user") "用户" else "AI"}：${it.text.take(700)}" }
+    val retrievalQuery = (history.takeLast(4).joinToString("\n") { it.text } + "\n" + room.topic).take(2400)
+    val knowledgeSnippets = recallKnowledgeSnippets(room.files, retrievalQuery)
     val state = buildString {
         appendLine("[分支课堂状态包]")
         appendLine("分支创建时的主课堂锚点如下，仅用于理解分支起点，不要把分支回答写回主课堂：")
         append(branchAnchor.ifBlank { "暂无锚点。" })
+        if (knowledgeSnippets.isNotEmpty()) {
+            appendLine()
+            appendLine("[本轮资料检索｜只依据下列片段回答，不要补造成资料中没有的事实]")
+            knowledgeSnippets.forEach { snippet ->
+                appendLine("- 来源：${snippet.fileName}")
+                appendLine(snippet.text)
+            }
+        }
     }
     return listOf(ChatMessage("system", state)) + history.takeLast(RECENT_MESSAGE_CONTEXT_LIMIT)
 }
@@ -3321,7 +3605,7 @@ private fun truncatePromptSection(text: String, limit: Int): String {
     return clean.take(limit) + "\n[以上资料已按上下文预算截断，截断部分不可臆测。]"
 }
 
-private const val APP_VERSION = "3.0.0"
+private const val APP_VERSION = "3.3.0"
 
 private object AppShapes {
     val panel = RoundedCornerShape(20.dp)
@@ -3332,30 +3616,25 @@ private object AppShapes {
 }
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 3.0.0
+# AI Classroom 3.3.0
 
 # New!
 
-## 更安静的界面
+## 对话模型与推理控制
+- 模型选择收纳为紧凑图标，点击后可直接切换当前课堂的备选模型。
+- 深度思考收纳为独立图标，开启后可选择低、中、高三档推理强度。
+- 关闭深度思考时不会发送 `reasoning_effort`，避免普通模型被错误启用推理参数。
+- 模型和推理设置按课堂保存，不会影响其他课堂。
 
-- 空课堂首页回归极简：顶部只显示浅色日期，中部保留输入框。
-- 删除重复课堂名、星期、标语、装饰图标和多层欢迎卡片。
-- 默认主题统一为低饱和灰蓝色，降低高亮颜色、阴影和视觉噪声。
-- 消息内容减少嵌套卡片和粗体标签，让标题、正文和操作保持清晰间距。
+## 沉浸式对话
+- 新增沉浸模式：隐藏顶部标题栏与底部导航，只保留对话和输入框。
+- 沉浸状态可快速切换浅色或深色界面，无需进入设置页。
+- 控制入口改为低存在感小图标，减少输入区域的常驻占用。
 
-## 更清晰的课堂身份
-
-- 第一轮主课堂对话完成后，自动生成一个短主题名称和一句话简介。
-- 名称与简介会显示在右滑课堂菜单中。
-- 点击名称或简介即可分别自定义修改。
-- 自动命名失败时会使用首句生成保底内容，不影响正常对话。
-
-## 更稳的长期连续性
-
-- 保留原有长时世界书、章节索引、长期记忆卡、知识库和分支课堂链路。
-- 主课堂和分支课堂增加更明确的私密记忆与角色知识边界提醒。
-- `author_private` 与 `character_private` 内容只能用于维持因果连续性，不能直接转化为未知角色的公开认知。
-- 最近连续对话仍然优先于长期摘要，避免旧记忆覆盖当前上下文。
+## 连续性与兼容性
+- 长时世界书、章节索引、长期记忆卡、知识库检索和分支课堂逻辑保持不变。
+- 角色卡、人物私密信息与不同视角边界继续参与小说写作上下文。
+- 旧课堂数据会自动使用安全默认值，不需要重新创建课堂。
 
 ## 其他
 
@@ -3391,7 +3670,11 @@ private const val USER_MANUAL_TEXT = """
 回答边界会额外判断用户是否明确要求继续、推进、策划事件或往后发展。未检测到这类请求时，AI 会避免在末尾添加强引导性建议；如果用户明确要求推进，或当前剧情确实需要承接，AI 会结合世界书、角色可知信息和剧情因果生成完整合理事件。
 
 ## 知识库
-知识库目前可直接读取 `.md` 和 `.txt` 文件。上传后文件会保存在本地列表中，点击可查看全文，长按可删除。AI 讲师会读取知识库正文的可控长度片段，并结合你的材料教学。
+知识库可直接读取 `.md` 和 `.txt` 文件；角色卡还支持 `.json` 和 `.png`，并可批量导入。普通资料会按你当前的问题、最近对话和课堂主题检索少量相关片段，而不是把所有文件粗暴塞入提示词；点击文件可查看全文，长按可删除。
+
+“导入角色卡”支持 Markdown（`.md`）、常见角色卡 JSON（`.json`）和带文本元数据的 PNG（`.png`），也支持一次选择多个文件。Markdown 每个角色建议使用一个文件，并用一级标题写角色名，再用“身份”“性格”“语言风格”“动机”“关系”“不可违背”等二级标题描述。角色卡会作为作者级人物参考常驻，用于保持人物口吻、关系与行为边界；它不会让角色自动知道其他角色的秘密，最近连续对话已经发生的事实优先于角色卡。
+
+这套“角色卡常驻 + 当前资料检索 + 世界书 + 长期记忆”会让单个小说项目获得接近微调的设定一致性和连续性，但不会改变模型本身参数。想要更稳定的效果，请把世界规则写进世界书、每位角色单独建卡，并保存 2—3 段你期待的叙事示例作为普通资料。
 
 ## API 与模型
 模型模块用于保存普通课堂对话的服务商、Base URL、API Key 和模型名。它支持自动获取模型，也可以手动输入模型名。
@@ -3451,7 +3734,10 @@ private const val MEMORY_CARD_BUILD_MESSAGE_LIMIT = 36
 private const val CHAPTER_PROMPT_LIMIT = 32
 private const val CHAPTER_CONTEXT_LIMIT = 5000
 private const val RECENT_MESSAGE_CONTEXT_LIMIT = 32
-private const val KNOWLEDGE_CONTEXT_LIMIT = 9000
+private const val CHARACTER_CARD_CONTEXT_LIMIT = 7000
+private const val KNOWLEDGE_CHUNK_SIZE = 1100
+private const val KNOWLEDGE_SNIPPET_RECALL_LIMIT = 4
+private const val KNOWLEDGE_SNIPPET_CONTEXT_LIMIT = 5200
 private const val BRANCH_CONTEXT_LIMIT = 24
 private const val BRANCH_CONTEXT_LIMIT_CHARS = 5000
 private const val CHAPTER_SIZE = 12
