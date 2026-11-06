@@ -1325,6 +1325,7 @@ private fun MessageCard(
     onSpeak: (String) -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    val bubbleUser = if (palette.page == DesignTokens.Dark.Page) DesignTokens.Dark.BubbleUser else DesignTokens.Light.BubbleUser
     val actionModifier = Modifier.combinedClickable(
         onClick = {},
         onDoubleClick = { if (message.role == "assistant") onSpeak(message.text) },
@@ -1337,27 +1338,28 @@ private fun MessageCard(
                 Modifier
                     .fillMaxWidth(0.82f)
                     .then(actionModifier)
-                    .background(palette.secondary.copy(alpha = 0.08f).compositeOn(palette.surface), RoundedCornerShape(DesignTokens.Radius.Button))
-                    .padding(12.dp)
+                    .background(bubbleUser, RoundedCornerShape(DesignTokens.Radius.Card))
+                    .padding(horizontal = DesignTokens.Spacing.CardHorizontal, vertical = DesignTokens.Spacing.CardVertical)
             ) {
-                Text("YOU", color = palette.secondary, fontWeight = FontWeight.Medium, fontSize = DesignTokens.Type.Micro, letterSpacing = 1.1.sp)
-                Spacer(Modifier.height(4.dp))
-                Text(message.text, color = palette.ink, lineHeight = 21.sp)
+                Text("YOU", style = DesignTokens.TextStyles.Kicker, color = palette.muted)
+                Spacer(Modifier.height(DesignTokens.Spacing.Xs))
+                Text(message.text, style = DesignTokens.TextStyles.Body, color = palette.ink)
                 TextButton(onClick = { onBranch(index) }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) { Text("↳ 从这里开分支", color = palette.secondary, fontSize = DesignTokens.Type.Small) }
             }
         }
     } else {
-        Row(Modifier.fillMaxWidth().then(actionModifier).padding(horizontal = 2.dp), horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
+        Row(Modifier.fillMaxWidth().then(actionModifier).padding(horizontal = DesignTokens.Spacing.Xxs), horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Md), verticalAlignment = Alignment.Top) {
             Surface(Modifier.size(32.dp), shape = RoundedCornerShape(DesignTokens.Radius.Button), color = palette.button) {
                 Box(contentAlignment = Alignment.Center) { Text("✦", color = palette.onButton, fontSize = DesignTokens.Type.Subtitle, fontWeight = FontWeight.Bold) }
             }
             Column(Modifier.weight(1f)) {
-                Text(mentorName.ifBlank { "AI 讲师" }, color = palette.button, fontWeight = FontWeight.Medium, fontSize = DesignTokens.Type.Body)
-                Spacer(Modifier.height(6.dp))
+                Text(mentorName.ifBlank { "AI 讲师" }, style = DesignTokens.TextStyles.Kicker, color = palette.muted)
+                Spacer(Modifier.height(DesignTokens.Spacing.Xs))
                 Column(
                     Modifier.fillMaxWidth()
-                        .background(palette.card.copy(alpha = 0.52f).compositeOn(palette.surface), RoundedCornerShape(DesignTokens.Radius.Button))
-                        .padding(horizontal = 13.dp, vertical = 11.dp)
+                        .background(palette.surface, RoundedCornerShape(DesignTokens.Radius.Card))
+                        .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Card))
+                        .padding(horizontal = DesignTokens.Spacing.CardHorizontal, vertical = DesignTokens.Spacing.CardVertical)
                 ) { MarkdownText(message.text) }
                 TextButton(onClick = { onBranch(index) }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) { Text("↳ 从这里开分支", color = palette.secondary, fontSize = DesignTokens.Type.Small) }
             }
@@ -1687,31 +1689,34 @@ private fun BranchChatScreen(
 
 @Composable
 private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette, mentorName: String) {
+    val bubbleUser = if (palette.page == DesignTokens.Dark.Page) DesignTokens.Dark.BubbleUser else DesignTokens.Light.BubbleUser
     if (message.role == "user") {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Column(
                 Modifier
                     .fillMaxWidth(0.82f)
-                    .background(palette.secondary.copy(alpha = 0.10f).compositeOn(palette.surface), AppShapes.card)
-                    .border(1.dp, palette.outline.copy(alpha = 0.72f), AppShapes.card)
-                    .padding(12.dp)
+                    .background(bubbleUser, RoundedCornerShape(DesignTokens.Radius.Card))
+                    .padding(horizontal = DesignTokens.Spacing.CardHorizontal, vertical = DesignTokens.Spacing.CardVertical)
             ) {
-                Text("YOU", color = palette.secondary, fontWeight = FontWeight.Medium, fontSize = DesignTokens.Type.Micro, letterSpacing = 1.1.sp)
-                Spacer(Modifier.height(4.dp))
-                Text(message.text, color = palette.ink, lineHeight = 21.sp)
+                Text("YOU", style = DesignTokens.TextStyles.Kicker, color = palette.muted)
+                Spacer(Modifier.height(DesignTokens.Spacing.Xs))
+                Text(message.text, style = DesignTokens.TextStyles.Body, color = palette.ink)
             }
         }
     } else {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 2.dp), horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = DesignTokens.Spacing.Xxs), horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Md), verticalAlignment = Alignment.Top) {
             Surface(Modifier.size(32.dp), shape = RoundedCornerShape(DesignTokens.Radius.Button), color = palette.button) {
                 Box(contentAlignment = Alignment.Center) { Text("✦", color = palette.onButton, fontSize = DesignTokens.Type.Subtitle, fontWeight = FontWeight.Bold) }
             }
             Column(Modifier.weight(1f)) {
-                Text("${mentorName.ifBlank { "AI 讲师" }} · 分支", color = palette.button, fontWeight = FontWeight.Medium, fontSize = DesignTokens.Type.Body)
-                Spacer(Modifier.height(6.dp))
-                Surface(Modifier.fillMaxWidth(), color = palette.card.copy(alpha = 0.72f).compositeOn(palette.surface), shape = AppShapes.card) {
-                    Column(Modifier.padding(horizontal = 13.dp, vertical = 11.dp)) { MarkdownText(message.text) }
-                }
+                Text("${mentorName.ifBlank { "AI 讲师" }} · 分支", style = DesignTokens.TextStyles.Kicker, color = palette.muted)
+                Spacer(Modifier.height(DesignTokens.Spacing.Xs))
+                Column(
+                    Modifier.fillMaxWidth()
+                        .background(palette.surface, RoundedCornerShape(DesignTokens.Radius.Card))
+                        .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Card))
+                        .padding(horizontal = DesignTokens.Spacing.CardHorizontal, vertical = DesignTokens.Spacing.CardVertical)
+                ) { MarkdownText(message.text) }
             }
         }
     }
