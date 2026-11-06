@@ -1688,7 +1688,23 @@ private fun BranchChatScreen(
         ) {
             item {
                 InfoCard {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(DesignTokens.Border.Focus)
+                            .background(DesignTokens.Accent, RoundedCornerShape(DesignTokens.Radius.Pill))
+                    )
+                    Spacer(Modifier.height(DesignTokens.Spacing.Md))
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "分支",
+                            style = DesignTokens.TextStyles.Kicker,
+                            color = DesignTokens.AccentOn,
+                            modifier = Modifier
+                                .background(DesignTokens.Accent, RoundedCornerShape(DesignTokens.Radius.Pill))
+                                .padding(horizontal = DesignTokens.Spacing.Md, vertical = DesignTokens.Spacing.Xxs)
+                        )
+                        Spacer(Modifier.width(DesignTokens.Spacing.Md))
                         Text(branch.title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         OutlinedButton(onClick = onBack) { Text("分支列表") }
                     }
@@ -1731,7 +1747,16 @@ private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette, mentorN
                 Box(contentAlignment = Alignment.Center) { Text("✦", color = palette.onButton, fontSize = DesignTokens.Type.Subtitle, fontWeight = FontWeight.Bold) }
             }
             Column(Modifier.weight(1f)) {
-                Text("${mentorName.ifBlank { "AI 讲师" }} · 分支", style = DesignTokens.TextStyles.Kicker, color = palette.muted)
+                Text(
+                    buildAnnotatedString {
+                        append(mentorName.ifBlank { "AI 讲师" })
+                        withStyle(SpanStyle(color = DesignTokens.Accent, fontWeight = DesignTokens.Weight.Bold)) {
+                            append(" · 分支")
+                        }
+                    },
+                    style = DesignTokens.TextStyles.Kicker,
+                    color = palette.muted
+                )
                 Spacer(Modifier.height(DesignTokens.Spacing.Xs))
                 Column(
                     Modifier.fillMaxWidth()
