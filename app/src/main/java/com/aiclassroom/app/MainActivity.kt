@@ -12,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -37,6 +38,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -78,6 +80,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -588,47 +591,52 @@ private fun AIClassroomApp() {
                 tonalElevation = 0.dp,
                 shadowElevation = 0.dp
             ) {
-                Row(
-                    Modifier.fillMaxWidth().statusBarsPadding().height(66.dp).padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Surface(
-                        Modifier.size(38.dp),
-                        shape = RoundedCornerShape(DesignTokens.Radius.Control),
-                        color = palette.secondary.copy(alpha = 0.16f).compositeOn(palette.surface)
+                Column(Modifier.fillMaxWidth().statusBarsPadding()) {
+                    Row(
+                        Modifier.fillMaxWidth().height(66.dp).padding(horizontal = DesignTokens.Spacing.Page),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Md)
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.School, contentDescription = "AI Classroom", tint = palette.secondary, modifier = Modifier.size(21.dp))
+                        Surface(
+                            Modifier.size(DesignTokens.Size.Tile),
+                            shape = RoundedCornerShape(DesignTokens.Radius.Tile),
+                            color = palette.card,
+                            border = BorderStroke(DesignTokens.Border.Hairline, palette.outline)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.School, contentDescription = "AI Classroom", tint = palette.ink, modifier = Modifier.size(DesignTokens.Size.Icon))
+                            }
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text("AI CLASSROOM", style = DesignTokens.TextStyles.Kicker, color = palette.muted)
+                            Text(
+                                if (tab == Tab.Class) current.name else tab.title,
+                                color = palette.ink,
+                                fontSize = DesignTokens.Type.Subtitle,
+                                fontWeight = DesignTokens.Weight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (tab == Tab.Class) {
+                            Text(
+                                current.topic,
+                                color = palette.muted,
+                                fontSize = DesignTokens.Type.Caption,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.width(92.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = { classMenuOpen = !classMenuOpen },
+                            modifier = Modifier.size(DesignTokens.Size.IconButton),
+                            colors = IconButtonDefaults.iconButtonColors(contentColor = DesignTokens.Accent)
+                        ) {
+                            Icon(Icons.Default.Tune, contentDescription = "打开课堂菜单", modifier = Modifier.size(DesignTokens.Size.Icon))
                         }
                     }
-                    Column(Modifier.weight(1f)) {
-                        Text("AI CLASSROOM", color = palette.muted, fontSize = DesignTokens.Type.Micro, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
-                        Text(
-                            if (tab == Tab.Class) current.name else tab.title,
-                            color = palette.ink,
-                            fontSize = DesignTokens.Type.Title,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    if (tab == Tab.Class) {
-                        Text(
-                            current.topic,
-                            color = palette.muted,
-                            fontSize = DesignTokens.Type.Caption,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.width(92.dp)
-                        )
-                    }
-                    IconButton(
-                        onClick = { classMenuOpen = !classMenuOpen },
-                        colors = IconButtonDefaults.iconButtonColors(contentColor = palette.button)
-                    ) {
-                        Icon(Icons.Default.Tune, contentDescription = "打开课堂菜单", modifier = Modifier.size(22.dp))
-                    }
+                    HorizontalDivider(thickness = DesignTokens.Border.Hairline, color = palette.outline)
                 }
             }
         }
@@ -637,18 +645,37 @@ private fun AIClassroomApp() {
             NavigationBar(
                 containerColor = palette.surface,
                 tonalElevation = 0.dp,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                modifier = Modifier.padding(horizontal = DesignTokens.Spacing.Md, vertical = DesignTokens.Spacing.Sm)
             ) {
                 Tab.entries.forEach { item ->
+                    val selected = tab == item
                     NavigationBarItem(
-                        selected = tab == item,
+                        selected = selected,
                         onClick = { tab = item; classMenuOpen = false },
-                        icon = { Icon(item.icon, contentDescription = item.title) },
-                        label = { Text(item.title, fontSize = DesignTokens.Type.Caption) },
+                        icon = { Icon(item.icon, contentDescription = item.title, modifier = Modifier.size(DesignTokens.Size.IconLg)) },
+                        label = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Xs)
+                            ) {
+                                if (selected) {
+                                    Box(
+                                        Modifier
+                                            .size(DesignTokens.Spacing.Sm)
+                                            .background(DesignTokens.Accent, RoundedCornerShape(DesignTokens.Radius.Pill))
+                                    )
+                                }
+                                Text(
+                                    item.title,
+                                    fontSize = DesignTokens.Type.Caption,
+                                    fontWeight = if (selected) DesignTokens.Weight.Bold else DesignTokens.Weight.Regular
+                                )
+                            }
+                        },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = palette.button,
-                            selectedTextColor = palette.button,
-                            indicatorColor = palette.button.copy(alpha = 0.16f).compositeOn(palette.surface),
+                            selectedIconColor = palette.page,
+                            selectedTextColor = palette.ink,
+                            indicatorColor = palette.ink,
                             unselectedIconColor = palette.muted,
                             unselectedTextColor = palette.muted
                         )
@@ -817,60 +844,77 @@ private fun ClassroomMenu(
                 item {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("我的课堂", fontWeight = FontWeight.Bold, fontSize = DesignTokens.Type.Display, color = MaterialTheme.colorScheme.onSurface)
+                            Text("我的课堂", fontWeight = DesignTokens.Weight.Bold, fontSize = DesignTokens.Type.Display, color = MaterialTheme.colorScheme.onSurface)
                             Text(saveNotice, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        IconButton(onClick = onNew, colors = IconButtonDefaults.iconButtonColors(contentColor = palette.button)) {
-                            Icon(Icons.Default.Add, null)
+                        IconButton(onClick = onNew, modifier = Modifier.size(DesignTokens.Size.IconButton), colors = IconButtonDefaults.iconButtonColors(contentColor = DesignTokens.Accent)) {
+                            Icon(Icons.Default.Add, contentDescription = "新建", modifier = Modifier.size(DesignTokens.Size.Icon))
                         }
                     }
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(DesignTokens.Spacing.Lg))
                     OutlinedTextField(
                         value = query,
                         onValueChange = { query = it },
                         modifier = Modifier.fillMaxWidth(),
-                        leadingIcon = { Icon(Icons.Default.Search, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                        placeholder = { Text("搜索课堂") },
+                        leadingIcon = { Icon(Icons.Default.Search, null, modifier = Modifier.size(DesignTokens.Size.IconSm), tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                        placeholder = { Text("搜索课堂", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Body) },
                         singleLine = true,
                         shape = AppShapes.control,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = palette.button,
+                            focusedBorderColor = DesignTokens.Accent,
                             unfocusedBorderColor = MaterialTheme.colorScheme.outline,
                             focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                             unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            cursorColor = palette.button
+                            cursorColor = DesignTokens.Accent
                         )
                     )
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = onNew, modifier = Modifier.fillMaxWidth(), shape = AppShapes.button, colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = palette.onButton)) {
-                        Icon(Icons.Default.Add, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
+                    Spacer(Modifier.height(DesignTokens.Spacing.Md))
+                    AppPrimaryButton(onClick = onNew, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Add, null, Modifier.size(DesignTokens.Size.IconSm))
+                        Spacer(Modifier.width(DesignTokens.Spacing.Sm))
                         Text("新建课堂")
                     }
                 }
                 if (filtered.isEmpty()) {
-                    item { Text("没有找到课堂", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(12.dp)) }
+                    item {
+                        Text(
+                            "没有找到课堂",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = DesignTokens.Type.Body,
+                            modifier = Modifier.padding(horizontal = DesignTokens.Spacing.Xs, vertical = DesignTokens.Spacing.Lg)
+                        )
+                    }
                 }
-                items(filtered) { i ->
+                items(filtered, key = { it }) { i ->
                     val room = classes[i]
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
-                        color = if (i == classIndex) palette.button.copy(alpha = 0.12f).compositeOn(MaterialTheme.colorScheme.surface) else Color.Transparent,
+                        color = if (i == classIndex) DesignTokens.Accent.copy(alpha = 0.10f).compositeOn(MaterialTheme.colorScheme.surface) else Color.Transparent,
                         shape = AppShapes.card
                     ) {
-                        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                        Column(Modifier.padding(horizontal = DesignTokens.Spacing.Lg, vertical = DesignTokens.Spacing.Md)) {
                             Row(
-                                modifier = Modifier.fillMaxWidth().clickable { onSelect(i) },
+                                modifier = Modifier.fillMaxWidth().heightIn(min = DesignTokens.Size.ListRowMin).clickable { onSelect(i) },
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Md)
                             ) {
-                                Surface(Modifier.size(38.dp), shape = RoundedCornerShape(DesignTokens.Radius.Control), color = if (i == classIndex) palette.button else MaterialTheme.colorScheme.surfaceVariant) {
+                                Surface(
+                                    Modifier.size(DesignTokens.Size.Tile),
+                                    shape = RoundedCornerShape(DesignTokens.Radius.Tile),
+                                    color = if (i == classIndex) DesignTokens.Accent else MaterialTheme.colorScheme.surfaceVariant,
+                                    border = BorderStroke(DesignTokens.Border.Hairline, if (i == classIndex) DesignTokens.Accent else MaterialTheme.colorScheme.outline)
+                                ) {
                                     Box(contentAlignment = Alignment.Center) {
-                                        Text((i + 1).toString(), color = if (i == classIndex) palette.onButton else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
+                                        Text(
+                                            (i + 1).toString(),
+                                            color = if (i == classIndex) DesignTokens.AccentOn else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = DesignTokens.Type.Body,
+                                            fontWeight = DesignTokens.Weight.Bold
+                                        )
                                     }
                                 }
                                 Column(Modifier.weight(1f)) {
-                                    Text(room.name, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable { renameTarget = i to room.name })
+                                    Text(room.name, fontSize = DesignTokens.Type.Body, fontWeight = DesignTokens.Weight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable { renameTarget = i to room.name })
                                     Text(
                                         room.summary.ifBlank { room.topic },
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -880,15 +924,20 @@ private fun ClassroomMenu(
                                         modifier = Modifier.clickable { summaryTarget = i to room.summary }
                                     )
                                 }
-                                if (i == classIndex) Icon(Icons.Default.Check, null, tint = palette.button, modifier = Modifier.size(20.dp))
+                                if (i == classIndex) Icon(Icons.Default.Check, null, tint = DesignTokens.Accent, modifier = Modifier.size(DesignTokens.Size.Icon))
                             }
-                            Spacer(Modifier.height(6.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
-                                TextButton(onClick = { renameTarget = i to room.name }) { Icon(Icons.Default.Edit, null, Modifier.size(16.dp)); Spacer(Modifier.width(3.dp)); Text("改名") }
-                                TextButton(onClick = { summaryTarget = i to room.summary }) { Text("简介") }
-                                TextButton(onClick = { onNewWithConfig(i) }) { Text("复制") }
-                                if (i != classIndex) TextButton(onClick = { onCopyConfig(i) }) { Text("复制配置") }
-                                TextButton(onClick = { onDelete(i) }) { Icon(Icons.Default.Delete, null, Modifier.size(16.dp)); Text("删除") }
+                            Spacer(Modifier.height(DesignTokens.Spacing.Sm))
+                            Row(
+                                Modifier.padding(start = DesignTokens.Size.Tile + DesignTokens.Spacing.Md),
+                                horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Xxs),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val actionColors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant)
+                                TextButton(onClick = { renameTarget = i to room.name }, colors = actionColors) { Icon(Icons.Default.Edit, null, Modifier.size(DesignTokens.Size.IconSm)); Spacer(Modifier.width(DesignTokens.Spacing.Xs)); Text("改名", fontSize = DesignTokens.Type.Small) }
+                                TextButton(onClick = { summaryTarget = i to room.summary }, colors = actionColors) { Text("简介", fontSize = DesignTokens.Type.Small) }
+                                TextButton(onClick = { onNewWithConfig(i) }, colors = actionColors) { Text("复制", fontSize = DesignTokens.Type.Small) }
+                                if (i != classIndex) TextButton(onClick = { onCopyConfig(i) }, colors = actionColors) { Text("复制配置", fontSize = DesignTokens.Type.Small) }
+                                TextButton(onClick = { onDelete(i) }, colors = actionColors) { Icon(Icons.Default.Delete, null, Modifier.size(DesignTokens.Size.IconSm)); Text("删除", fontSize = DesignTokens.Type.Small) }
                             }
                         }
                     }
@@ -1028,10 +1077,10 @@ private fun ClassScreen(
         )
         FloatingIconAction(
             icon = if (isAtBottom) Icons.Default.North else Icons.Default.South,
-            visible = isAtBottom,
+            contentDescription = if (isAtBottom) "回到顶部" else "回到底部",
             palette = palette,
             onClick = { scope.launch { if (isAtBottom) listState.animateScrollToItem(topIndex) else listState.animateScrollToItem(bottomIndex) } },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = if (compactInput) 122.dp else 188.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = DesignTokens.Spacing.Md, bottom = if (compactInput) 122.dp else 188.dp),
         )
     }
 }
@@ -1054,16 +1103,28 @@ private fun EmptyClassroomHome(
     onImage: () -> Unit
 ) {
     val dateText = remember { todayDateText() }
-    Box(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 18.dp)) {
-        Text(
-            dateText.first,
-            color = palette.muted.copy(alpha = 0.62f),
-            fontSize = DesignTokens.Type.Title,
-            fontWeight = FontWeight.Normal,
-            modifier = Modifier
-                .background(palette.surface.copy(alpha = 0.42f), RoundedCornerShape(DesignTokens.Radius.Button))
-                .padding(horizontal = 10.dp, vertical = 5.dp)
-        )
+    Box(Modifier.fillMaxSize().padding(horizontal = DesignTokens.Spacing.Lg, vertical = DesignTokens.Spacing.Xl)) {
+        Column(Modifier.fillMaxWidth().align(Alignment.TopStart)) {
+            Text(
+                dateText.first,
+                color = palette.muted,
+                fontSize = DesignTokens.Type.Body,
+                fontWeight = DesignTokens.Weight.Regular,
+                modifier = Modifier
+                    .background(palette.surface, RoundedCornerShape(DesignTokens.Radius.Sm))
+                    .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Sm))
+                    .padding(horizontal = DesignTokens.Spacing.Lg, vertical = DesignTokens.Spacing.Sm)
+            )
+            if (quote.isNotBlank()) {
+                Spacer(Modifier.height(DesignTokens.Spacing.Xl))
+                Text(
+                    quote,
+                    color = palette.muted,
+                    fontSize = DesignTokens.Type.Caption,
+                    lineHeight = DesignTokens.Type.LineSnug
+                )
+            }
+        }
         ChatInputBar(
             input = input,
             onInput = onInput,
@@ -1159,7 +1220,7 @@ private fun ChatControls(
 private fun String.shortModelName(): String = substringAfterLast('/').take(20)
 
 @Composable
-private fun FloatingIconAction(icon: ImageVector, visible: Boolean, palette: AppPalette, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun FloatingIconAction(icon: ImageVector, palette: AppPalette, onClick: () -> Unit, modifier: Modifier = Modifier, contentDescription: String? = null) {
     Surface(
         onClick = onClick,
         modifier = modifier.size(DesignTokens.Size.Fab),
@@ -1169,7 +1230,7 @@ private fun FloatingIconAction(icon: ImageVector, visible: Boolean, palette: App
         border = androidx.compose.foundation.BorderStroke(DesignTokens.Border.Hairline, palette.outline)
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = null, tint = DesignTokens.Accent, modifier = Modifier.size(22.dp))
+            Icon(icon, contentDescription = contentDescription, tint = DesignTokens.Accent, modifier = Modifier.size(DesignTokens.Size.IconLg))
         }
     }
 }
