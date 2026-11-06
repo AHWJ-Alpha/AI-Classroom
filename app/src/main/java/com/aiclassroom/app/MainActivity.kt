@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Search
@@ -73,6 +74,7 @@ import androidx.compose.material.icons.filled.Quiz
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -1097,6 +1099,37 @@ private fun ClassScreen(
             onQuickThemeToggle = onQuickThemeToggle,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
+        val failureNotice by remember {
+            derivedStateOf {
+                val last = room.messages.lastOrNull()
+                if (last?.role == "assistant" && looksLikeFailure(last.text)) last.text else null
+            }
+        }
+        failureNotice?.let { notice ->
+            Surface(
+                modifier = Modifier.align(Alignment.TopCenter).padding(start = DesignTokens.Spacing.Md, end = DesignTokens.Spacing.Md, top = DesignTokens.Spacing.Lg),
+                shape = AppShapes.control,
+                color = palette.card,
+                border = BorderStroke(DesignTokens.Border.Hairline, DesignTokens.Danger),
+                shadowElevation = 0.dp
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = DesignTokens.Spacing.Lg, vertical = DesignTokens.Spacing.Md),
+                    horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Md),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Icon(Icons.Default.Error, contentDescription = "请求失败", tint = DesignTokens.Danger, modifier = Modifier.size(DesignTokens.Size.Icon))
+                    Text(
+                        notice,
+                        color = DesignTokens.Danger,
+                        fontSize = DesignTokens.Type.Small,
+                        fontWeight = DesignTokens.Weight.Medium,
+                        lineHeight = DesignTokens.Type.LineSnug,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
         FloatingIconAction(
             icon = if (isAtBottom) Icons.Default.North else Icons.Default.South,
             contentDescription = if (isAtBottom) "回到顶部" else "回到底部",
@@ -1146,6 +1179,15 @@ private fun EmptyClassroomHome(
                     lineHeight = DesignTokens.Type.LineSnug
                 )
             }
+            Spacer(Modifier.height(DesignTokens.Spacing.Xl))
+            Text(
+                "在下方输入学习目标或问题，开始你的第一课",
+                color = palette.ink,
+                fontSize = DesignTokens.Type.Subtitle,
+                fontWeight = DesignTokens.Weight.Medium,
+                lineHeight = DesignTokens.Type.LineBody,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
         ChatInputBar(
             input = input,
@@ -1325,9 +1367,18 @@ private fun ChatInputBar(
                     modifier = Modifier.align(Alignment.BottomEnd).padding(end = 5.dp, bottom = 5.dp).size(if (compact) 40.dp else 44.dp),
                     shape = AppShapes.button,
                     contentPadding = PaddingValues(0.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = palette.onButton)
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = palette.button,
+                        contentColor = palette.onButton,
+                        disabledContainerColor = palette.button.copy(alpha = 0.32f),
+                        disabledContentColor = palette.onButton.copy(alpha = 0.85f)
+                    )
                 ) {
-                    Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp), tint = palette.onButton)
+                    if (isLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = palette.onButton, strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp), tint = palette.onButton)
+                    }
                 }
             }
         }
@@ -1415,15 +1466,25 @@ private fun MessageActionMenu(expanded: Boolean, palette: AppPalette, onDismiss:
 private fun AiThinkingRow(palette: AppPalette, mentorName: String = "AI 讲师") {
     Row(Modifier.fillMaxWidth().padding(horizontal = 2.dp), horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
         Surface(Modifier.size(DesignTokens.Size.Avatar), shape = RoundedCornerShape(DesignTokens.Radius.Button), color = DesignTokens.Accent) {
-            Box(contentAlignment = Alignment.Center) { Text("…", color = DesignTokens.AccentOn, fontSize = DesignTokens.Type.Title, fontWeight = FontWeight.Bold) }
+            Box(contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(modifier = Modifier.size(DesignTokens.Size.Icon), color = DesignTokens.AccentOn, strokeWidth = 2.dp)
+            }
         }
         Text(
-            "${mentorName.ifBlank { "AI 讲师" }} 正在整理思路…",
+            "${mentorName.ifBlank { "AI 讲师" }} 正在生成回复…",
             color = palette.muted,
             fontSize = DesignTokens.Type.Body,
             modifier = Modifier.background(palette.card.copy(alpha = 0.46f).compositeOn(palette.surface), RoundedCornerShape(DesignTokens.Radius.Note)).padding(horizontal = 13.dp, vertical = 10.dp)
         )
     }
+}
+
+/** 展示层失败识别：覆盖数据层实际产出的失败文案，用于给失败消息套错误样式；命中时原样展示消息内容。 */
+private fun looksLikeFailure(text: String): Boolean {
+    if (text.isBlank()) return false
+    val lower = text.lowercase()
+    return text.startsWith("调用失败") || text.startsWith("请先选择") || text.startsWith("请先填写") ||
+        lower.contains("http 4") || lower.contains("http 5") || lower.contains("unauthorized") || lower.contains("invalid api")
 }
 
 @Composable
@@ -1989,7 +2050,7 @@ private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Uni
                 importNotice?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = DesignTokens.Type.Small) }
             }
         }
-        if (files.isEmpty()) item { InfoCard { Text("还没有上传知识库文件。", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+        if (files.isEmpty()) item { InfoCard { Text("还没有上传知识库文件。点击上方「批量上传资料」即可导入资料。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Body, lineHeight = DesignTokens.Type.LineBody) } }
         items(files, key = { it.kind + it.name + it.chars }) { file ->
             KnowledgeFileRow(file, onOpen = { viewing = file }, onDelete = { deleteTarget = file })
         }
