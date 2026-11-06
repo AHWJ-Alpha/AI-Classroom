@@ -813,7 +813,7 @@ private fun AIClassroomApp() {
         enter = slideInHorizontally(animationSpec = tween(DesignTokens.Motion.DrawerEnterMs)) { -it } + fadeIn(tween(DesignTokens.Motion.SlowMs)),
         exit = slideOutHorizontally(animationSpec = tween(DesignTokens.Motion.DrawerExitMs)) { -it } + fadeOut(tween(DesignTokens.Motion.FastMs))
     ) {
-        ClassroomMenu(classes, classIndex, saveNotice, palette, onSelect = {
+        ClassroomMenu(classes, classIndex, saveNotice, palette, onHorizontalDragEnd = { total -> if (tab == Tab.Class && classMenuOpen && total < -80f) classMenuOpen = false }, onSelect = {
             classIndex = it
             classMenuOpen = false
             persist("已切换课堂")
@@ -866,6 +866,7 @@ private fun ClassroomMenu(
     classIndex: Int,
     saveNotice: String,
     palette: AppPalette,
+    onHorizontalDragEnd: (Float) -> Unit,
     onSelect: (Int) -> Unit,
     onRename: (Int, String) -> Unit,
     onEditSummary: (Int, String) -> Unit,
@@ -883,7 +884,19 @@ private fun ClassroomMenu(
     }
     Row(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Surface(
-            Modifier.fillMaxHeight().fillMaxWidth(0.88f),
+            Modifier
+                .fillMaxHeight()
+                .fillMaxWidth(0.88f)
+                .pointerInput(Unit) {
+                    var total = 0f
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            onHorizontalDragEnd(total)
+                            total = 0f
+                        },
+                        onHorizontalDrag = { _, dragAmount -> total += dragAmount }
+                    )
+                },
             color = MaterialTheme.colorScheme.surface,
             shape = AppShapes.menu,
             shadowElevation = 0.dp,
