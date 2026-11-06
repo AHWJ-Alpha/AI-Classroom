@@ -1046,7 +1046,20 @@ private fun ClassScreen(
     }
     val compactInput by remember { derivedStateOf { !isAtBottom } }
     LaunchedEffect(room.messages.size) {
-        if (room.messages.isNotEmpty()) listState.animateScrollToItem(bottomIndex)
+        if (room.messages.isEmpty()) return@LaunchedEffect
+        // 仅当用户本来停在底部（或刚追加的是用户自己发的消息）才回底，浏览历史时不打断。
+        // visibleItemsInfo/totalItemsCount 取自同一快照：正序末项=底部、反序 index 0=底部，
+        // 故同一判定两种布局模式通用；±1 容差覆盖新项"已布局/未布局"两种时序。
+        val info = listState.layoutInfo
+        val visible = info.visibleItemsInfo
+        val wasAtBottom = visible.isEmpty() || if (reverseConversation) {
+            visible.minOf { it.index } <= 1
+        } else {
+            visible.maxOf { it.index } >= info.totalItemsCount - 2
+        }
+        if (wasAtBottom || room.messages.last().role == "user") {
+            listState.animateScrollToItem(bottomIndex)
+        }
     }
     LaunchedEffect(jumpToMessageIndex) {
         val target = jumpToMessageIndex ?: return@LaunchedEffect
