@@ -21,6 +21,10 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -39,6 +43,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -136,6 +141,10 @@ import com.aiclassroom.app.ui.components.AppDialogBase
 import com.aiclassroom.app.ui.components.AppPrimaryButton
 import com.aiclassroom.app.ui.components.AppSecondaryButton
 import com.aiclassroom.app.ui.theme.DesignTokens
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -313,6 +322,7 @@ private fun AIClassroomApp() {
     val classes = remember { mutableStateListOf<Classroom>().apply { addAll(initialClasses) } }
     val models = remember { mutableStateListOf("gpt-4o-mini", "gpt-4o", "deepseek-chat", "qwen-plus") }
     val scope = rememberCoroutineScope()
+    val hazeState = remember { HazeState() }
     val memoryJobs = remember { java.util.IdentityHashMap<Classroom, Job>() }
     val memoryWatermarks = remember { java.util.IdentityHashMap<Classroom, Int>() }
     if (classIndex > classes.lastIndex) classIndex = classes.lastIndex.coerceAtLeast(0)
@@ -587,7 +597,9 @@ private fun AIClassroomApp() {
     MaterialTheme(
         colorScheme = appColorScheme(palette, darkInterface)
     ) {
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
+        modifier = Modifier.fillMaxSize().hazeSource(hazeState),
         topBar = { if (!immersiveMode) {
             Surface(
                 Modifier.fillMaxWidth(),
@@ -765,23 +777,6 @@ private fun AIClassroomApp() {
                         }
                     )
                 }
-                AnimatedVisibility(
-                    visible = classMenuOpen,
-                    enter = slideInHorizontally(animationSpec = tween(220)) { -it },
-                    exit = slideOutHorizontally(animationSpec = tween(180)) { -it }
-                ) {
-                    ClassroomMenu(classes, classIndex, saveNotice, palette, onSelect = {
-                        classIndex = it
-                        classMenuOpen = false
-                        persist("已切换课堂")
-                    }, onRename = { index, name ->
-                        if (index in classes.indices) {
-                            replaceClassroomAt(index, classes[index].copy(name = name), "课堂名已保存")
-                        }
-                    }, onEditSummary = { index, summary ->
-                        if (index in classes.indices) replaceClassroomAt(index, classes[index].copy(summary = summary), "课堂简介已保存")
-                    }, onNew = { addClassroom() }, onNewWithConfig = { addClassroom(classes[it]) }, onCopyConfig = ::copyConfigFrom, onDelete = ::deleteClassroom)
-                }
                 examSession?.let { session ->
                     ExamOverlay(session, current.messages, current.branches, onUpdate = { examSession = it }, onClose = { examSession = null; persist("已退出考试模式") }, onSubmit = { packed ->
                         examSession = null
@@ -812,6 +807,54 @@ private fun AIClassroomApp() {
             }
         }
     }
+    BlurOverlay(
+        visible = classMenuOpen,
+        hazeState = hazeState,
+        enter = slideInHorizontally(animationSpec = tween(DesignTokens.Motion.DrawerEnterMs)) { -it } + fadeIn(tween(DesignTokens.Motion.SlowMs)),
+        exit = slideOutHorizontally(animationSpec = tween(DesignTokens.Motion.DrawerExitMs)) { -it } + fadeOut(tween(DesignTokens.Motion.FastMs))
+    ) {
+        ClassroomMenu(classes, classIndex, saveNotice, palette, onSelect = {
+            classIndex = it
+            classMenuOpen = false
+            persist("已切换课堂")
+        }, onRename = { index, name ->
+            if (index in classes.indices) {
+                replaceClassroomAt(index, classes[index].copy(name = name), "课堂名已保存")
+            }
+        }, onEditSummary = { index, summary ->
+            if (index in classes.indices) replaceClassroomAt(index, classes[index].copy(summary = summary), "课堂简介已保存")
+        }, onNew = { addClassroom() }, onNewWithConfig = { addClassroom(classes[it]) }, onCopyConfig = ::copyConfigFrom, onDelete = ::deleteClassroom)
+    }
+    }
+    }
+}
+
+/** 毛玻璃浮层基座：全屏置顶容器，背后内容高斯轻模糊、无暗色蒙版；动画时长沿用 DesignTokens.Motion 三档。 */
+@Composable
+private fun BlurOverlay(
+    visible: Boolean,
+    hazeState: HazeState,
+    modifier: Modifier = Modifier,
+    enter: EnterTransition = fadeIn(tween(DesignTokens.Motion.SlowMs)),
+    exit: ExitTransition = fadeOut(tween(DesignTokens.Motion.FastMs)),
+    content: @Composable () -> Unit
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = enter,
+        exit = exit,
+        modifier = modifier.fillMaxSize()
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .hazeEffect(state = hazeState) {
+                    blurRadius = 18.dp
+                    fallbackTint = HazeTint(Color.White.copy(alpha = 0.28f))
+                }
+        ) {
+            content()
+        }
     }
 }
 
@@ -836,7 +879,7 @@ private fun ClassroomMenu(
         val room = classes[i]
         query.isBlank() || room.name.contains(query, ignoreCase = true) || room.topic.contains(query, ignoreCase = true) || room.summary.contains(query, ignoreCase = true)
     }
-    Row(Modifier.fillMaxSize()) {
+    Row(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Surface(
             Modifier.fillMaxHeight().fillMaxWidth(0.88f),
             color = MaterialTheme.colorScheme.surface,
