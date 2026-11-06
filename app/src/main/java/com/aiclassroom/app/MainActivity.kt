@@ -85,6 +85,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Slider
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -105,6 +106,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -2433,17 +2435,31 @@ private fun MarkdownText(text: String, color: Color = MaterialTheme.colorScheme.
     val textColor = color
     val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
     val mathColor = MaterialTheme.colorScheme.primary
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    val codeBg = if (MaterialTheme.colorScheme.background.luminanceValue() > 0.5f) DesignTokens.Light.CodeBg else DesignTokens.Dark.CodeBg
+    val hairline = MaterialTheme.colorScheme.outline
+    CompositionLocalProvider(LocalTextStyle provides MaterialTheme.typography.bodyLarge.copy(fontSize = DesignTokens.Type.Body, lineHeight = DesignTokens.Type.LineBody)) {
+    Column(verticalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Xs)) {
         lines.forEach { line ->
             val trimmed = line.trim()
             when {
-                trimmed.startsWith("```") -> Text(trimmed, fontFamily = FontFamily.Monospace, color = mutedColor)
-                trimmed.startsWith("#") -> Text(trimmed.trimStart('#', ' '), fontWeight = FontWeight.Bold, fontSize = DesignTokens.Type.Title, color = textColor)
-                trimmed.startsWith("-") || trimmed.startsWith("*") -> Text("• ${trimmed.drop(1).trim()}", color = textColor, lineHeight = 21.sp)
+                trimmed.startsWith("```") -> Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(codeBg, RoundedCornerShape(DesignTokens.Radius.Tile))
+                        .border(DesignTokens.Border.Hairline, hairline, RoundedCornerShape(DesignTokens.Radius.Tile))
+                        .padding(horizontal = DesignTokens.Spacing.Md, vertical = DesignTokens.Spacing.Sm)
+                ) {
+                    Text(trimmed, fontFamily = FontFamily.Monospace, fontSize = DesignTokens.Type.Small, lineHeight = DesignTokens.Type.LineBody, color = mutedColor)
+                }
+                trimmed.startsWith("###") -> Text(trimmed.trimStart('#', ' '), fontWeight = DesignTokens.Weight.Bold, fontSize = DesignTokens.Type.Subtitle, lineHeight = DesignTokens.Type.LineSnug, color = textColor, modifier = Modifier.padding(top = DesignTokens.Spacing.Xs))
+                trimmed.startsWith("##") -> Text(trimmed.trimStart('#', ' '), fontWeight = DesignTokens.Weight.Bold, fontSize = DesignTokens.Type.Title, lineHeight = DesignTokens.Type.LineSnug, color = textColor, modifier = Modifier.padding(top = DesignTokens.Spacing.Xs))
+                trimmed.startsWith("#") -> Text(trimmed.trimStart('#', ' '), fontWeight = DesignTokens.Weight.Bold, fontSize = DesignTokens.Type.Headline, lineHeight = DesignTokens.Type.LineBody, color = textColor, modifier = Modifier.padding(top = DesignTokens.Spacing.Xs))
+                trimmed.startsWith("-") || trimmed.startsWith("*") -> Text("• ${trimmed.drop(1).trim()}", color = textColor, fontSize = DesignTokens.Type.Body, lineHeight = DesignTokens.Type.LineBody, modifier = Modifier.padding(start = DesignTokens.Spacing.Md))
                 isMathLikeLine(trimmed) -> Text(trimmed, fontFamily = FontFamily.Monospace, color = mathColor, lineHeight = 21.sp)
                 else -> Text(buildInlineMarkdown(trimmed), color = textColor, lineHeight = 21.sp)
             }
         }
+    }
     }
 }
 
