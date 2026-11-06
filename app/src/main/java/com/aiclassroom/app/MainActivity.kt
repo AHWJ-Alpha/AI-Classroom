@@ -125,6 +125,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.aiclassroom.app.ui.components.AppDialogBase
+import com.aiclassroom.app.ui.components.AppPrimaryButton
+import com.aiclassroom.app.ui.components.AppSecondaryButton
+import com.aiclassroom.app.ui.theme.DesignTokens
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -591,7 +595,7 @@ private fun AIClassroomApp() {
                 ) {
                     Surface(
                         Modifier.size(38.dp),
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(DesignTokens.Radius.Control),
                         color = palette.secondary.copy(alpha = 0.16f).compositeOn(palette.surface)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -599,11 +603,11 @@ private fun AIClassroomApp() {
                         }
                     }
                     Column(Modifier.weight(1f)) {
-                        Text("AI CLASSROOM", color = palette.muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
+                        Text("AI CLASSROOM", color = palette.muted, fontSize = DesignTokens.Type.Micro, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
                         Text(
                             if (tab == Tab.Class) current.name else tab.title,
                             color = palette.ink,
-                            fontSize = 18.sp,
+                            fontSize = DesignTokens.Type.Title,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -613,7 +617,7 @@ private fun AIClassroomApp() {
                         Text(
                             current.topic,
                             color = palette.muted,
-                            fontSize = 11.sp,
+                            fontSize = DesignTokens.Type.Caption,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.width(92.dp)
@@ -640,7 +644,7 @@ private fun AIClassroomApp() {
                         selected = tab == item,
                         onClick = { tab = item; classMenuOpen = false },
                         icon = { Icon(item.icon, contentDescription = item.title) },
-                        label = { Text(item.title, fontSize = 11.sp) },
+                        label = { Text(item.title, fontSize = DesignTokens.Type.Caption) },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = palette.button,
                             selectedTextColor = palette.button,
@@ -813,8 +817,8 @@ private fun ClassroomMenu(
                 item {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("我的课堂", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurface)
-                            Text(saveNotice, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("我的课堂", fontWeight = FontWeight.Bold, fontSize = DesignTokens.Type.Display, color = MaterialTheme.colorScheme.onSurface)
+                            Text(saveNotice, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         IconButton(onClick = onNew, colors = IconButtonDefaults.iconButtonColors(contentColor = palette.button)) {
                             Icon(Icons.Default.Add, null)
@@ -860,7 +864,7 @@ private fun ClassroomMenu(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Surface(Modifier.size(38.dp), shape = RoundedCornerShape(14.dp), color = if (i == classIndex) palette.button else MaterialTheme.colorScheme.surfaceVariant) {
+                                Surface(Modifier.size(38.dp), shape = RoundedCornerShape(DesignTokens.Radius.Control), color = if (i == classIndex) palette.button else MaterialTheme.colorScheme.surfaceVariant) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Text((i + 1).toString(), color = if (i == classIndex) palette.onButton else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
                                     }
@@ -870,7 +874,7 @@ private fun ClassroomMenu(
                                     Text(
                                         room.summary.ifBlank { room.topic },
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontSize = 12.sp,
+                                        fontSize = DesignTokens.Type.Small,
                                         maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.clickable { summaryTarget = i to room.summary }
@@ -917,30 +921,24 @@ private fun ClassroomMenu(
 @Composable
 private fun RenameClassroomDialog(initial: String, onClose: () -> Unit, onSave: (String) -> Unit) {
     var name by remember(initial) { mutableStateOf(initial) }
-    AlertDialog(
+    AppDialogBase(
         onDismissRequest = onClose,
-        containerColor = MaterialTheme.colorScheme.surface,
-        titleContentColor = MaterialTheme.colorScheme.onSurface,
-        textContentColor = MaterialTheme.colorScheme.onSurface,
         title = { Text("修改课堂名字", fontWeight = FontWeight.Bold) },
         text = { OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("课堂名字") }, singleLine = true) },
-        confirmButton = { Button(onClick = { onSave(name.trim().ifBlank { initial }) }) { Text("保存") } },
-        dismissButton = { TextButton(onClick = onClose) { Text("取消") } }
+        confirmButton = { AppPrimaryButton(onClick = { onSave(name.trim().ifBlank { initial }) }) { Text("保存") } },
+        dismissButton = { AppSecondaryButton(onClick = onClose) { Text("取消") } }
     )
 }
 
 @Composable
 private fun EditClassroomSummaryDialog(initial: String, onClose: () -> Unit, onSave: (String) -> Unit) {
     var summary by remember(initial) { mutableStateOf(initial) }
-    AlertDialog(
+    AppDialogBase(
         onDismissRequest = onClose,
-        containerColor = MaterialTheme.colorScheme.surface,
-        titleContentColor = MaterialTheme.colorScheme.onSurface,
-        textContentColor = MaterialTheme.colorScheme.onSurface,
         title = { Text("修改课堂简介", fontWeight = FontWeight.Bold) },
         text = { OutlinedTextField(summary, { summary = it.take(80) }, Modifier.fillMaxWidth(), label = { Text("一句话简介") }, minLines = 2, maxLines = 4) },
-        confirmButton = { Button(onClick = { onSave(summary.trim()) }) { Text("保存") } },
-        dismissButton = { TextButton(onClick = onClose) { Text("取消") } }
+        confirmButton = { AppPrimaryButton(onClick = { onSave(summary.trim()) }) { Text("保存") } },
+        dismissButton = { AppSecondaryButton(onClick = onClose) { Text("取消") } }
     )
 }
 
@@ -1060,10 +1058,10 @@ private fun EmptyClassroomHome(
         Text(
             dateText.first,
             color = palette.muted.copy(alpha = 0.62f),
-            fontSize = 18.sp,
+            fontSize = DesignTokens.Type.Title,
             fontWeight = FontWeight.Normal,
             modifier = Modifier
-                .background(palette.surface.copy(alpha = 0.42f), RoundedCornerShape(12.dp))
+                .background(palette.surface.copy(alpha = 0.42f), RoundedCornerShape(DesignTokens.Radius.Button))
                 .padding(horizontal = 10.dp, vertical = 5.dp)
         )
         ChatInputBar(
@@ -1110,7 +1108,7 @@ private fun ChatControls(
                 Icon(Icons.Default.Memory, contentDescription = "切换模型", tint = palette.muted, modifier = Modifier.size(18.dp))
             }
             DropdownMenu(expanded = modelMenuOpen, onDismissRequest = { modelMenuOpen = false }) {
-                Text("选择模型", color = palette.muted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                Text("选择模型", color = palette.muted, fontSize = DesignTokens.Type.Small, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
                 models.forEach { model ->
                     DropdownMenuItem(
                         text = { Text(model.shortModelName()) },
@@ -1136,7 +1134,7 @@ private fun ChatControls(
                     onClick = { onDeepThinkingChange(!config.deepThinkingEnabled) }
                 )
                 if (config.deepThinkingEnabled) {
-                    Text("推理强度", color = palette.muted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                    Text("推理强度", color = palette.muted, fontSize = DesignTokens.Type.Small, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
                     listOf("low" to "低", "medium" to "中", "high" to "高").forEach { (value, label) ->
                         DropdownMenuItem(
                             text = { Text(label) },
@@ -1164,13 +1162,14 @@ private fun String.shortModelName(): String = substringAfterLast('/').take(20)
 private fun FloatingIconAction(icon: ImageVector, visible: Boolean, palette: AppPalette, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
         onClick = onClick,
-        modifier = modifier.size(46.dp),
+        modifier = modifier.size(DesignTokens.Size.Fab),
         color = palette.surface,
-        shape = RoundedCornerShape(999.dp),
-        shadowElevation = 1.dp
+        shape = RoundedCornerShape(DesignTokens.Radius.Pill),
+        shadowElevation = 1.dp,
+        border = androidx.compose.foundation.BorderStroke(DesignTokens.Border.Hairline, palette.outline)
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = null, tint = palette.button, modifier = Modifier.size(22.dp))
+            Icon(icon, contentDescription = null, tint = DesignTokens.Accent, modifier = Modifier.size(22.dp))
         }
     }
 }
@@ -1277,29 +1276,29 @@ private fun MessageCard(
                 Modifier
                     .fillMaxWidth(0.82f)
                     .then(actionModifier)
-                    .background(palette.secondary.copy(alpha = 0.08f).compositeOn(palette.surface), RoundedCornerShape(12.dp))
+                    .background(palette.secondary.copy(alpha = 0.08f).compositeOn(palette.surface), RoundedCornerShape(DesignTokens.Radius.Button))
                     .padding(12.dp)
             ) {
-                Text("YOU", color = palette.secondary, fontWeight = FontWeight.Medium, fontSize = 10.sp, letterSpacing = 1.1.sp)
+                Text("YOU", color = palette.secondary, fontWeight = FontWeight.Medium, fontSize = DesignTokens.Type.Micro, letterSpacing = 1.1.sp)
                 Spacer(Modifier.height(4.dp))
                 Text(message.text, color = palette.ink, lineHeight = 21.sp)
-                TextButton(onClick = { onBranch(index) }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) { Text("↳ 从这里开分支", color = palette.secondary, fontSize = 12.sp) }
+                TextButton(onClick = { onBranch(index) }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) { Text("↳ 从这里开分支", color = palette.secondary, fontSize = DesignTokens.Type.Small) }
             }
         }
     } else {
         Row(Modifier.fillMaxWidth().then(actionModifier).padding(horizontal = 2.dp), horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
-            Surface(Modifier.size(32.dp), shape = RoundedCornerShape(12.dp), color = palette.button) {
-                Box(contentAlignment = Alignment.Center) { Text("✦", color = palette.onButton, fontSize = 17.sp, fontWeight = FontWeight.Bold) }
+            Surface(Modifier.size(32.dp), shape = RoundedCornerShape(DesignTokens.Radius.Button), color = palette.button) {
+                Box(contentAlignment = Alignment.Center) { Text("✦", color = palette.onButton, fontSize = DesignTokens.Type.Subtitle, fontWeight = FontWeight.Bold) }
             }
             Column(Modifier.weight(1f)) {
-                Text(mentorName.ifBlank { "AI 讲师" }, color = palette.button, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                Text(mentorName.ifBlank { "AI 讲师" }, color = palette.button, fontWeight = FontWeight.Medium, fontSize = DesignTokens.Type.Body)
                 Spacer(Modifier.height(6.dp))
                 Column(
                     Modifier.fillMaxWidth()
-                        .background(palette.card.copy(alpha = 0.52f).compositeOn(palette.surface), RoundedCornerShape(12.dp))
+                        .background(palette.card.copy(alpha = 0.52f).compositeOn(palette.surface), RoundedCornerShape(DesignTokens.Radius.Button))
                         .padding(horizontal = 13.dp, vertical = 11.dp)
                 ) { MarkdownText(message.text) }
-                TextButton(onClick = { onBranch(index) }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) { Text("↳ 从这里开分支", color = palette.secondary, fontSize = 12.sp) }
+                TextButton(onClick = { onBranch(index) }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) { Text("↳ 从这里开分支", color = palette.secondary, fontSize = DesignTokens.Type.Small) }
             }
         }
     }
@@ -1330,83 +1329,60 @@ private fun MessageActionMenu(expanded: Boolean, palette: AppPalette, onDismiss:
 @Composable
 private fun AiThinkingRow(palette: AppPalette, mentorName: String = "AI 讲师") {
     Row(Modifier.fillMaxWidth().padding(horizontal = 2.dp), horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
-        Surface(Modifier.size(32.dp), shape = RoundedCornerShape(12.dp), color = palette.button.copy(alpha = 0.82f)) {
-            Box(contentAlignment = Alignment.Center) { Text("…", color = palette.onButton, fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+        Surface(Modifier.size(DesignTokens.Size.Avatar), shape = RoundedCornerShape(DesignTokens.Radius.Button), color = DesignTokens.Accent) {
+            Box(contentAlignment = Alignment.Center) { Text("…", color = DesignTokens.AccentOn, fontSize = DesignTokens.Type.Title, fontWeight = FontWeight.Bold) }
         }
         Text(
             "${mentorName.ifBlank { "AI 讲师" }} 正在整理思路…",
             color = palette.muted,
-            fontSize = 13.sp,
-            modifier = Modifier.background(palette.card.copy(alpha = 0.46f).compositeOn(palette.surface), RoundedCornerShape(10.dp)).padding(horizontal = 13.dp, vertical = 10.dp)
+            fontSize = DesignTokens.Type.Body,
+            modifier = Modifier.background(palette.card.copy(alpha = 0.46f).compositeOn(palette.surface), RoundedCornerShape(DesignTokens.Radius.Note)).padding(horizontal = 13.dp, vertical = 10.dp)
         )
     }
 }
 
 @Composable
 private fun ReleaseNotesDialog(palette: AppPalette, onClose: () -> Unit) {
-    AlertDialog(
+    AppDialogBase(
         onDismissRequest = onClose,
-        containerColor = palette.surface,
-        titleContentColor = palette.ink,
-        textContentColor = palette.ink,
-        shape = AppShapes.panel,
-        title = { Text("New!", color = palette.button, fontWeight = FontWeight.Bold) },
+        title = { Text("New!", fontWeight = FontWeight.Bold) },
         text = {
             LazyColumn(Modifier.height(360.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item { MarkdownText(RELEASE_NOTES_TEXT, color = palette.ink) }
             }
         },
-        confirmButton = {
-            Button(
-                onClick = onClose,
-                shape = AppShapes.button,
-                colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = palette.onButton)
-            ) { Text("知道了") }
-        }
+        confirmButton = { AppPrimaryButton(onClick = onClose) { Text("知道了") } }
     )
 }
 
 @Composable
 private fun UpdateDialog(info: UpdateInfo, onClose: () -> Unit) {
-    AlertDialog(
+    AppDialogBase(
         onDismissRequest = onClose,
-        containerColor = MaterialTheme.colorScheme.surface,
-        titleContentColor = MaterialTheme.colorScheme.onSurface,
-        textContentColor = MaterialTheme.colorScheme.onSurface,
         title = { Text("发现新版本", fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(info.name.ifBlank { info.version }, fontWeight = FontWeight.Bold)
                 Text("GitHub Release 已发布更新，可前往仓库下载新版 APK。", color = Muted)
                 if (info.notes.isNotBlank()) MarkdownText(info.notes.take(320))
-                Text(info.url, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
+                Text(info.url, color = MaterialTheme.colorScheme.primary, fontSize = DesignTokens.Type.Small)
             }
         },
-        confirmButton = { Button(onClick = onClose) { Text("知道了") } }
+        confirmButton = { AppPrimaryButton(onClick = onClose) { Text("知道了") } }
     )
 }
 
 @Composable
 private fun UserManualDialog(palette: AppPalette, onClose: () -> Unit) {
-    AlertDialog(
+    AppDialogBase(
         onDismissRequest = onClose,
-        containerColor = palette.surface,
-        titleContentColor = palette.ink,
-        textContentColor = palette.ink,
-        shape = AppShapes.panel,
-        title = { Text("使用手册", color = palette.button, fontWeight = FontWeight.Bold) },
+        title = { Text("使用手册", fontWeight = FontWeight.Bold) },
         text = {
             LazyColumn(Modifier.height(460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item { MarkdownText(USER_MANUAL_TEXT, color = palette.ink) }
             }
         },
-        confirmButton = {
-            Button(
-                onClick = onClose,
-                shape = AppShapes.button,
-                colors = ButtonDefaults.buttonColors(containerColor = palette.button, contentColor = palette.onButton)
-            ) { Text("关闭") }
-        }
+        confirmButton = { AppPrimaryButton(onClick = onClose) { Text("关闭") } }
     )
 }
 
@@ -1459,7 +1435,7 @@ private fun ExamQuestionList(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Quiz, null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
-                    Text(session.title, fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(session.title, fontWeight = FontWeight.Bold, fontSize = DesignTokens.Type.Headline, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     TextButton(onClick = onClose) { Text("退出") }
                 }
                 if (isLandscape) {
@@ -1474,10 +1450,10 @@ private fun ExamQuestionList(
         items(session.questions.indices.toList()) { i ->
             val q = session.questions[i]
             InfoCard {
-                Text("前提", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("前提", color = Muted, fontSize = DesignTokens.Type.Small, fontWeight = FontWeight.Bold)
                 Text(q.premise.ifBlank { "无额外前提" }, lineHeight = 21.sp)
                 Spacer(Modifier.height(8.dp))
-                Text("问题 ${i + 1}", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text("问题 ${i + 1}", color = MaterialTheme.colorScheme.primary, fontSize = DesignTokens.Type.Body, fontWeight = FontWeight.Bold)
                 Text(q.question, lineHeight = 21.sp)
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1548,8 +1524,8 @@ private fun DrawPad(strokes: MutableList<DrawStroke>, modifier: Modifier) {
     val strokeColor = MaterialTheme.colorScheme.onSurface
     Canvas(
         modifier
-            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(DesignTokens.Radius.Tile))
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(DesignTokens.Radius.Tile))
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { current = listOf(it) },
@@ -1590,7 +1566,7 @@ private fun BranchScreen(
             val branch = branches[index]
             InfoCard {
                 Text(branch.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(branch.source, color = Muted, fontSize = 13.sp)
+                Text(branch.source, color = Muted, fontSize = DesignTokens.Type.Body)
                 Spacer(Modifier.height(6.dp))
                 MarkdownText(branch.memory)
                 Spacer(Modifier.height(8.dp))
@@ -1631,9 +1607,9 @@ private fun BranchChatScreen(
                         Text(branch.title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         OutlinedButton(onClick = onBack) { Text("分支列表") }
                     }
-                    Text(branch.source, color = Muted, fontSize = 13.sp)
+                    Text(branch.source, color = Muted, fontSize = DesignTokens.Type.Body)
                     Spacer(Modifier.height(6.dp))
-                    Text("这是与主课堂平行的支线长对话，主课堂内容不会被改写。", color = Muted, fontSize = 13.sp)
+                    Text("这是与主课堂平行的支线长对话，主课堂内容不会被改写。", color = Muted, fontSize = DesignTokens.Type.Body)
                 }
             }
             if (branch.messages.isEmpty()) {
@@ -1659,18 +1635,18 @@ private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette, mentorN
                     .border(1.dp, palette.outline.copy(alpha = 0.72f), AppShapes.card)
                     .padding(12.dp)
             ) {
-                Text("YOU", color = palette.secondary, fontWeight = FontWeight.Medium, fontSize = 10.sp, letterSpacing = 1.1.sp)
+                Text("YOU", color = palette.secondary, fontWeight = FontWeight.Medium, fontSize = DesignTokens.Type.Micro, letterSpacing = 1.1.sp)
                 Spacer(Modifier.height(4.dp))
                 Text(message.text, color = palette.ink, lineHeight = 21.sp)
             }
         }
     } else {
         Row(Modifier.fillMaxWidth().padding(horizontal = 2.dp), horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
-            Surface(Modifier.size(32.dp), shape = RoundedCornerShape(12.dp), color = palette.button) {
-                Box(contentAlignment = Alignment.Center) { Text("✦", color = palette.onButton, fontSize = 17.sp, fontWeight = FontWeight.Bold) }
+            Surface(Modifier.size(32.dp), shape = RoundedCornerShape(DesignTokens.Radius.Button), color = palette.button) {
+                Box(contentAlignment = Alignment.Center) { Text("✦", color = palette.onButton, fontSize = DesignTokens.Type.Subtitle, fontWeight = FontWeight.Bold) }
             }
             Column(Modifier.weight(1f)) {
-                Text("${mentorName.ifBlank { "AI 讲师" }} · 分支", color = palette.button, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                Text("${mentorName.ifBlank { "AI 讲师" }} · 分支", color = palette.button, fontWeight = FontWeight.Medium, fontSize = DesignTokens.Type.Body)
                 Spacer(Modifier.height(6.dp))
                 Surface(Modifier.fillMaxWidth(), color = palette.card.copy(alpha = 0.72f).compositeOn(palette.surface), shape = AppShapes.card) {
                     Column(Modifier.padding(horizontal = 13.dp, vertical = 11.dp)) { MarkdownText(message.text) }
@@ -1694,7 +1670,7 @@ private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<Cha
                     Spacer(Modifier.width(6.dp))
                     AppFilterChip(!overview, { overview = false }) { Text("章节") }
                 }
-                Text("双击章节可跳到主课堂对应对话。", color = Muted, fontSize = 13.sp)
+                Text("双击章节可跳到主课堂对应对话。", color = Muted, fontSize = DesignTokens.Type.Body)
             }
         }
         if (visibleChapters.isEmpty()) item { InfoCard { Text("开始对话后会自动生成章节索引。", color = Muted) } }
@@ -1706,7 +1682,7 @@ private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<Cha
                     Modifier
                         .fillMaxWidth()
                         .combinedClickable(onClick = {}, onDoubleClick = { onJump(chapter.startIndex) }),
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(DesignTokens.Radius.Tile),
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceContainer,
                         contentColor = MaterialTheme.colorScheme.onSurface
@@ -1715,7 +1691,7 @@ private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<Cha
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Text(chapter.title, fontWeight = FontWeight.Bold)
-                        Text("第 ${chapter.startIndex + 1} 到 ${chapter.endIndex + 1} 条", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                        Text("第 ${chapter.startIndex + 1} 到 ${chapter.endIndex + 1} 条", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small)
                         Spacer(Modifier.height(6.dp))
                         Text(chapter.summary, color = MaterialTheme.colorScheme.onSurface, lineHeight = 21.sp)
                     }
@@ -1737,7 +1713,7 @@ private fun MemoryMindMap(chapters: List<ConversationChapter>, onJump: (Int) -> 
     val surface = MaterialTheme.colorScheme.surface
     InfoCard {
         Text("实时向量思维导图", fontWeight = FontWeight.Bold)
-        Text("双指可任意放大缩小，拖动查看；双击节点跳到主课堂对应对话。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        Text("双指可任意放大缩小，拖动查看；双击节点跳到主课堂对应对话。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Body)
         Spacer(Modifier.height(10.dp))
         Box(
             Modifier
@@ -1787,13 +1763,13 @@ private fun MemoryMindMap(chapters: List<ConversationChapter>, onJump: (Int) -> 
                     border = null
                 ) {
                     Column(Modifier.padding(8.dp)) {
-                        Text(chapter.title, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(chapter.summary, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, lineHeight = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        Text(chapter.title, fontWeight = FontWeight.Bold, fontSize = DesignTokens.Type.Small, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(chapter.summary, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Caption, lineHeight = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
         }
-        if (nodes.size < chapters.size) Text("已显示最近 ${nodes.size} 个章节。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+        if (nodes.size < chapters.size) Text("已显示最近 ${nodes.size} 个章节。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small)
     }
 }
 
@@ -1891,13 +1867,13 @@ private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Uni
         item {
             InfoCard {
                 Text("知识库", fontWeight = FontWeight.Bold)
-                Text("资料按当前问题检索；角色卡支持 .md、.json、.png，可批量导入并持续作为人物参照。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, lineHeight = 19.sp)
+                Text("资料按当前问题检索；角色卡支持 .md、.json、.png，可批量导入并持续作为人物参照。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Body, lineHeight = 19.sp)
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { launcher.launch(arrayOf("text/plain", "text/markdown", "application/json", "image/png", "application/octet-stream")) }, shape = AppShapes.button) { Text("批量上传资料") }
                     OutlinedButton(onClick = { cardLauncher.launch(arrayOf("text/markdown", "application/json", "image/png", "text/plain")) }, shape = AppShapes.button) { Text("批量导入角色卡") }
                 }
-                importNotice?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
+                importNotice?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = DesignTokens.Type.Small) }
             }
         }
         if (files.isEmpty()) item { InfoCard { Text("还没有上传知识库文件。", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
@@ -1907,15 +1883,12 @@ private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Uni
     }
     viewing?.let { file -> KnowledgeFileDialog(file, onClose = { viewing = null }) }
     deleteTarget?.let { file ->
-        AlertDialog(
+        AppDialogBase(
             onDismissRequest = { deleteTarget = null },
-            containerColor = MaterialTheme.colorScheme.surface,
-            titleContentColor = MaterialTheme.colorScheme.onSurface,
-            textContentColor = MaterialTheme.colorScheme.onSurface,
             title = { Text("删除文件", fontWeight = FontWeight.Bold) },
             text = { Text("确定从知识库删除 ${file.name} 吗？") },
-            confirmButton = { Button(onClick = { files.remove(file); deleteTarget = null; onSave(); view.performHapticFeedback(HapticFeedbackConstants.CONFIRM) }) { Text("删除") } },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } }
+            confirmButton = { AppPrimaryButton(onClick = { files.remove(file); deleteTarget = null; onSave(); view.performHapticFeedback(HapticFeedbackConstants.CONFIRM) }) { Text("删除") } },
+            dismissButton = { AppSecondaryButton(onClick = { deleteTarget = null }) { Text("取消") } }
         )
     }
 }
@@ -1930,7 +1903,7 @@ private fun KnowledgeFileRow(file: KnowledgeFile, onOpen: () -> Unit, onDelete: 
                 .combinedClickable(onClick = onOpen, onLongClick = onDelete)
         ) {
             Text(file.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("${if (file.kind == "character_card") "角色卡" else "资料"} · ${file.type} · ${file.chars} 字", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            Text("${if (file.kind == "character_card") "角色卡" else "资料"} · ${file.type} · ${file.chars} 字", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Body)
             Spacer(Modifier.height(6.dp))
             MarkdownText(file.preview)
         }
@@ -1939,18 +1912,15 @@ private fun KnowledgeFileRow(file: KnowledgeFile, onOpen: () -> Unit, onDelete: 
 
 @Composable
 private fun KnowledgeFileDialog(file: KnowledgeFile, onClose: () -> Unit) {
-    AlertDialog(
+    AppDialogBase(
         onDismissRequest = onClose,
-        containerColor = MaterialTheme.colorScheme.surface,
-        titleContentColor = MaterialTheme.colorScheme.onSurface,
-        textContentColor = MaterialTheme.colorScheme.onSurface,
         title = { Text(file.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         text = {
             LazyColumn(Modifier.height(460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item { MarkdownText(file.content) }
             }
         },
-        confirmButton = { Button(onClick = onClose) { Text("关闭") } }
+        confirmButton = { AppPrimaryButton(onClick = onClose) { Text("关闭") } }
     )
 }
 
@@ -2003,7 +1973,7 @@ private fun ModelScreen(
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             SettingsCard("模型模块", expandedModule == "model", { expandedModule = if (expandedModule == "model") null else "model" }) {
-                Text("普通课堂对话使用此模块的 API。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                Text("普通课堂对话使用此模块的 API。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small)
                 Spacer(Modifier.height(8.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     providers.forEach { provider ->
@@ -2155,7 +2125,7 @@ private fun ModelScreen(
                     Switch(reverseConversation, { reverseConversation = it })
                 }
                 Spacer(Modifier.height(10.dp))
-                Text("按钮皮肤", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("按钮皮肤", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AppFilterChip(themeMode == "ocean", {
@@ -2170,7 +2140,7 @@ private fun ModelScreen(
                     }) { Text("自定义") }
                 }
                 Spacer(Modifier.height(10.dp))
-                Text("界面明暗", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("界面明暗", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("system" to "自动", "light" to "白色", "dark" to "黑色").forEach { option ->
@@ -2184,7 +2154,7 @@ private fun ModelScreen(
                 if (themeMode == "custom") {
                     ButtonColorPreview(primaryColor)
                     Spacer(Modifier.height(10.dp))
-                    Text("调色盘", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("调色盘", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         colorSwatches.forEach { swatch ->
@@ -2210,13 +2180,13 @@ private fun ModelScreen(
                         singleLine = true,
                         isError = !primaryValid
                     )
-                    if (!primaryValid) Text("请输入 #RRGGBB 或 #AARRGGBB", color = Color(0xFFB42318), fontSize = 12.sp)
+                    if (!primaryValid) Text("请输入 #RRGGBB 或 #AARRGGBB", color = DesignTokens.Danger, fontSize = DesignTokens.Type.Small)
                     Spacer(Modifier.height(8.dp))
-                    Text("自定义颜色只应用到按钮和可点击强调，不再染色背景、卡片或正文。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, lineHeight = 18.sp)
+                    Text("自定义颜色只应用到按钮和可点击强调，不再染色背景、卡片或正文。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
                 } else {
                     ButtonColorPreview(0xFFFF5FA2)
                     Spacer(Modifier.height(8.dp))
-                    Text("二次元主题使用 #FF5FA2 主色，搭配薰衣草紫与清透青色。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, lineHeight = 18.sp)
+                    Text("二次元主题使用 #FF5FA2 主色，搭配薰衣草紫与清透青色。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2258,7 +2228,7 @@ private fun ModelScreen(
                 OutlinedTextField(mentorPrompt, { mentorPrompt = it }, Modifier.fillMaxWidth(), label = { Text("讲师人格提示词") }, minLines = 4)
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(worldBook, { worldBook = it }, Modifier.fillMaxWidth(), label = { Text("手写世界书") }, minLines = 4)
-                Text("可写入长期固定设定、课程边界、学习习惯或叙事隔离规则；例如“作者私密信息不得被未知角色直接利用”。", color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+                Text("可写入长期固定设定、课程边界、学习习惯或叙事隔离规则；例如“作者私密信息不得被未知角色直接利用”。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.HealthAndSafety, null, tint = MaterialTheme.colorScheme.primary)
@@ -2294,7 +2264,7 @@ private fun ColorSwatch(value: Long, selected: Boolean, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         modifier = Modifier.size(42.dp),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(DesignTokens.Radius.Control),
         color = color,
         border = androidx.compose.foundation.BorderStroke(if (selected) 2.dp else 1.dp, if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline)
     ) {
@@ -2315,7 +2285,7 @@ private fun SettingsCard(title: String, expanded: Boolean, onToggle: () -> Unit,
         }
         AnimatedVisibility(visible = expanded) {
             Column {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(DesignTokens.Spacing.Md))
                 content()
             }
         }
@@ -2327,11 +2297,21 @@ private fun AppFilterChip(selected: Boolean, onClick: () -> Unit, label: @Compos
     FilterChip(
         selected = selected,
         onClick = onClick,
-        label = label,
-        shape = RoundedCornerShape(9.dp),
+        label = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(DesignTokens.Spacing.Sm)
+                        .background(if (selected) DesignTokens.Accent else Color.Transparent, RoundedCornerShape(DesignTokens.Radius.Pill))
+                )
+                Spacer(Modifier.width(DesignTokens.Spacing.Xs))
+                label()
+            }
+        },
+        shape = RoundedCornerShape(DesignTokens.Radius.Chip),
         colors = FilterChipDefaults.filterChipColors(
-            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-            selectedLabelColor = MaterialTheme.colorScheme.primary,
+            selectedContainerColor = MaterialTheme.colorScheme.onSurface,
+            selectedLabelColor = MaterialTheme.colorScheme.background,
             containerColor = MaterialTheme.colorScheme.surface,
             labelColor = MaterialTheme.colorScheme.onSurfaceVariant
         ),
@@ -2339,7 +2319,7 @@ private fun AppFilterChip(selected: Boolean, onClick: () -> Unit, label: @Compos
             enabled = true,
             selected = selected,
             borderColor = MaterialTheme.colorScheme.outline,
-            selectedBorderColor = MaterialTheme.colorScheme.primary
+            selectedBorderColor = MaterialTheme.colorScheme.onSurface
         )
     )
 }
@@ -2348,11 +2328,11 @@ private fun AppFilterChip(selected: Boolean, onClick: () -> Unit, label: @Compos
 @Composable
 private fun ButtonColorPreview(buttonValue: Long) {
     val button = colorFromLong(buttonValue)
-    val onButton = if (button.luminanceValue() > 0.58f) Color(0xFF062526) else Color.White
+    val onButton = if (button.luminanceValue() > 0.58f) DesignTokens.Legacy.OnButtonOnLight else Color.White
     Card(Modifier.fillMaxWidth(), shape = AppShapes.card, colors = CardDefaults.cardColors(MaterialTheme.colorScheme.surfaceVariant), elevation = CardDefaults.cardElevation(0.dp)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("按钮预览", fontWeight = FontWeight.Bold)
-            Text("背景和文字保持原生明暗风格，只有按钮与可点击强调使用此颜色。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            Text("背景和文字保持原生明暗风格，只有按钮与可点击强调使用此颜色。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Surface(color = button, shape = AppShapes.button) { Text("主操作", color = onButton, modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp), fontWeight = FontWeight.Bold) }
                 Surface(color = button.copy(alpha = 0.12f).compositeOn(MaterialTheme.colorScheme.surface), shape = AppShapes.button) { Text("次级", color = button, modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp), fontWeight = FontWeight.Bold) }
@@ -2372,7 +2352,7 @@ private fun MarkdownText(text: String, color: Color = MaterialTheme.colorScheme.
             val trimmed = line.trim()
             when {
                 trimmed.startsWith("```") -> Text(trimmed, fontFamily = FontFamily.Monospace, color = mutedColor)
-                trimmed.startsWith("#") -> Text(trimmed.trimStart('#', ' '), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = textColor)
+                trimmed.startsWith("#") -> Text(trimmed.trimStart('#', ' '), fontWeight = FontWeight.Bold, fontSize = DesignTokens.Type.Title, color = textColor)
                 trimmed.startsWith("-") || trimmed.startsWith("*") -> Text("• ${trimmed.drop(1).trim()}", color = textColor, lineHeight = 21.sp)
                 isMathLikeLine(trimmed) -> Text(trimmed, fontFamily = FontFamily.Monospace, color = mathColor, lineHeight = 21.sp)
                 else -> Text(buildInlineMarkdown(trimmed), color = textColor, lineHeight = 21.sp)
@@ -2450,9 +2430,9 @@ private fun InfoCard(content: @Composable ColumnScope.() -> Unit) {
         shape = AppShapes.card,
         color = MaterialTheme.colorScheme.surfaceContainer,
         contentColor = MaterialTheme.colorScheme.onSurface,
-        border = null
+        border = androidx.compose.foundation.BorderStroke(DesignTokens.Border.Hairline, MaterialTheme.colorScheme.outline)
     ) {
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 13.dp), content = content)
+        Column(Modifier.padding(horizontal = DesignTokens.Spacing.CardHorizontal, vertical = DesignTokens.Spacing.CardVertical), content = content)
     }
 }
 
@@ -3403,33 +3383,33 @@ private fun paletteFor(config: ClassroomConfig, systemDark: Boolean): AppPalette
     val custom = normalizeThemeMode(config.themeMode) == "custom"
     val button = when (normalizeThemeMode(config.themeMode)) {
         "custom" -> colorFromLong(config.primaryColor)
-        else -> Color(0xFF667085)
+        else -> DesignTokens.Legacy.ButtonDefault
     }
-    val onButton = if (button.luminanceValue() > 0.58f) Color(0xFF062526) else Color.White
+    val onButton = if (button.luminanceValue() > 0.58f) DesignTokens.Legacy.OnButtonOnLight else Color.White
     return if (dark) {
         AppPalette(
-            page = Color(0xFF181B20),
-            surface = Color(0xFF22262D),
-            card = Color(0xFF2B3038),
-            ink = Color(0xFFE8EBEF),
-            muted = Color(0xFFAAB2BD),
+            page = DesignTokens.Dark.Page,
+            surface = DesignTokens.Dark.Surface,
+            card = DesignTokens.Dark.Card,
+            ink = DesignTokens.Dark.Ink,
+            muted = DesignTokens.Dark.Ink2,
             button = button,
             onButton = onButton,
-            outline = Color(0xFF48515D),
+            outline = DesignTokens.Dark.Line,
             primary = button,
             secondary = if (custom) colorFromLong(config.secondaryColor) else button,
             accent = button
         )
     } else {
         AppPalette(
-            page = Color(0xFFF5F6F8),
-            surface = Color(0xFFFFFFFF),
-            card = Color(0xFFF0F2F5),
-            ink = Color(0xFF20242A),
-            muted = Color(0xFF697382),
+            page = DesignTokens.Light.Page,
+            surface = DesignTokens.Light.Surface,
+            card = DesignTokens.Light.Card,
+            ink = DesignTokens.Light.Ink,
+            muted = DesignTokens.Light.Ink2,
             button = button,
             onButton = onButton,
-            outline = Color(0xFFD7DCE3),
+            outline = DesignTokens.Light.Line,
             primary = button,
             secondary = if (custom) colorFromLong(config.secondaryColor) else button,
             accent = button
@@ -3608,11 +3588,11 @@ private fun truncatePromptSection(text: String, limit: Int): String {
 private const val APP_VERSION = "3.3.0"
 
 private object AppShapes {
-    val panel = RoundedCornerShape(20.dp)
-    val card = RoundedCornerShape(16.dp)
-    val control = RoundedCornerShape(14.dp)
-    val button = RoundedCornerShape(12.dp)
-    val menu = RoundedCornerShape(topEnd = 28.dp, bottomEnd = 28.dp)
+    val panel = RoundedCornerShape(DesignTokens.Radius.Panel)
+    val card = RoundedCornerShape(DesignTokens.Radius.Card)
+    val control = RoundedCornerShape(DesignTokens.Radius.Control)
+    val button = RoundedCornerShape(DesignTokens.Radius.Button)
+    val menu = RoundedCornerShape(topEnd = DesignTokens.Radius.Menu, bottomEnd = DesignTokens.Radius.Menu)
 }
 
 private const val RELEASE_NOTES_TEXT = """
@@ -3716,12 +3696,12 @@ TTS 模块用于保存语音服务配置，包括服务商、API Key、Base URL�
 所有课堂、分支、对话、知识库摘要、记忆章节、设置和考试记录都会保存在手机本地。手机重启或应用版本更新后，数据仍会保留。
 """
 
-private val Page = Color(0xFFF5F6F8)
-private val Ink = Color(0xFF20242A)
-private val Muted = Color(0xFF697382)
-private val Blue = Color(0xFF596579)
-private val Green = Color(0xFF65758A)
-private val Purple = Color(0xFF667085)
+private val Page = DesignTokens.Legacy.Page
+private val Ink = DesignTokens.Legacy.Ink
+private val Muted = DesignTokens.Legacy.Muted
+private val Blue = DesignTokens.Legacy.Blue
+private val Green = DesignTokens.Legacy.Green
+private val Purple = DesignTokens.Legacy.Purple
 private const val DEFAULT_MENTOR_PROMPT = "你是一名耐心、结构清晰的 AI 讲师。默认使用中文教学，保持主线课程连续，并在必要时用 Markdown 和公式文本表达。"
 private const val MEMORY_PROMPT_LIMIT = 24
 private const val MEMORY_CONTEXT_LIMIT = 6000
