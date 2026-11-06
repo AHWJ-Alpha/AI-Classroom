@@ -1040,8 +1040,15 @@ private fun ClassScreen(
     val topIndex = if (reverseConversation) lastItemIndex else 0
     val isAtBottom by remember {
         derivedStateOf {
-            val visible = listState.layoutInfo.visibleItemsInfo
-            visible.any { it.index == bottomIndex } || listState.firstVisibleItemIndex == bottomIndex
+            // 与下方回底判定同一口径：只看 layoutInfo 快照，不用 messages.size（与布局不同源）。
+            // 反序底部 = 最小 index（0），正序底部 = 最大 index（totalItemsCount-1），±1 容差。
+            val info = listState.layoutInfo
+            val visible = info.visibleItemsInfo
+            visible.isEmpty() || if (reverseConversation) {
+                visible.minOf { it.index } <= 1
+            } else {
+                visible.maxOf { it.index } >= info.totalItemsCount - 2
+            }
         }
     }
     val compactInput by remember { derivedStateOf { !isAtBottom } }
