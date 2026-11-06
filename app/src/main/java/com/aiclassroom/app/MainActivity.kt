@@ -839,6 +839,7 @@ private fun BlurOverlay(
     exit: ExitTransition = fadeOut(tween(DesignTokens.Motion.FastMs)),
     content: @Composable () -> Unit
 ) {
+    val surfaceColor = MaterialTheme.colorScheme.surface
     AnimatedVisibility(
         visible = visible,
         enter = enter,
@@ -850,6 +851,7 @@ private fun BlurOverlay(
                 .fillMaxSize()
                 .hazeEffect(state = hazeState) {
                     blurRadius = 18.dp
+                    backgroundColor = surfaceColor
                     fallbackTint = HazeTint(Color.White.copy(alpha = 0.28f))
                 }
         ) {
