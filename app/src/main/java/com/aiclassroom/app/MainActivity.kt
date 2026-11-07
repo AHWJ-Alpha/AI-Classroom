@@ -666,6 +666,7 @@ private fun AIClassroomApp() {
         bottomBar = { if (!immersiveMode) {
             val panelShape = RoundedCornerShape(DesignTokens.Radius.Card)
             val panelColor = palette.surface
+            val glassColor = palette.surface.copy(alpha = 0.70f)
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -674,7 +675,11 @@ private fun AIClassroomApp() {
                     .hazeEffect(state = hazeState) {
                         blurRadius = 18.dp
                         backgroundColor = panelColor
+                        tints = listOf(HazeTint(palette.surface.copy(alpha = 0.25f)))
+                        noiseFactor = 0.10f
+                        fallbackTint = HazeTint(Color.White.copy(alpha = if (dev.chrisbanes.haze.HazeDefaults.blurEnabled()) 0.28f else 0.80f))
                     }
+                    .background(glassColor, panelShape)
                     .border(DesignTokens.Border.Hairline, palette.outline, panelShape)
             ) {
                 NavigationBar(
