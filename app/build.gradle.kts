@@ -23,8 +23,8 @@ android {
     // CI/release machines can provide their own signing material through
     // environment variables; local builds fall back to the developer keystore
     // kept outside version control.
-    val localKeystore = rootProject.file("signing/ai-classroom-developer.jks")
-    val localPasswordFile = rootProject.file("signing/keystore-password.txt")
+    val localKeystore = rootProject.file("signing/ai-classroom-2x.jks")
+    val localPasswordFile = rootProject.file("signing/keystore-2x-password.txt")
     val localPassword = localPasswordFile
         .takeIf { it.isFile }
         ?.readText()
@@ -57,7 +57,7 @@ android {
     val signingAlias = if (hasCompleteEnvironmentSigning) {
         environmentSigningAlias
     } else {
-        "ai-classroom-developer".takeIf { !localPassword.isNullOrBlank() }
+        "androiddebugkey".takeIf { !localPassword.isNullOrBlank() }
     }
 
     // 签名材料齐全时，debug / release 共用这一把钥匙；
