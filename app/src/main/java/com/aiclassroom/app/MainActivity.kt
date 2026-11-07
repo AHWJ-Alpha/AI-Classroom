@@ -635,13 +635,29 @@ private fun AIClassroomApp() {
                         horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Md)
                     ) {
                         Surface(
-                            Modifier.size(DesignTokens.Size.Tile),
+                            onClick = {
+                                if (tab != Tab.Class) {
+                                    // 不在主界面：先回课堂首页（连带清掉分支详情与二级菜单）
+                                    tab = Tab.Class
+                                    activeBranchIndex = -1
+                                    classMenuOpen = false
+                                } else {
+                                    // 已在主界面：点它切出/收起二级菜单
+                                    classMenuOpen = !classMenuOpen
+                                }
+                            },
+                            modifier = Modifier.size(DesignTokens.Size.Tile),
                             shape = RoundedCornerShape(DesignTokens.Radius.Tile),
                             color = palette.card,
                             border = BorderStroke(DesignTokens.Border.Hairline, palette.outline)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.School, contentDescription = "AI Classroom", tint = palette.ink, modifier = Modifier.size(DesignTokens.Size.Icon))
+                                Icon(
+                                    Icons.Default.School,
+                                    contentDescription = if (tab == Tab.Class) "打开课堂菜单" else "回到课堂首页",
+                                    tint = palette.ink,
+                                    modifier = Modifier.size(DesignTokens.Size.Icon)
+                                )
                             }
                         }
                         Column(Modifier.weight(1f)) {
