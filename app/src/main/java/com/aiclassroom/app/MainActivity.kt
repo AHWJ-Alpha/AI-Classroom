@@ -1975,7 +1975,7 @@ private fun BranchScreen(
         BranchChatScreen(branches[activeIndex], input, onInput, isLoading, palette, mentorName, onBack, onSend)
         return
     }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 0.dp, end = 0.dp, top = 10.dp, bottom = 10.dp + LocalBottomBarLift.current), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (branches.isEmpty()) item { InfoCard { Text("在主课堂任意消息下开分支。分支会作为独立长对话保存，不会改写主课堂。", color = Muted) } }
         items(branches.indices.toList()) { index ->
             val branch = branches[index]
@@ -2104,7 +2104,7 @@ private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette, mentorN
 private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<ChatMessage>, onJump: (Int) -> Unit) {
     val visibleChapters = chapters.ifEmpty { fallbackChapters(messages) }
     var overview by remember { mutableStateOf(true) }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 0.dp, end = 0.dp, top = 10.dp, bottom = 10.dp + LocalBottomBarLift.current), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             InfoCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2306,7 +2306,7 @@ private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Uni
     val cardLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) { view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY); uris.count { importFile(it, "character_card") }.let { importNotice = "已导入 $it/${uris.size} 张角色卡" } }
     }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 0.dp, end = 0.dp, top = 10.dp, bottom = 10.dp + LocalBottomBarLift.current), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             InfoCard {
                 Text("知识库", fontWeight = FontWeight.Bold)
@@ -2413,7 +2413,7 @@ private fun ModelScreen(
     val scope = rememberCoroutineScope()
     var expandedModule by remember { mutableStateOf<String?>("model") }
     var visionStatus by remember { mutableStateOf("未获取识图模型") }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 0.dp, end = 0.dp, top = 10.dp, bottom = 10.dp + LocalBottomBarLift.current), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             SettingsCard("模型模块", expandedModule == "model", { expandedModule = if (expandedModule == "model") null else "model" }) {
                 Text("普通课堂对话使用此模块的 API。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small)
