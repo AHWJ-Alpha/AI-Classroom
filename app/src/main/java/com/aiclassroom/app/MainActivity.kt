@@ -731,36 +731,52 @@ private fun AIClassroomApp() {
                     NavigationBarItem(
                         selected = selected,
                         onClick = { tab = item; classMenuOpen = false },
-                        icon = {
-                            Icon(
-                                item.icon,
-                                contentDescription = item.title,
-                                modifier = Modifier.size(DesignTokens.Size.IconLg * iconScale)
-                            )
-                        },
-                        label = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Xs)
-                            ) {
-                                if (selected) {
-                                    Box(
-                                        Modifier
-                                            .size(DesignTokens.Spacing.Sm)
-                                            .background(DesignTokens.Accent, RoundedCornerShape(DesignTokens.Radius.Pill))
+                                                icon = {
+                            // 长按拖动才出现的高亮胶囊：圆角/描边取底栏面板同一套 token（Radius.Card + Border.Hairline + outline），平时不加任何底色
+                            Box(
+                                modifier = Modifier
+                                    .then(
+                                        if (selected && dragTabIndex >= 0) Modifier
+                                            .background(palette.ink, RoundedCornerShape(DesignTokens.Radius.Card))
+                                            .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Card))
+                                        else Modifier
                                     )
-                                }
+                                    .padding(horizontal = DesignTokens.Spacing.Md, vertical = DesignTokens.Spacing.Xs),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    item.icon,
+                                    contentDescription = item.title,
+                                    modifier = Modifier.size(DesignTokens.Size.IconLg * iconScale)
+                                )
+                            }
+                        },
+                                                label = {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Xxs)
+                            ) {
                                 Text(
                                     item.title,
                                     fontSize = DesignTokens.Type.Caption,
                                     fontWeight = if (selected) DesignTokens.Weight.Bold else DesignTokens.Weight.Regular
                                 )
+                                // 正常选中的强调：label 下方一条短线；胶囊出现时它让位（高亮只画在图标上）
+                                Box(
+                                    Modifier
+                                        .height(DesignTokens.Spacing.Xxs)
+                                        .width(DesignTokens.Spacing.Xxxl)
+                                        .background(
+                                            if (selected && dragTabIndex < 0) DesignTokens.Accent else Color.Transparent,
+                                            RoundedCornerShape(DesignTokens.Radius.Pill)
+                                        )
+                                )
                             }
                         },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = palette.page,
+                            selectedIconColor = if (selected && dragTabIndex >= 0) palette.page else palette.ink,
                             selectedTextColor = palette.ink,
-                            indicatorColor = palette.ink,
+                            indicatorColor = Color.Transparent,
                             unselectedIconColor = palette.muted,
                             unselectedTextColor = palette.muted
                         )
@@ -3769,6 +3785,9 @@ private fun String.unescapeJson(): String = replace("\\n", "\n").replace("\\\"",
 private fun AIClassroomTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = androidx.compose.material3.lightColorScheme(primary = Blue, secondary = Green, tertiary = Purple, background = Page, surface = Color.White, onBackground = Ink, onSurface = Ink),
+        // 全站衬线（思源宋体）：设在最外层主题；内层 MaterialTheme 没传 typography，
+        // 其默认参数读的就是这里的环境值，所以整棵树（含 Markdown 处的 LocalTextStyle 覆盖）都继承。
+        typography = DesignTokens.serifTypography(androidx.compose.material3.Typography()),
         content = content
     )
 }

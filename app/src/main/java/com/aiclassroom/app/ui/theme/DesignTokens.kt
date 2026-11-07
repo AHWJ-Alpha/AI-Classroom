@@ -2,11 +2,13 @@ package com.aiclassroom.app.ui.theme
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.aiclassroom.app.R
 
 /**
  * AI Classroom Design Tokens（阶段 1：设计系统建立）
@@ -31,6 +33,44 @@ object DesignTokens {
 
     /** 表单校验等关键错误状态色（与强调色区分的深红，取值不变）。 */
     val Danger = Color(0xFFB42318)
+
+    // ---------------------------------------------------------------- 字体
+
+    /**
+     * 衬线字体：思源宋体 Noto Serif SC（SIL OFL 1.1 开源授权，可商用）。
+     * 两个字重取自 Google Fonts 的 legacy TTF 端点（现代 UA 只给 woff2，安卓不认）：
+     * res/font/noto_serif_sc_400.ttf 与 noto_serif_sc_700.ttf，各约 14.8MB。
+     * 代码与公式仍走 FontFamily.Monospace（冻结区，不随此处变化）。
+     */
+    val Serif = FontFamily(
+        Font(R.font.noto_serif_sc_400, FontWeight.Normal),
+        Font(R.font.noto_serif_sc_700, FontWeight.Bold),
+    )
+
+    /**
+     * 把整套 M3 排版的字族换成 Serif，字号/行高/字重保持 base 原值。
+     * 必须设在 typography 层而不是包一层 LocalTextStyle：MainActivity 的 Markdown 渲染
+     * 会用 MaterialTheme.typography.bodyLarge 再 copy 覆盖 LocalTextStyle，
+     * 只有 typography 本身带字族，那处才不会把衬线丢掉。
+     */
+    fun serifTypography(base: androidx.compose.material3.Typography): androidx.compose.material3.Typography =
+        androidx.compose.material3.Typography(
+            displayLarge = base.displayLarge.copy(fontFamily = Serif),
+            displayMedium = base.displayMedium.copy(fontFamily = Serif),
+            displaySmall = base.displaySmall.copy(fontFamily = Serif),
+            headlineLarge = base.headlineLarge.copy(fontFamily = Serif),
+            headlineMedium = base.headlineMedium.copy(fontFamily = Serif),
+            headlineSmall = base.headlineSmall.copy(fontFamily = Serif),
+            titleLarge = base.titleLarge.copy(fontFamily = Serif),
+            titleMedium = base.titleMedium.copy(fontFamily = Serif),
+            titleSmall = base.titleSmall.copy(fontFamily = Serif),
+            bodyLarge = base.bodyLarge.copy(fontFamily = Serif),
+            bodyMedium = base.bodyMedium.copy(fontFamily = Serif),
+            bodySmall = base.bodySmall.copy(fontFamily = Serif),
+            labelLarge = base.labelLarge.copy(fontFamily = Serif),
+            labelMedium = base.labelMedium.copy(fontFamily = Serif),
+            labelSmall = base.labelSmall.copy(fontFamily = Serif),
+        )
 
     // ---------------------------------------------------------------- 深色主题
 
