@@ -124,6 +124,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -684,7 +686,10 @@ private fun AIClassroomApp() {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .padding(start = DesignTokens.Spacing.Lg, end = DesignTokens.Spacing.Lg, bottom = DesignTokens.Spacing.Xxs)
+                    // 加宽：左右 12dp → 4dp，面板更贴边（仍留悬浮余量，不做通栏）
+                    .padding(start = DesignTokens.Spacing.Xs, end = DesignTokens.Spacing.Xs, bottom = DesignTokens.Spacing.Md)
+                    // 阴影包边：先压一层浮起的影，再裁圆角
+                    .shadow(DesignTokens.Shadow.Bar, panelShape)
                     .clip(panelShape)
                     .hazeEffect(state = BottomHazeState) {
                         blurRadius = 18.dp
@@ -710,6 +715,10 @@ private fun AIClassroomApp() {
                     }
             ) {
                 NavigationBar(
+                    // 收紧上下：默认 windowInsets 会在内容外再叠一层系统栏避让，把面板从 80dp 撑到约 117dp；归零后只留最小高
+                    windowInsets = WindowInsets(0.dp),
+                    // 两侧按钮：item 行两侧各留 8dp，长按放大 1.15 后的胶囊不会压到面板圆角
+                    modifier = Modifier.padding(horizontal = DesignTokens.Spacing.Md),
                     containerColor = Color.Transparent,
                     tonalElevation = 0.dp
                 ) {
@@ -911,7 +920,7 @@ private fun AIClassroomApp() {
         enter = slideInHorizontally(animationSpec = tween(DesignTokens.Motion.DrawerEnterMs)) { -it } + fadeIn(tween(DesignTokens.Motion.SlowMs)),
         exit = slideOutHorizontally(animationSpec = tween(DesignTokens.Motion.DrawerExitMs)) { -it } + fadeOut(tween(DesignTokens.Motion.FastMs))
     ) {
-        ClassroomMenu(classes, classIndex, saveNotice, palette, onHorizontalDragEnd = { total -> if (tab == Tab.Class && classMenuOpen && total < -80f) classMenuOpen = false }, onSelect = {
+        ClassroomMenu(classes, classIndex, saveNotice, palette, onHorizontalDragEnd = { total -> if (tab == Tab.Class && classMenuOpen && total < -80f) classMenuOpen = false }, onDismiss = { classMenuOpen = false }, onSelect = {
             classIndex = it
             classMenuOpen = false
             persist("已切换课堂")
@@ -984,6 +993,7 @@ private fun ClassroomMenu(
     saveNotice: String,
     palette: AppPalette,
     onHorizontalDragEnd: (Float) -> Unit,
+    onDismiss: () -> Unit,
     onSelect: (Int) -> Unit,
     onRename: (Int, String) -> Unit,
     onEditSummary: (Int, String) -> Unit,
@@ -1000,7 +1010,8 @@ private fun ClassroomMenu(
         query.isBlank() || room.name.contains(query, ignoreCase = true) || room.topic.contains(query, ignoreCase = true) || room.summary.contains(query, ignoreCase = true)
     }
     val glassColor = palette.surface.copy(alpha = 0.70f)
-    Row(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+    // 沉浸：状态栏/导航栏的避让从面板本体挪到内层列表，面板才顶得到屏幕两端
+    Row(Modifier.fillMaxSize()) {
         Surface(
             Modifier
                 .fillMaxHeight()
@@ -1020,7 +1031,11 @@ private fun ClassroomMenu(
             shadowElevation = 0.dp,
             border = null
         ) {
-            LazyColumn(Modifier.fillMaxSize().padding(horizontal = 14.dp), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyColumn(
+                Modifier.fillMaxSize().padding(horizontal = 14.dp).statusBarsPadding().navigationBarsPadding(),
+                contentPadding = PaddingValues(vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 item {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -1124,6 +1139,16 @@ private fun ClassroomMenu(
                 }
             }
         }
+        // 点空白处收回：面板右侧露出的那条背景带（与 ChatMenuOverlay 同一套行为）
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .clickable(
+                    interactionSource = MutableInteractionSource(),
+                    indication = null
+                ) { onDismiss() }
+        )
     }
     renameTarget?.let { target ->
         RenameClassroomDialog(
