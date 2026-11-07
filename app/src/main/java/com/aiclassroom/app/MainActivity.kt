@@ -686,7 +686,7 @@ private fun AIClassroomApp() {
                     .fillMaxWidth()
                     .padding(start = DesignTokens.Spacing.Lg, end = DesignTokens.Spacing.Lg, bottom = DesignTokens.Spacing.Xxs)
                     .clip(panelShape)
-                    .hazeEffect(state = hazeState) {
+                    .hazeEffect(state = BottomHazeState) {
                         blurRadius = 18.dp
                         backgroundColor = panelColor
                         tints = listOf(HazeTint(palette.surface.copy(alpha = 0.25f)))
@@ -778,6 +778,7 @@ private fun AIClassroomApp() {
         Surface(
             Modifier
                 .fillMaxSize()
+                .hazeSource(BottomHazeState)
                 .padding(
                     PaddingValues(
                         start = padding.calculateLeftPadding(LocalLayoutDirection.current),
@@ -1659,6 +1660,14 @@ private fun MessageCard(
 
 /** 根 hazeState 共享实例：长按菜单浮层需与 Scaffold 根 hazeSource 同源采样，而消息卡片组件内无法取到根作用域状态。 */
 private val SharedHazeState = HazeState()
+/**
+ * 底栏专用采样源。
+ * 底栏是 Scaffold（即 SharedHazeState 的 hazeSource 节点）的子孙节点——在 source 节点内部再挂 hazeEffect，
+ * 采到的是自己而非背后内容，haze 输出为空（实测：栏下内容仅按面板 alpha 0.70 透出 30%，锐度与栏上完全一致）。
+ * 故对内容层单独开一个 source：内容层绘制顺序先于底栏、且不是底栏的祖先，采样成立。
+ * 菜单/浮层仍用 SharedHazeState，保持对顶栏与底栏的整屏模糊。
+ */
+private val BottomHazeState = HazeState()
 
 /**
  * 消息长按操作菜单：同 window 树内毛玻璃浮层（替代 Popup DropdownMenu，Popup 采不到 hazeSource）。
