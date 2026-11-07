@@ -143,6 +143,7 @@ import androidx.compose.ui.unit.sp
 import com.aiclassroom.app.ui.components.AppDialogBase
 import com.aiclassroom.app.ui.components.AppPrimaryButton
 import com.aiclassroom.app.ui.components.AppSecondaryButton
+import com.aiclassroom.app.ui.components.LocalAppHazeState
 import com.aiclassroom.app.ui.theme.DesignTokens
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeTint
@@ -603,6 +604,7 @@ private fun AIClassroomApp() {
     MaterialTheme(
         colorScheme = appColorScheme(palette, darkInterface)
     ) {
+    CompositionLocalProvider(LocalAppHazeState provides hazeState) {
     Box(Modifier.fillMaxSize()) {
     Scaffold(
         modifier = Modifier.fillMaxSize().hazeSource(hazeState),
@@ -859,6 +861,7 @@ private fun AIClassroomApp() {
         }, onEditSummary = { index, summary ->
             if (index in classes.indices) replaceClassroomAt(index, classes[index].copy(summary = summary), "课堂简介已保存")
         }, onNew = { addClassroom() }, onNewWithConfig = { addClassroom(classes[it]) }, onCopyConfig = ::copyConfigFrom, onDelete = ::deleteClassroom)
+    }
     }
     }
     }
