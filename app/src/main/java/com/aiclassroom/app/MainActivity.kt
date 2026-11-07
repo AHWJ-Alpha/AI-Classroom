@@ -854,6 +854,8 @@ private fun BlurOverlay(
     content: @Composable () -> Unit
 ) {
     val surfaceColor = MaterialTheme.colorScheme.surface
+    val glassTint = surfaceColor.copy(alpha = 0.25f)
+    val fallbackAlpha = if (dev.chrisbanes.haze.HazeDefaults.blurEnabled()) 0.28f else 0.80f
     AnimatedVisibility(
         visible = visible,
         enter = enter,
@@ -866,7 +868,9 @@ private fun BlurOverlay(
                 .hazeEffect(state = hazeState) {
                     blurRadius = 18.dp
                     backgroundColor = surfaceColor
-                    fallbackTint = HazeTint(Color.White.copy(alpha = 0.28f))
+                    tints = listOf(HazeTint(glassTint))
+                    noiseFactor = 0.10f
+                    fallbackTint = HazeTint(Color.White.copy(alpha = fallbackAlpha))
                 }
         ) {
             content()
@@ -896,6 +900,7 @@ private fun ClassroomMenu(
         val room = classes[i]
         query.isBlank() || room.name.contains(query, ignoreCase = true) || room.topic.contains(query, ignoreCase = true) || room.summary.contains(query, ignoreCase = true)
     }
+    val glassColor = palette.surface.copy(alpha = 0.70f)
     Row(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Surface(
             Modifier
@@ -911,7 +916,7 @@ private fun ClassroomMenu(
                         onHorizontalDrag = { _, dragAmount -> total += dragAmount }
                     )
                 },
-            color = MaterialTheme.colorScheme.surface,
+            color = glassColor,
             shape = AppShapes.menu,
             shadowElevation = 0.dp,
             border = null
