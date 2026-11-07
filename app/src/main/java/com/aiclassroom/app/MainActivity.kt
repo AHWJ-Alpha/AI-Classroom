@@ -680,6 +680,7 @@ private fun AIClassroomApp() {
             val panelShape = RoundedCornerShape(DesignTokens.Radius.Card)
             val panelColor = palette.surface
             val glassColor = palette.surface.copy(alpha = 0.70f)
+            var dragTabIndex by remember { mutableStateOf(-1) }
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -694,17 +695,49 @@ private fun AIClassroomApp() {
                     }
                     .background(glassColor, panelShape)
                     .border(DesignTokens.Border.Hairline, palette.outline, panelShape)
+                    .pointerInput(Unit) {
+                        fun tabIndexAt(x: Float) =
+                            ((x / size.width) * Tab.entries.size).toInt().coerceIn(0, Tab.entries.size - 1)
+                        detectHorizontalDragGestures(
+                            onDragStart = { pos -> dragTabIndex = tabIndexAt(pos.x) },
+                            onHorizontalDrag = { change, _ -> dragTabIndex = tabIndexAt(change.position.x) },
+                            onDragEnd = {
+                                if (dragTabIndex >= 0) tab = Tab.entries[dragTabIndex]
+                                dragTabIndex = -1
+                            },
+                            onDragCancel = { dragTabIndex = -1 }
+                        )
+                    }
             ) {
                 NavigationBar(
                     containerColor = Color.Transparent,
                     tonalElevation = 0.dp
                 ) {
-                Tab.entries.forEach { item ->
-                    val selected = tab == item
+                Tab.entries.forEachIndexed { index, item ->
+                    val selected = if (dragTabIndex >= 0) dragTabIndex == index else tab == item
+                    val iconScale by androidx.compose.animation.core.animateFloatAsState(
+                        targetValue = when {
+                            dragTabIndex >= 0 -> if (dragTabIndex == index) 1.15f else 1f
+                            tab == item -> 1.06f
+                            else -> 1f
+                        },
+                        animationSpec = if (dragTabIndex >= 0) {
+                            tween(DesignTokens.Motion.FastMs, easing = androidx.compose.animation.core.LinearEasing)
+                        } else {
+                            tween(DesignTokens.Motion.BaseMs, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
+                        },
+                        label = "bottomTabIconScale"
+                    )
                     NavigationBarItem(
                         selected = selected,
                         onClick = { tab = item; classMenuOpen = false },
-                        icon = { Icon(item.icon, contentDescription = item.title, modifier = Modifier.size(DesignTokens.Size.IconLg)) },
+                        icon = {
+                            Icon(
+                                item.icon,
+                                contentDescription = item.title,
+                                modifier = Modifier.size(DesignTokens.Size.IconLg * iconScale)
+                            )
+                        },
                         label = {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
