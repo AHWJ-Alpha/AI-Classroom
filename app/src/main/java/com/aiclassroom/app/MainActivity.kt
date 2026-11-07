@@ -31,6 +31,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -126,10 +127,16 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -138,6 +145,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aiclassroom.app.ui.components.AppDialogBase
@@ -145,6 +155,7 @@ import com.aiclassroom.app.ui.components.AppPrimaryButton
 import com.aiclassroom.app.ui.components.AppSecondaryButton
 import com.aiclassroom.app.ui.components.LocalAppHazeState
 import com.aiclassroom.app.ui.theme.DesignTokens
+import dev.chrisbanes.haze.HazeDefaults
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
@@ -329,7 +340,7 @@ private fun AIClassroomApp() {
     val classes = remember { mutableStateListOf<Classroom>().apply { addAll(initialClasses) } }
     val models = remember { mutableStateListOf("gpt-4o-mini", "gpt-4o", "deepseek-chat", "qwen-plus") }
     val scope = rememberCoroutineScope()
-    val hazeState = remember { HazeState() }
+    val hazeState = SharedHazeState
     val memoryJobs = remember { java.util.IdentityHashMap<Classroom, Job>() }
     val memoryWatermarks = remember { java.util.IdentityHashMap<Classroom, Int>() }
     if (classIndex > classes.lastIndex) classIndex = classes.lastIndex.coerceAtLeast(0)
@@ -1613,23 +1624,77 @@ private fun MessageCard(
     }
 }
 
+/** 根 hazeState 共享实例：长按菜单浮层需与 Scaffold 根 hazeSource 同源采样，而消息卡片组件内无法取到根作用域状态。 */
+private val SharedHazeState = HazeState()
+
+/**
+ * 消息长按操作菜单：同 window 树内毛玻璃浮层（替代 Popup DropdownMenu，Popup 采不到 hazeSource）。
+ * 容器布局尺寸记 0 但以屏幕尺寸绘制并平移到窗口原点，故不影响卡片/列表排版；面板锚定长按位置并夹在卡片底与窗口内。
+ */
 @Composable
 private fun MessageActionMenu(expanded: Boolean, palette: AppPalette, onDismiss: () -> Unit, onBranch: () -> Unit, onDeleteAfter: () -> Unit) {
-    DropdownMenu(
-        expanded = expanded,
-        onDismissRequest = onDismiss,
-        modifier = Modifier.background(palette.surface)
+    if (!expanded) return
+    val screenWPx = with(LocalDensity.current) { LocalConfiguration.current.screenWidthDp.dp.roundToPx() }
+    val screenHPx = with(LocalDensity.current) { LocalConfiguration.current.screenHeightDp.dp.roundToPx() }
+    val glassBase = palette.surface.copy(alpha = 1f)
+    val blurOn = HazeDefaults.blurEnabled()
+    val panelInteraction = remember { MutableInteractionSource() }
+    var anchor by remember { mutableStateOf(Offset.Zero) }
+    var parentHeightPx by remember { mutableStateOf(0) }
+    var panelSize by remember { mutableStateOf(IntSize.Zero) }
+    Box(
+        Modifier
+            .onGloballyPositioned { coords ->
+                anchor = coords.positionInWindow()
+                parentHeightPx = coords.parentLayoutCoordinates?.size?.height ?: 0
+            }
+            .layout { measurable, _ ->
+                val placeable = measurable.measure(Constraints.fixed(screenWPx, screenHPx))
+                layout(0, 0) {
+                    placeable.place(IntOffset(-anchor.x.roundToInt(), -anchor.y.roundToInt()))
+                }
+            }
     ) {
-        DropdownMenuItem(
-            text = { Text("从这里开分支", color = palette.ink) },
-            leadingIcon = { Icon(Icons.Default.AccountTree, null, tint = palette.button) },
-            onClick = { onDismiss(); onBranch() }
-        )
-        DropdownMenuItem(
-            text = { Text("删除此处及之后", color = palette.ink) },
-            leadingIcon = { Icon(Icons.Default.Delete, null, tint = palette.button) },
-            onClick = { onDismiss(); onDeleteAfter() }
-        )
+        Box(
+            Modifier
+                .pointerInput(Unit) { detectTapGestures { onDismiss() } }
+                .pointerInput(Unit) { detectDragGestures { change, _ -> change.consume() } }
+        ) {
+            Surface(
+                modifier = Modifier
+                    .offset {
+                        val maxX = screenWPx - panelSize.width
+                        val maxY = minOf(screenHPx, anchor.y.roundToInt() + parentHeightPx) - panelSize.height
+                        IntOffset(
+                            anchor.x.roundToInt().coerceIn(0, maxX.coerceAtLeast(0)),
+                            anchor.y.roundToInt().coerceIn(0, maxY.coerceAtLeast(0))
+                        )
+                    }
+                    .clickable(panelInteraction, null) { }
+                    .hazeEffect(state = SharedHazeState) {
+                        blurRadius = 18.dp
+                        backgroundColor = glassBase
+                        tints = listOf(HazeTint(palette.surface.copy(alpha = 0.25f)))
+                        fallbackTint = HazeTint(glassBase.copy(alpha = if (blurOn) 0.28f else 0.80f))
+                    }
+                    .onSizeChanged { panelSize = it },
+                color = palette.surface.copy(alpha = 0.70f),
+                shape = RoundedCornerShape(4.dp)
+            ) {
+                Column {
+                    DropdownMenuItem(
+                        text = { Text("从这里开分支", color = palette.ink) },
+                        leadingIcon = { Icon(Icons.Default.AccountTree, null, tint = palette.button) },
+                        onClick = { onDismiss(); onBranch() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("删除此处及之后", color = palette.ink) },
+                        leadingIcon = { Icon(Icons.Default.Delete, null, tint = palette.button) },
+                        onClick = { onDismiss(); onDeleteAfter() }
+                    )
+                }
+            }
+        }
     }
 }
 
