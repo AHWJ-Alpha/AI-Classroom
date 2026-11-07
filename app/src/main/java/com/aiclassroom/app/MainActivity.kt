@@ -862,6 +862,20 @@ private fun AIClassroomApp() {
             if (index in classes.indices) replaceClassroomAt(index, classes[index].copy(summary = summary), "课堂简介已保存")
         }, onNew = { addClassroom() }, onNewWithConfig = { addClassroom(classes[it]) }, onCopyConfig = ::copyConfigFrom, onDelete = ::deleteClassroom)
     }
+    ChatMenuOverlay(
+        hazeState = hazeState,
+        palette = palette,
+        config = current.config,
+        onModelChange = { model ->
+            replaceCurrent(current.copy(config = current.config.copy(activeChatModel = model)), "对话模型已切换")
+        },
+        onDeepThinkingChange = { enabled ->
+            replaceCurrent(current.copy(config = current.config.copy(deepThinkingEnabled = enabled)), if (enabled) "已启用深度思考" else "已关闭深度思考")
+        },
+        onReasoningEffortChange = { effort ->
+            replaceCurrent(current.copy(config = current.config.copy(reasoningEffort = effort)), "推理强度已调整")
+        }
+    )
     }
     }
     }
@@ -1322,9 +1336,6 @@ private fun ChatControls(
     onImmersiveChange: (Boolean) -> Unit,
     onQuickThemeToggle: () -> Unit
 ) {
-    var modelMenuOpen by remember { mutableStateOf(false) }
-    var reasoningMenuOpen by remember { mutableStateOf(false) }
-    val models = config.chatModels().ifEmpty { listOf(config.selectedModel) }
     Row(
         Modifier.fillMaxWidth().padding(bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1333,16 +1344,6 @@ private fun ChatControls(
         Box {
             IconButton(onClick = { modelMenuOpen = true }, modifier = Modifier.size(34.dp)) {
                 Icon(Icons.Default.Memory, contentDescription = "切换模型", tint = palette.muted, modifier = Modifier.size(18.dp))
-            }
-            DropdownMenu(expanded = modelMenuOpen, onDismissRequest = { modelMenuOpen = false }) {
-                Text("选择模型", color = palette.muted, fontSize = DesignTokens.Type.Small, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
-                models.forEach { model ->
-                    DropdownMenuItem(
-                        text = { Text(model.shortModelName()) },
-                        leadingIcon = { if (model == models.first()) Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                        onClick = { modelMenuOpen = false; onModelChange(model) }
-                    )
-                }
             }
         }
         Box {
@@ -1354,23 +1355,6 @@ private fun ChatControls(
                     modifier = Modifier.size(18.dp)
                 )
             }
-            DropdownMenu(expanded = reasoningMenuOpen, onDismissRequest = { reasoningMenuOpen = false }) {
-                DropdownMenuItem(
-                    text = { Text("深度思考") },
-                    trailingIcon = { Switch(config.deepThinkingEnabled, onCheckedChange = null) },
-                    onClick = { onDeepThinkingChange(!config.deepThinkingEnabled) }
-                )
-                if (config.deepThinkingEnabled) {
-                    Text("推理强度", color = palette.muted, fontSize = DesignTokens.Type.Small, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
-                    listOf("low" to "低", "medium" to "中", "high" to "高").forEach { (value, label) ->
-                        DropdownMenuItem(
-                            text = { Text(label) },
-                            leadingIcon = { if (config.reasoningEffort == value) Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                            onClick = { onReasoningEffortChange(value); reasoningMenuOpen = false }
-                        )
-                    }
-                }
-            }
         }
         if (immersiveMode) {
             IconButton(onClick = onQuickThemeToggle, modifier = Modifier.size(34.dp)) {
@@ -1379,6 +1363,90 @@ private fun ChatControls(
         }
         IconButton(onClick = { onImmersiveChange(!immersiveMode) }, modifier = Modifier.size(34.dp)) {
             Icon(if (immersiveMode) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = if (immersiveMode) "退出沉浸模式" else "进入沉浸模式", tint = palette.muted, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
+/** 聊天控制条两个下拉的展开状态：提到文件级，供 ChatControls（触发端）与树内浮层（展示端）同读写。 */
+private var modelMenuOpen by mutableStateOf(false)
+private var reasoningMenuOpen by mutableStateOf(false)
+
+/** 毛玻璃下拉浮层：全屏透明层（点空白处关闭）+ 贴近底栏的玻璃面板；与 BlurOverlay 同级挂在 Scaffold 的兄弟层，
+ *  同窗口内经 hazeState 采样 Scaffold 根 hazeSource 的内容（Popup 是独立 window，采不到，故改为树内浮层）。 */
+@Composable
+private fun ChatMenuOverlay(
+    hazeState: HazeState,
+    palette: AppPalette,
+    config: ClassroomConfig,
+    onModelChange: (String) -> Unit,
+    onDeepThinkingChange: (Boolean) -> Unit,
+    onReasoningEffortChange: (String) -> Unit
+) {
+    val surfaceColor = palette.surface
+    val blurEnabled = dev.chrisbanes.haze.HazeDefaults.blurEnabled()
+    val models = config.chatModels().ifEmpty { listOf(config.selectedModel) }
+    AnimatedVisibility(
+        visible = modelMenuOpen || reasoningMenuOpen,
+        enter = fadeIn(tween(DesignTokens.Motion.SlowMs)),
+        exit = fadeOut(tween(DesignTokens.Motion.FastMs))
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = androidx.compose.foundation.interaction.MutableInteractionSource(),
+                    indication = null
+                ) { modelMenuOpen = false; reasoningMenuOpen = false }
+        ) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 112.dp)
+                    .clip(AppShapes.panel)
+                    .hazeEffect(state = hazeState) {
+                        blurRadius = 18.dp
+                        backgroundColor = surfaceColor
+                        tints = listOf(HazeTint(surfaceColor.copy(alpha = 0.25f)))
+                        fallbackTint = HazeTint(surfaceColor.copy(alpha = if (blurEnabled) 0.28f else 0.80f))
+                    }
+                    .background(surfaceColor.copy(alpha = 0.70f))
+                    .clickable(
+                        interactionSource = androidx.compose.foundation.interaction.MutableInteractionSource(),
+                        indication = null
+                    ) { }
+                    .padding(vertical = 8.dp)
+            ) {
+                if (modelMenuOpen) {
+                    Column {
+                        Text("选择模型", color = palette.muted, fontSize = DesignTokens.Type.Small, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                        models.forEach { model ->
+                            DropdownMenuItem(
+                                text = { Text(model.shortModelName()) },
+                                leadingIcon = { if (model == models.first()) Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                onClick = { modelMenuOpen = false; onModelChange(model) }
+                            )
+                        }
+                    }
+                } else {
+                    Column {
+                        DropdownMenuItem(
+                            text = { Text("深度思考") },
+                            trailingIcon = { Switch(config.deepThinkingEnabled, onCheckedChange = null) },
+                            onClick = { onDeepThinkingChange(!config.deepThinkingEnabled) }
+                        )
+                        if (config.deepThinkingEnabled) {
+                            Text("推理强度", color = palette.muted, fontSize = DesignTokens.Type.Small, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                            listOf("low" to "低", "medium" to "中", "high" to "高").forEach { (value, label) ->
+                                DropdownMenuItem(
+                                    text = { Text(label) },
+                                    leadingIcon = { if (config.reasoningEffort == value) Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                    onClick = { onReasoningEffortChange(value); reasoningMenuOpen = false }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
