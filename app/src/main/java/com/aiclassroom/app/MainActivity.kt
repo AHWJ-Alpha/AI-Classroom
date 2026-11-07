@@ -1,4 +1,4 @@
-﻿package com.aiclassroom.app
+package com.aiclassroom.app
 
 import android.content.Context
 import android.content.res.Configuration
@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -114,6 +115,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -184,6 +186,9 @@ private enum class Tab(val title: String, val icon: ImageVector) {
     Knowledge("知识库", Icons.Default.Bookmarks),
     Model("设置", Icons.Default.Key)
 }
+
+/** 底栏悬浮面板总高（含导航 inset）：固定底元素据此抬升，滚动内容透到面板之下。 */
+private val LocalBottomBarLift = compositionLocalOf { 0.dp }
 
 private data class ChatMessage(val role: String, val text: String)
 private data class BranchClass(val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String, val context: MutableList<ChatMessage> = mutableStateListOf())
@@ -664,7 +669,7 @@ private fun AIClassroomApp() {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .padding(start = DesignTokens.Spacing.Lg, end = DesignTokens.Spacing.Lg, bottom = DesignTokens.Spacing.Md)
+                    .padding(start = DesignTokens.Spacing.Lg, end = DesignTokens.Spacing.Lg, bottom = DesignTokens.Spacing.Xxs)
                     .clip(panelShape)
                     .hazeEffect(state = hazeState) {
                         blurRadius = 18.dp
@@ -715,10 +720,20 @@ private fun AIClassroomApp() {
         }
         }
     ) { padding ->
+        // contentPadding 申报改动：底部避让归零，滚动内容透到悬浮毛玻璃底栏之下被折射；
+        // 固定底元素（输入条/回底按钮）经 LocalBottomBarLift 抬升，绝对位置与改动前一致。
+        val bottomLift = padding.calculateBottomPadding()
+        CompositionLocalProvider(LocalBottomBarLift provides bottomLift) {
         Surface(
             Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(
+                    PaddingValues(
+                        start = padding.calculateLeftPadding(LocalLayoutDirection.current),
+                        top = padding.calculateTopPadding(),
+                        end = padding.calculateRightPadding(LocalLayoutDirection.current)
+                    )
+                )
                 .padding(horizontal = 10.dp)
                 .pointerInput(classes.size, classIndex, classMenuOpen, tab) {
                     var total = 0f
@@ -819,6 +834,7 @@ private fun AIClassroomApp() {
                     UserManualDialog(palette, onClose = { showManualDialog = false })
                 }
             }
+        }
         }
     }
     BlurOverlay(
@@ -1150,7 +1166,7 @@ private fun ClassScreen(
         onJumpHandled()
     }
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = reverseConversation, contentPadding = PaddingValues(top = 10.dp, bottom = if (compactInput) 76.dp else 142.dp, start = 2.dp, end = 2.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = reverseConversation, contentPadding = PaddingValues(top = 10.dp, bottom = (if (compactInput) 76.dp else 142.dp) + LocalBottomBarLift.current, start = 2.dp, end = 2.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(room.messages.size) { i -> MessageCard(i, room.messages[i], palette, room.config.mentorName, onBranch, onDeleteAfter, onSpeak) }
             if (isLoading) item { AiThinkingRow(palette, room.config.mentorName) }
         }
@@ -1207,7 +1223,7 @@ private fun ClassScreen(
             contentDescription = if (isAtBottom) "回到顶部" else "回到底部",
             palette = palette,
             onClick = { scope.launch { if (isAtBottom) listState.animateScrollToItem(topIndex) else listState.animateScrollToItem(bottomIndex) } },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = DesignTokens.Spacing.Md, bottom = if (compactInput) 122.dp else 188.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = DesignTokens.Spacing.Md, bottom = (if (compactInput) 122.dp else 188.dp) + LocalBottomBarLift.current),
         )
     }
 }
@@ -1276,6 +1292,7 @@ private fun EmptyClassroomHome(
             immersiveMode = immersiveMode,
             onImmersiveChange = onImmersiveChange,
             onQuickThemeToggle = onQuickThemeToggle,
+            liftBottom = false,
             modifier = Modifier.fillMaxWidth().align(Alignment.Center).padding(top = 28.dp)
         )
     }
@@ -1387,10 +1404,11 @@ private fun ChatInputBar(
     immersiveMode: Boolean = false,
     onImmersiveChange: (Boolean) -> Unit = {},
     onQuickThemeToggle: () -> Unit = {},
+    liftBottom: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 6.dp),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 6.dp).padding(bottom = if (liftBottom) LocalBottomBarLift.current else 0.dp),
         color = palette.surface,
         shape = AppShapes.panel,
         shadowElevation = 0.dp,
@@ -1816,7 +1834,7 @@ private fun BranchChatScreen(
         LazyColumn(
             Modifier.fillMaxSize(),
             state = listState,
-            contentPadding = PaddingValues(top = 10.dp, bottom = 138.dp, start = 2.dp, end = 2.dp),
+            contentPadding = PaddingValues(top = 10.dp, bottom = 138.dp + LocalBottomBarLift.current, start = 2.dp, end = 2.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             item {
