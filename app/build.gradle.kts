@@ -16,71 +16,87 @@ android {
         versionName = "3.3.5"
     }
 
+    // 签名：debug 与 release 共用同一把 developer 钥匙。
+    // 此前 debug 走 Android Studio 默认的 debug.keystore、release 走 developer 钥，
+    // 两把钥匙互不兼容，导致先装过 debug 版的设备无法直接覆盖安装 release 版
+    // (INSTALL_FAILED_UPDATE_INCOMPATIBLE)。
+    // CI/release machines can provide their own signing material through
+    // environment variables; local builds fall back to the developer keystore
+    // kept outside version control.
+    val localKeystore = rootProject.file("signing/ai-classroom-developer.jks")
+    val localPasswordFile = rootProject.file("signing/keystore-password.txt")
+    val localPassword = localPasswordFile
+        .takeIf { it.isFile }
+        ?.readText()
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+
+    val environmentSigningPath = providers.environmentVariable("AI_CLASSROOM_KEYSTORE").orNull
+        ?.takeIf { it.isNotBlank() }
+    val environmentSigningPassword = providers
+        .environmentVariable("AI_CLASSROOM_KEYSTORE_PASSWORD")
+        .orNull
+        ?.takeIf { it.isNotBlank() }
+    val environmentSigningAlias = providers.environmentVariable("AI_CLASSROOM_KEY_ALIAS").orNull
+        ?.takeIf { it.isNotBlank() }
+    val hasCompleteEnvironmentSigning =
+        !environmentSigningPath.isNullOrBlank() &&
+            !environmentSigningPassword.isNullOrBlank() &&
+            !environmentSigningAlias.isNullOrBlank()
+
+    val signingPath = if (hasCompleteEnvironmentSigning) {
+        environmentSigningPath
+    } else {
+        localKeystore.absolutePath.takeIf { localKeystore.isFile }
+    }
+    val signingPassword = if (hasCompleteEnvironmentSigning) {
+        environmentSigningPassword
+    } else {
+        localPassword
+    }
+    val signingAlias = if (hasCompleteEnvironmentSigning) {
+        environmentSigningAlias
+    } else {
+        "ai-classroom-developer".takeIf { !localPassword.isNullOrBlank() }
+    }
+
+    // 签名材料齐全时，debug / release 共用这一把钥匙；
+    // 缺失时 debug 退回默认 debug.keystore，release 按原样出未签名包。
+    val sharedDeveloperSigning = if (
+        !signingPath.isNullOrBlank() &&
+        !signingPassword.isNullOrBlank() &&
+        !signingAlias.isNullOrBlank() &&
+        file(signingPath).isFile
+    ) {
+        signingConfigs.create("releaseDeveloper") {
+            storeFile = file(signingPath)
+            storePassword = signingPassword
+            keyAlias = signingAlias
+            keyPassword = signingPassword
+            // Keep legacy JAR (v1) and modern APK (v2/v3) signatures so
+            // OEM installers and older Android tooling recognize the package.
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    } else {
+        logger.warn(
+            "Signing material is not configured; debug falls back to the default " +
+                "debug.keystore and the Release artifact will be unsigned. " +
+                "Set AI_CLASSROOM_KEYSTORE, AI_CLASSROOM_KEYSTORE_PASSWORD and " +
+                "AI_CLASSROOM_KEY_ALIAS for a custom signing key."
+        )
+        null
+    }
+
     buildTypes {
+        debug {
+            // Android Studio 跑出的 debug 版用同一把钥匙，保证能与 release 直接覆盖安装。
+            sharedDeveloperSigning?.let { signingConfig = it }
+        }
         release {
             isMinifyEnabled = false
-            // CI/release machines can provide their own signing material through
-            // environment variables. For local Android Studio builds, fall back
-            // to the developer keystore kept outside version control.
-            val localKeystore = rootProject.file("signing/ai-classroom-developer.jks")
-            val localPasswordFile = rootProject.file("signing/keystore-password.txt")
-            val localPassword = localPasswordFile
-                .takeIf { it.isFile }
-                ?.readText()
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
-
-            val environmentSigningPath = providers.environmentVariable("AI_CLASSROOM_KEYSTORE").orNull
-                ?.takeIf { it.isNotBlank() }
-            val environmentSigningPassword = providers
-                .environmentVariable("AI_CLASSROOM_KEYSTORE_PASSWORD")
-                .orNull
-                ?.takeIf { it.isNotBlank() }
-            val environmentSigningAlias = providers.environmentVariable("AI_CLASSROOM_KEY_ALIAS").orNull
-                ?.takeIf { it.isNotBlank() }
-            val hasCompleteEnvironmentSigning =
-                !environmentSigningPath.isNullOrBlank() &&
-                    !environmentSigningPassword.isNullOrBlank() &&
-                    !environmentSigningAlias.isNullOrBlank()
-
-            val signingPath = if (hasCompleteEnvironmentSigning) {
-                environmentSigningPath
-            } else {
-                localKeystore.absolutePath.takeIf { localKeystore.isFile }
-            }
-            val signingPassword = if (hasCompleteEnvironmentSigning) {
-                environmentSigningPassword
-            } else {
-                localPassword
-            }
-            val signingAlias = if (hasCompleteEnvironmentSigning) {
-                environmentSigningAlias
-            } else {
-                "ai-classroom-developer".takeIf { !localPassword.isNullOrBlank() }
-            }
-
-            if (!signingPath.isNullOrBlank() &&
-                !signingPassword.isNullOrBlank() &&
-                !signingAlias.isNullOrBlank() &&
-                file(signingPath).isFile
-            ) {
-                signingConfig = signingConfigs.create("releaseDeveloper")
-                signingConfig?.storeFile = file(signingPath)
-                signingConfig?.storePassword = signingPassword
-                signingConfig?.keyAlias = signingAlias
-                signingConfig?.keyPassword = signingPassword
-                // Keep legacy JAR (v1) and modern APK (v2/v3) signatures so
-                // OEM installers and older Android tooling recognize the package.
-                signingConfig?.enableV1Signing = true
-                signingConfig?.enableV2Signing = true
-                signingConfig?.enableV3Signing = true
-            } else {
-                logger.warn(
-                    "Release signing is not configured; the Release artifact will be unsigned. " +
-                        "Set AI_CLASSROOM_KEYSTORE, AI_CLASSROOM_KEYSTORE_PASSWORD and " +
-                        "AI_CLASSROOM_KEY_ALIAS for a custom signing key."
-                )
-            }
+            sharedDeveloperSigning?.let { signingConfig = it }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
