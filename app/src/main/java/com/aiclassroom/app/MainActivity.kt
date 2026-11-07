@@ -119,6 +119,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
@@ -658,11 +659,23 @@ private fun AIClassroomApp() {
         }
         },
         bottomBar = { if (!immersiveMode) {
-            NavigationBar(
-                containerColor = palette.surface,
-                tonalElevation = 0.dp,
-                modifier = Modifier.padding(horizontal = DesignTokens.Spacing.Md, vertical = DesignTokens.Spacing.Sm)
+            val panelShape = RoundedCornerShape(DesignTokens.Radius.Card)
+            val panelColor = palette.surface
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = DesignTokens.Spacing.Lg, end = DesignTokens.Spacing.Lg, bottom = DesignTokens.Spacing.Md)
+                    .clip(panelShape)
+                    .hazeEffect(state = hazeState) {
+                        blurRadius = 18.dp
+                        backgroundColor = panelColor
+                    }
+                    .border(DesignTokens.Border.Hairline, palette.outline, panelShape)
             ) {
+                NavigationBar(
+                    containerColor = Color.Transparent,
+                    tonalElevation = 0.dp
+                ) {
                 Tab.entries.forEach { item ->
                     val selected = tab == item
                     NavigationBarItem(
@@ -696,6 +709,7 @@ private fun AIClassroomApp() {
                             unselectedTextColor = palette.muted
                         )
                     )
+                }
                 }
             }
         }
