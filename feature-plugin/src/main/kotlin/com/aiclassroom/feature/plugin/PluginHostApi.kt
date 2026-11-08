@@ -35,6 +35,21 @@ interface PluginHostApi {
     /** 插件要求刷新界面时调用。 */
     fun requestUiRefresh(pluginId: String)
 
+    /**
+     * 进入该插件的全屏层（需要 ui.fullscreen 权限，且插件声明了 FULLSCREEN 插槽）。
+     * 宿主负责隐藏系统状态栏与导航栏；同一时刻只允许一个插件占用全屏层。
+     */
+    fun enterFullscreen(pluginId: String)
+
+    /** 退出全屏层并恢复系统栏。插件没调过 enter 时是无操作。 */
+    fun exitFullscreen(pluginId: String)
+
+    /**
+     * 弹系统图片选择器，把用户选中的图片**复制进插件私有目录**，返回落盘路径。
+     * 需要 storage.readImage 权限；用户取消返回 code=cancelled。
+     */
+    suspend fun pickImage(pluginId: String): PluginResult
+
     /** 课堂列表与元信息（名称、消息数等），不含对话全文。 */
     suspend fun listClassrooms(): PluginResult
 

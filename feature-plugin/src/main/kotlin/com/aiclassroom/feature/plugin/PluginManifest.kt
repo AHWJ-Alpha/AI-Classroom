@@ -12,6 +12,13 @@ data class PluginExtension(
     val intervalSeconds: Int? = null,
     /** event 扩展点：监听的事件名（白名单之一）。 */
     val event: String? = null,
+    /**
+     * ui_overlay 的取数函数名：宿主每次渲染前调它拿最新 state。
+     * 不填时沿用「插件自己 setState / host.requestUiRefresh」的旧路径。
+     */
+    val provider: String? = null,
+    /** ui_ticker 扩展点：每次触发间隔（毫秒）。 */
+    val intervalMillis: Int? = null,
 ) {
     /** config 省略时默认走包内的 logic.js。 */
     val configFile: String get() = config ?: PluginPackage.LOGIC_FILE
@@ -74,6 +81,8 @@ enum class PluginSettingType(val wire: String) {
     NUMBER("number"),
     BOOLEAN("boolean"),
     SELECT("select"),
+    /** 用户在设置页选的本地图片：宿主弹系统选择器并复制进插件私有目录，prefs 里存路径。 */
+    IMAGE("image"),
     ;
 
     companion object {
@@ -106,6 +115,15 @@ data class PluginManifest(
 
     /** 定时器声明（同一插件最多一个）。 */
     val timerExtension: PluginExtension? get() = extensions.firstOrNull { it.type == PluginExtensionType.TIMER }
+
+    /** 界面时钟声明（同一插件最多一个）。 */
+    val uiTickerExtension: PluginExtension? get() =
+        extensions.firstOrNull { it.type == PluginExtensionType.UI_TICKER }
+
+    /** 声明在 FULLSCREEN 插槽上的界面扩展点；没有则 null。 */
+    val fullscreenExtension: PluginExtension? get() = extensions.firstOrNull {
+        it.type == PluginExtensionType.UI_OVERLAY && it.slot == PluginSlots.FULLSCREEN
+    }
 
     /** 声明在指定 slot 上的扩展点（按声明顺序）。 */
     fun extensionsInSlot(slot: String): List<PluginExtension> = extensions.filter { it.slot == slot }

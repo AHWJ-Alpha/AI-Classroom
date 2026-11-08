@@ -44,9 +44,14 @@ class JsEngine(private val sandbox: JsSandbox = JsSandbox()) {
         }
     }
 
-    fun callFunction(name: String, argBuilder: (Context, Scriptable) -> List<Any?>): Any? {
+    /** [timeoutOverrideMillis] 见 [JsSandbox.call]：界面取数 provider 用它压到更短的预算。 */
+    fun callFunction(
+        name: String,
+        timeoutOverrideMillis: Long? = null,
+        argBuilder: (Context, Scriptable) -> List<Any?>,
+    ): Any? {
         val target = scope
-        return sandbox.call { cx ->
+        return sandbox.call(timeoutOverrideMillis) { cx ->
             val value = target.get(name, target)
             if (value == Scriptable.NOT_FOUND || value !is Function) {
                 throw PluginScriptException("${PluginScope.LOGIC_FILE} 里找不到可调用的函数：$name")

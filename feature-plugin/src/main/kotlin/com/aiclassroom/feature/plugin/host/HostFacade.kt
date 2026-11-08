@@ -89,6 +89,11 @@ internal class HostFacade(
                     api.requestUiRefresh(pluginId)
                     Undefined.instance
                 },
+                "enterFullscreen" to jsFunction("enterFullscreen") { c, s, _ -> fullscreen(c, s, true) },
+                "exitFullscreen" to jsFunction("exitFullscreen") { c, s, _ -> fullscreen(c, s, false) },
+                "pickImage" to jsFunction("pickImage") { c, s, _ ->
+                    guarded(c, s, PluginPermissions.STORAGE_READ_IMAGE) { api.pickImage(pluginId) }
+                },
                 "now" to jsFunction("now") { _, _, _ -> clock.nowMillis().toDouble() },
             ),
         )
@@ -154,6 +159,29 @@ internal class HostFacade(
             requested.coerceAtMost(PluginLimits.MAX_DIALOGS_PER_CLASSROOM)
         }
         return render(cx, scope, attempt { api.readAllDialogs(classroomId, limit) })
+    }
+
+    /**
+     * 全屏层的进出：与别的能力一样是「失败返回 {ok:false} 而不是抛异常」，
+     * 但这两个调用在渲染路径上、且不跨线程（宿主只改一次状态），所以同步直接调。
+     */
+    private fun fullscreen(cx: Context, scope: Scriptable, enter: Boolean): Any {
+        if (!permitted(PluginPermissions.UI_FULLSCREEN)) return denied(cx, scope, PluginPermissions.UI_FULLSCREEN)
+        return try {
+            if (enter) api.enterFullscreen(pluginId) else api.exitFullscreen(pluginId)
+            jsObject(cx, scope, mapOf("ok" to true, "value" to "", "path" to null, "truncated" to false))
+        } catch (e: Throwable) {
+            jsObject(
+                cx,
+                scope,
+                mapOf(
+                    "ok" to false,
+                    "code" to "host_error",
+                    "message" to (e.message ?: e.javaClass.simpleName),
+                    "truncated" to false,
+                ),
+            )
+        }
     }
 
     /** 统一的「权限校验 + 兜异常 + 渲染」入口，新增能力全部走这里，避免每项重复四行样板。 */

@@ -20,6 +20,9 @@ import com.aiclassroom.feature.plugin.PluginPackage
  */
 object PluginUiParser {
 
+    /** ui.json 里 `"src": "user:<key>"` 的前缀：取用户在设置页选中的图片。 */
+    const val USER_IMAGE_PREFIX = "user:"
+
     /** 最大嵌套深度（根节点记为第 1 层）。 */
     const val MAX_DEPTH = PluginLimits.MAX_UI_DEPTH
 
@@ -293,10 +296,23 @@ object PluginUiParser {
         return UiAnimation.Sprite(frames, fps.coerceIn(1, 30))
     }
 
+    /**
+     * 图片来源：包内相对路径，或者 `user:<settings key>`。
+     * `user:` 指向用户在设置页选的图片 —— 插件只写一个键名，宿主负责把文件找出来，
+     * 脚本拿不到、也不需要处理任何二进制。
+     */
     private fun imageSource(node: JsonNode.Obj, path: String, errors: MutableList<String>): String? {
         val value = stringField(node, "src", path, errors) ?: return null
+        if (value.startsWith(USER_IMAGE_PREFIX)) {
+            val key = value.removePrefix(USER_IMAGE_PREFIX)
+            if (key.isBlank()) {
+                errors += path + ".src 写成 '" + value + "' 时后面必须跟设置项的 key（例：user:bgImage）"
+                return null
+            }
+            return value
+        }
         if (!PluginPackage.isSafeRelativePath(value)) {
-            errors += path + ".src 必须是包内相对路径（不能以 / 开头、不能含 .. ），实际 '" + value + "'"
+            errors += path + ".src 必须是包内相对路径或 user:<设置项>（不能以 / 开头、不能含 .. ），实际 '" + value + "'"
             return null
         }
         return value

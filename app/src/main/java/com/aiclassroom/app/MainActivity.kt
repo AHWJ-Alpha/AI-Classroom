@@ -1,6 +1,7 @@
 package com.aiclassroom.app
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.content.res.Configuration
 import android.content.SharedPreferences
 import android.net.Uri
@@ -13,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -121,6 +123,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -148,6 +151,10 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -216,6 +223,7 @@ import com.aiclassroom.app.plugin.PluginInstallTool
 import com.aiclassroom.app.plugin.PluginManager
 import com.aiclassroom.app.plugin.PluginUiBinding
 import com.aiclassroom.app.plugin.ui.PluginUiEvent
+import com.aiclassroom.app.plugin.ui.PluginUiFullscreen
 import com.aiclassroom.app.plugin.ui.PluginUiMessageTail
 import com.aiclassroom.app.plugin.ui.PluginUiOverlay
 import com.aiclassroom.app.plugin.ui.PluginUiTopBarActions
@@ -233,9 +241,12 @@ import com.aiclassroom.feature.plugin.event.PluginEvent
 import com.aiclassroom.feature.plugin.event.PluginEventBus
 import com.aiclassroom.feature.plugin.hook.PromptHookPipeline
 import com.aiclassroom.feature.plugin.hook.PromptMeta
+import com.aiclassroom.feature.plugin.ui.FullscreenArbiter
+import com.aiclassroom.feature.plugin.ui.PluginUiDriver
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -486,6 +497,27 @@ private fun AIClassroomApp() {
     var pluginVersion by remember { mutableIntStateOf(0) }
     val pluginStateStore = remember { PrefsPluginStateStore(context) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    // ---- 界面活状态 ----
+    // pluginStates 是「这一刻要画的 state」，pluginStateVersions 是它的版本号：
+    // 哪个插件变了就只动它自己那一项，A 插件刷新不会连带把 B 插件的节点重新组合。
+    val pluginStates = remember { mutableStateMapOf<String, JSONObject?>() }
+    val pluginStateVersions = remember { mutableStateMapOf<String, Int>() }
+    // 全屏层：同一时刻只允许一个插件占用，仲裁在 feature-plugin 的 FullscreenArbiter 里。
+    val fullscreenArbiter = remember { FullscreenArbiter({ line -> Log.i(PLUGIN_LOG_TAG, line) }) }
+    var fullscreenPluginId by remember { mutableStateOf<String?>(null) }
+    // 宿主能力回调（宿主对象在 pluginManager 之前构造）用一个待办队列回到组合里处理，
+    // 避免为了拿 pluginManager 把两个 remember 绑成循环依赖。
+    val pendingUiRefreshes = remember { java.util.Collections.synchronizedSet(LinkedHashSet<String>()) }
+    var pluginRefreshTick by remember { mutableIntStateOf(0) }
+    var fullscreenEpoch by remember { mutableIntStateOf(0) }
+    var pluginManagerRef by remember { mutableStateOf<PluginManager?>(null) }
+    // 图片选择：设置页的 image 字段与 JS 的 host.pickImage 共用同一个系统选择器。
+    var pendingImagePick by remember { mutableStateOf<((Uri?) -> Unit)?>(null) }
+    val pluginImageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        val handler = pendingImagePick
+        pendingImagePick = null
+        handler?.invoke(uri)
+    }
     // 生图 / 网络能力直接复用已有工具实现，插件侧与 AI 侧走的是同一条链路。
     val pluginImageTools = remember { ImageTools(config = { store.loadImageConfig() }, sink = imageSink) }
     val pluginNetTool = remember { NetRequestTool({ line -> Log.i("NetTool", line) }) }
@@ -785,7 +817,45 @@ private fun AIClassroomApp() {
             },
             uiRefreshImpl = { pluginId ->
                 Log.d(PLUGIN_LOG_TAG, "插件 " + pluginId + " 请求刷新界面")
-                mainHandler.post { pluginVersion++ }
+                // 只把这个插件标脏：下一次组合只重读它自己的 state，别的插件不受影响。
+                mainHandler.post {
+                    pendingUiRefreshes.add(pluginId)
+                    pluginRefreshTick++
+                }
+            },
+            enterFullscreenImpl = { pluginId ->
+                fullscreenArbiter.request(pluginId)
+                mainHandler.post { fullscreenEpoch++ }
+            },
+            exitFullscreenImpl = { pluginId ->
+                fullscreenArbiter.release(pluginId)
+                mainHandler.post { fullscreenEpoch++ }
+            },
+            pickImageImpl = { pluginId ->
+                // 系统选择器只能在主线程弹；用 CompletableDeferred 把结果接回挂起调用。
+                val deferred = CompletableDeferred<Uri?>()
+                mainHandler.post { pendingImagePick = { uri -> deferred.complete(uri) }; pluginImageLauncher.launch("image/*") }
+                val uri = deferred.await()
+                val manager = pluginManagerRef
+                if (uri == null) {
+                    PluginResult.Failure("cancelled", "用户取消了图片选择")
+                } else if (manager == null) {
+                    PluginResult.Failure("not_available", "插件系统尚未就绪")
+                } else {
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            val stream = context.contentResolver.openInputStream(uri)
+                            if (stream == null) {
+                                PluginResult.Failure("image_failed", "无法打开选中的图片")
+                            } else {
+                                val file = manager.importPluginImage(pluginId, "picked", stream, extensionOf(context, uri))
+                                PluginResult.Success(file.absolutePath, file.absolutePath)
+                            }
+                        }.getOrElse {
+                            PluginResult.Failure("image_failed", it.message ?: it.javaClass.simpleName)
+                        }
+                    }
+                }
             },
         )
     }
@@ -799,10 +869,59 @@ private fun AIClassroomApp() {
             pluginEnabled = { id -> store.loadPluginEnabled(id) },
         )
     }
+
+    /**
+     * 重读一个插件的界面 state 并把版本号 +1（只动它自己那一项）。
+     * 这是「活状态」的唯一入口：requestUiRefresh / ui_ticker / 界面回调 都走它。
+     *
+     * provider 是插件脚本，**不能在主线程调**（一次卡顿就是掉帧），所以取数在 IO、写回在主线程。
+     */
+    suspend fun refreshPluginStateOf(pluginId: String) {
+        val state = withContext(Dispatchers.IO) { pluginManager.uiStateOf(pluginId) }
+        pluginStates[pluginId] = state
+        pluginStateVersions[pluginId] = (pluginStateVersions[pluginId] ?: 0) + 1
+    }
+
+    /** 重读所有插件的 state（装载 / 启用开关 / 全屏进出这类全局变化时用）。 */
+    suspend fun refreshAllPluginStatesNow() {
+        val all = withContext(Dispatchers.IO) { pluginManager.uiStates() }
+        for ((id, state) in all) {
+            pluginStates[id] = state
+            pluginStateVersions[id] = (pluginStateVersions[id] ?: 0) + 1
+        }
+    }
+
+    // 宿主能力回调（pickImage）晚于本函数构造，用 SideEffect 把引用补上：直接赋值会在组合期写状态。
+    androidx.compose.runtime.SideEffect { pluginManagerRef = pluginManager }
+
+    /** 全屏层重算：谁想独占、谁最终被选中，都交给仲裁器，宿主只跟着结果画。 */
+    fun resolveFullscreen() {
+        val next = fullscreenArbiter.resolve()
+        if (next == fullscreenPluginId) return
+        val closing = fullscreenPluginId
+        fullscreenPluginId = next
+        if (next != null) scope.launch { refreshPluginStateOf(next) }
+        // 退出的插件也要刷一次：它在全屏层里可能改过 state，回到普通插槽要按新值画。
+        if (closing != null) scope.launch { refreshPluginStateOf(closing) }
+        Log.i(PLUGIN_LOG_TAG, "FULLSCREEN 当前占用：" + (next ?: "无"))
+    }
     val promptHookPipeline = remember { PromptHookPipeline(logger = { line -> Log.i(PLUGIN_LOG_TAG, line) }) }
     // ---- 触发器（第二批）：timer / event ----
     // 分发永远在后台线程、永远被 runCatching 兜住：插件坏掉不能影响对话、考试、启动。
     val pluginEventBus = remember { PluginEventBus({ line -> Log.i(PLUGIN_LOG_TAG, line) }) }
+    // 界面时钟（ui_ticker）：每秒跑一次插件回调、跑完就重绘。单次触发失败只丢这一帧。
+    val pluginUiDriver = remember {
+        PluginUiDriver(
+            logger = { line -> Log.i(PLUGIN_LOG_TAG, line) },
+            onTick = { pluginId ->
+                // 回调跑在后台线程：只标脏，重绘回主线程做。
+                mainHandler.post {
+                    pendingUiRefreshes.add(pluginId)
+                    pluginRefreshTick++
+                }
+            },
+        )
+    }
     fun dispatchPluginEvent(event: String, payload: Map<String, String> = emptyMap()) {
         runCatching {
             val plugins = pluginManager.snapshot()
@@ -825,10 +944,17 @@ private fun AIClassroomApp() {
                     if (plugins.isNotEmpty() && pluginEventBus.timerCount == 0) {
                         pluginEventBus.startTimers(plugins, scope, PluginClock.SYSTEM)
                     }
+                    // 界面时钟：回前台先解暂停，再按当前可见集合重算。
+                    pluginUiDriver.setPaused(false)
+                    pluginUiDriver.start(plugins, scope)
                 }.onFailure { Log.w(PLUGIN_LOG_TAG, "启动插件定时器失败", it) }
 
-                Lifecycle.Event.ON_STOP -> runCatching { pluginEventBus.stopTimers() }
-                    .onFailure { Log.w(PLUGIN_LOG_TAG, "停止插件定时器失败", it) }
+                Lifecycle.Event.ON_STOP -> runCatching {
+                    pluginEventBus.stopTimers()
+                    // 切后台只暂停、不停协程：回来后立刻回到原来的节奏，不会累积补跑。
+                    pluginUiDriver.setPaused(true)
+                    Log.i(PLUGIN_LOG_TAG, "应用退到后台，插件界面时钟已暂停")
+                }.onFailure { Log.w(PLUGIN_LOG_TAG, "停止插件定时器失败", it) }
 
                 else -> Unit
             }
@@ -846,8 +972,10 @@ private fun AIClassroomApp() {
         onDispose {
             pluginLifecycleOwner.lifecycle.removeObserver(observer)
             runCatching { pluginEventBus.stopTimers() }
+            runCatching { pluginUiDriver.stopAll() }
         }
     }
+
     LaunchedEffect(Unit) {
         val loaded = withContext(Dispatchers.IO) { pluginManager.loadAll() }
         pluginVersion++
@@ -857,24 +985,108 @@ private fun AIClassroomApp() {
     }
     val pluginInfos = remember(pluginVersion) { pluginManager.infos() }
 
-    // ---- 界面插槽（第一批：GLOBAL_OVERLAY / MESSAGE_BODY_TAIL / TOP_BAR_ACTIONS）----
-    // 没有插件声明插槽时这三个列表都是空的，渲染点第一行就 return，组合开销为零。
+    // ---- 界面插槽（GLOBAL_OVERLAY / MESSAGE_BODY_TAIL / TOP_BAR_ACTIONS / FULLSCREEN）----
+    // 没有插件声明插槽时这几个列表都是空的，渲染点第一行就 return，组合开销为零。
     val uiOverlayBindings = remember(pluginVersion) { pluginManager.uiBindings("GLOBAL_OVERLAY") }
     val uiMessageTailBindings = remember(pluginVersion) { pluginManager.uiBindings("MESSAGE_BODY_TAIL") }
     val uiTopBarBindings = remember(pluginVersion) { pluginManager.uiBindings("TOP_BAR_ACTIONS") }
-    val uiStateSnapshot: Map<String, JSONObject?> = remember(pluginVersion) {
+    val uiFullscreenBinding = remember(pluginVersion, fullscreenPluginId) {
+        fullscreenPluginId?.let { pluginManager.fullscreenBinding(it) }
+    }
+    // 用户图片：设置页里 type=image 的字段（只在真声明了的时候读，没有插件时是空表）。
+    val uiUserImages = remember(pluginVersion) {
         if (uiOverlayBindings.isEmpty() && uiMessageTailBindings.isEmpty() && uiTopBarBindings.isEmpty()) {
             emptyMap()
         } else {
-            pluginManager.uiStates()
+            pluginManager.allRuntimes().associate { it.manifest.id to pluginManager.pluginImagePaths(it.manifest.id) }
         }
     }
-    // 界面回调：渲染器只递事件，真正调用插件函数在 IO 线程，跑完再刷新一次界面（读新的 state）。
+    val uiUserImageFits = remember(pluginVersion) {
+        if (uiUserImages.isEmpty()) emptyMap()
+        else pluginManager.allRuntimes().associate { it.manifest.id to pluginManager.pluginImageFits(it.manifest.id) }
+    }
+    // 宿主能力（host.requestUiRefresh / ui_ticker）标脏的插件，在这里重读 state 并把版本号 +1：
+    // 只有被标脏的插件会重新取值 + 重组，其它插件的节点保持原样（provider 也就只被问一次）。
+    // 只重读被标脏的那几个插件：每秒的 tick 不会牵连到别的插件（provider 也就只被问一次）。
+    LaunchedEffect(pluginRefreshTick) {
+        val dirty = synchronized(pendingUiRefreshes) {
+            val copy = pendingUiRefreshes.toList()
+            pendingUiRefreshes.clear()
+            copy
+        }
+        for (id in dirty) refreshPluginStateOf(id)
+    }
+    // 装载 / 启用开关 / 全屏进出是全局变化：整体重读一遍，保证新出现的插件有初始 state。
+    LaunchedEffect(pluginVersion, fullscreenEpoch) {
+        fullscreenArbiter.setDeclared(pluginManager.fullscreenPluginIds())
+        resolveFullscreen()
+        refreshAllPluginStatesNow()
+    }
+    // 渲染器直接吃这份快照：读取是 Compose 快照读，某一项变了只重组读它的那个插件。
+    val uiStateSnapshot: Map<String, JSONObject?> = pluginStates
+
+    // ---- 全屏层的系统栏 ----
+    // 进入时隐藏状态栏与导航栏、退出时恢复。用 WindowInsetsController 而不是 manifest 的
+    // 系统 UI 标志：同一套窗口在不同页面来回切，manifest 做不到「只在这一层隐藏」。
+    val windowView = LocalView.current
+    DisposableEffect(fullscreenPluginId) {
+        val window = (windowView.context as? android.app.Activity)?.window
+        val controller = window?.let { androidx.core.view.WindowCompat.getInsetsController(it, windowView) }
+        if (fullscreenPluginId != null) {
+            controller?.let {
+                it.systemBarsBehavior =
+                    androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                it.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            }
+        } else {
+            controller?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose {
+            // 离开这个页面 / 插件被卸载时也要恢复：否则一个坏插件能把用户的系统栏永久藏掉。
+            controller?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    // ---- ui_ticker 的可见性 ----
+    // 只有「插件已启用 + 所在插槽此刻真的在页面上」才跑时钟：
+    // 沉浸模式没打开时，时钟插件不该在后台空转耗电。切后台由 lifecycle 那一段统一暂停。
+    val uiVisibleTickerPlugins: Set<String> = remember(
+        pluginVersion,
+        fullscreenPluginId,
+        tab,
+        uiOverlayBindings,
+        uiMessageTailBindings,
+        uiTopBarBindings,
+    ) {
+        val visible = LinkedHashSet<String>()
+        // 常驻插槽：只要插件启用了就在页面上（课堂页一直有顶栏与消息列表）。
+        uiOverlayBindings.forEach { visible += it.pluginId }
+        if (tab == Tab.Class) {
+            uiTopBarBindings.forEach { visible += it.pluginId }
+            uiMessageTailBindings.forEach { visible += it.pluginId }
+        }
+        // FULLSCREEN：只有真的占用了全屏层才算可见。
+        fullscreenPluginId?.let { visible += it }
+        visible
+    }
+
+    // 可见集合（或装载结果）一变就重算界面时钟：新可见的起循环、不可见的立刻停。
+    LaunchedEffect(pluginVersion, uiVisibleTickerPlugins) {
+        runCatching {
+            pluginUiDriver.setVisiblePlugins(uiVisibleTickerPlugins)
+            pluginUiDriver.start(pluginManager.snapshot(), scope)
+            pluginUiDriver.stopInvisible()
+        }.onFailure { Log.w(PLUGIN_LOG_TAG, "重算插件界面时钟失败", it) }
+    }
+    // 界面回调：渲染器只递事件，真正调用插件函数在 IO 线程，跑完只刷新这一个插件。
     val onPluginUiEvent: (PluginUiEvent) -> Unit = remember(pluginManager) {
         { event ->
             scope.launch(Dispatchers.IO) {
                 pluginManager.invokeUiEntry(event.pluginId, event.entry, event.event, event.value)
-                mainHandler.post { pluginVersion++ }
+                mainHandler.post {
+                    pendingUiRefreshes.add(event.pluginId)
+                    pluginRefreshTick++
+                }
             }
         }
     }
@@ -1298,6 +1510,31 @@ private fun AIClassroomApp() {
     }
     // 设置页改插件配置时的防抖句柄：连着打字只重建一次 runtime。
     var pendingPluginReload by remember { mutableStateOf<Job?>(null) }
+
+    /** 设置页选了图片：复制进插件私有目录，路径写 prefs，再重建 runtime 让插件读到新值。 */
+    fun applyPluginImagePick(pluginId: String, key: String, uri: Uri) {
+        scope.launch {
+            val saved = withContext(Dispatchers.IO) {
+                runCatching {
+                    val stream = context.contentResolver.openInputStream(uri)
+                    if (stream == null) {
+                        null
+                    } else {
+                        pluginManager.importPluginImage(pluginId, key, stream, extensionOf(context, uri))
+                    }
+                }.getOrNull()
+            }
+            if (saved == null) {
+                saveNotice = "图片导入失败"
+                return@launch
+            }
+            store.savePluginSetting(pluginId, key, saved.absolutePath)
+            withContext(Dispatchers.IO) { pluginManager.reload(pluginId) }
+            pluginManager.invalidate()
+            pluginVersion++
+            saveNotice = "背景图片已保存"
+        }
+    }
     val pluginImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             scope.launch {
@@ -1449,6 +1686,9 @@ private fun AIClassroomApp() {
                             states = uiStateSnapshot,
                             palette = palette,
                             onEvent = onPluginUiEvent,
+                            stateVersions = pluginStateVersions,
+                            userImages = uiUserImages,
+                            userImageFits = uiUserImageFits,
                         )
                         IconButton(
                             onClick = { classMenuOpen = !classMenuOpen },
@@ -1633,7 +1873,9 @@ private fun AIClassroomApp() {
                     }, onSpeak = { text ->
                         speakText(context, current.config, text)
                     }, pluginOverlay = uiOverlayBindings, pluginMessageTail = uiMessageTailBindings,
-                        pluginStates = uiStateSnapshot, onPluginUiEvent = onPluginUiEvent) { index ->
+                        pluginStates = uiStateSnapshot, onPluginUiEvent = onPluginUiEvent,
+                        pluginStateVersions = pluginStateVersions,
+                        pluginUserImages = uiUserImages, pluginUserImageFits = uiUserImageFits) { index ->
                         val selected = current.messages.take(index + 1)
                         val branchMessages = mutableStateListOf<ChatMessage>()
                         val title = selected.firstOrNull()?.text?.take(18)?.ifBlank { "分支课堂" } ?: "分支课堂"
@@ -1745,6 +1987,19 @@ private fun AIClassroomApp() {
                                 pluginManager.invalidate()
                                 pluginVersion++
                                 saveNotice = if (reloaded) "插件配置已保存，下一次调用立即生效" else "配置已保存，重新装载失败"
+                            }
+                        },
+                        onPluginImagePick = { pluginId, key ->
+                            pendingImagePick = { uri -> if (uri != null) applyPluginImagePick(pluginId, key, uri) }
+                            pluginImageLauncher.launch("image/*")
+                        },
+                        onPluginImageClear = { pluginId, key ->
+                            scope.launch {
+                                withContext(Dispatchers.IO) { pluginManager.clearPluginImage(pluginId, key) }
+                                store.savePluginSetting(pluginId, key, "")
+                                pluginManager.invalidate()
+                                pluginVersion++
+                                saveNotice = "已清除图片"
                             }
                         },
                         onOpenManual = { showManualDialog = true },
@@ -1863,6 +2118,23 @@ private fun AIClassroomApp() {
             replaceCurrent(current.copy(config = current.config.copy(reasoningEffort = effort)), "推理强度已调整")
         }
     )
+    // FULLSCREEN：课堂页最外层的最后一块，覆盖顶栏 / 消息 / 输入框 / 底栏（保留安全区）。
+    // 同一时刻只有一个插件在这里（FullscreenArbiter 仲裁），右上角永远有宿主兜底退出按钮。
+    uiFullscreenBinding?.let { binding ->
+        PluginUiFullscreen(
+            binding = binding,
+            state = pluginStates[binding.pluginId],
+            palette = palette,
+            onEvent = onPluginUiEvent,
+            onExit = {
+                fullscreenArbiter.release(binding.pluginId)
+                fullscreenEpoch++
+            },
+            stateVersion = pluginStateVersions[binding.pluginId] ?: 0,
+            userImages = uiUserImages[binding.pluginId].orEmpty(),
+            userImageFit = uiUserImageFits[binding.pluginId].orEmpty(),
+        )
+    }
     }
     }
     }
@@ -2188,6 +2460,11 @@ private fun ClassScreen(
     /** 各插件 state 的 JSON 快照，供 `state.xxx` 取值。 */
     pluginStates: Map<String, JSONObject?> = emptyMap(),
     onPluginUiEvent: (PluginUiEvent) -> Unit = {},
+    /** 每个插件自己的 state 版本号：变了就只重组它那一份节点。 */
+    pluginStateVersions: Map<String, Int> = emptyMap(),
+    /** 插件设置里 type=image 的字段（插件 id -> 字段 -> 文件）。 */
+    pluginUserImages: Map<String, Map<String, File>> = emptyMap(),
+    pluginUserImageFits: Map<String, Map<String, String>> = emptyMap(),
     onBranch: (Int) -> Unit
 ) {
     if (room.messages.isEmpty()) {
@@ -2217,6 +2494,9 @@ private fun ClassScreen(
                 states = pluginStates,
                 palette = palette,
                 onEvent = onPluginUiEvent,
+                stateVersions = pluginStateVersions,
+                userImages = pluginUserImages,
+                userImageFits = pluginUserImageFits,
             )
         }
         return
@@ -2266,7 +2546,8 @@ private fun ClassScreen(
             items(room.messages.size) { i ->
                 MessageCard(
                     i, room.messages[i], palette, room.config.mentorName, onBranch, onDeleteAfter, onSpeak,
-                    pluginMessageTail, pluginStates, onPluginUiEvent,
+                    pluginMessageTail, pluginStates, onPluginUiEvent, pluginStateVersions,
+                    pluginUserImages, pluginUserImageFits,
                 )
             }
             if (isLoading) item { AiThinkingRow(palette, room.config.mentorName) }
@@ -2341,6 +2622,9 @@ private fun ClassScreen(
             states = pluginStates,
             palette = palette,
             onEvent = onPluginUiEvent,
+            stateVersions = pluginStateVersions,
+            userImages = pluginUserImages,
+            userImageFits = pluginUserImageFits,
         )
     }
 }
@@ -2660,6 +2944,9 @@ private fun MessageCard(
     pluginMessageTail: List<PluginUiBinding> = emptyList(),
     pluginStates: Map<String, JSONObject?> = emptyMap(),
     onPluginUiEvent: (PluginUiEvent) -> Unit = {},
+    pluginStateVersions: Map<String, Int> = emptyMap(),
+    pluginUserImages: Map<String, Map<String, File>> = emptyMap(),
+    pluginUserImageFits: Map<String, Map<String, String>> = emptyMap(),
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val bubbleUser = if (palette.page == DesignTokens.Dark.Page) DesignTokens.Dark.BubbleUser else DesignTokens.Light.BubbleUser
@@ -2713,6 +3000,9 @@ private fun MessageCard(
                             message = messageContext,
                             palette = palette,
                             onEvent = onPluginUiEvent,
+                            stateVersions = pluginStateVersions,
+                            userImages = pluginUserImages,
+                            userImageFits = pluginUserImageFits,
                         )
                     }
                 }
@@ -3747,6 +4037,10 @@ private fun ModelScreen(
     onUninstallPlugin: (String) -> Unit,
     onPluginEnabledChange: (String, Boolean) -> Unit,
     onPluginSettingChange: (String, String, String) -> Unit,
+    /** settings 里 type=image 的字段：弹系统图片选择器（由上层拿 Activity context）。 */
+    onPluginImagePick: (String, String) -> Unit,
+    /** 清除某个图片字段（文件 + prefs 一起删）。 */
+    onPluginImageClear: (String, String) -> Unit,
     onOpenManual: () -> Unit,
     onFetchModels: () -> Unit
 ) {
@@ -4185,6 +4479,8 @@ private fun ModelScreen(
                         onToggleExpanded = { expandedPluginConfigs = togglePluginConfig(expandedPluginConfigs, info.id) },
                         onEnabledChange = { onPluginEnabledChange(info.id, it) },
                         onSettingChange = { key, value -> onPluginSettingChange(info.id, key, value) },
+                        onImagePick = { key -> onPluginImagePick(info.id, key) },
+                        onImageClear = { key -> onPluginImageClear(info.id, key) },
                         onUninstall = { onUninstallPlugin(info.id) },
                     )
                 }
@@ -4653,6 +4949,8 @@ private fun PluginPackageRow(
     onToggleExpanded: () -> Unit,
     onEnabledChange: (Boolean) -> Unit,
     onSettingChange: (String, String) -> Unit,
+    onImagePick: (String) -> Unit,
+    onImageClear: (String) -> Unit,
     onUninstall: () -> Unit,
 ) {
     val unfinished = info.unfinishedSettings
@@ -4692,8 +4990,12 @@ private fun PluginPackageRow(
                     PluginSettingField(
                         setting = setting,
                         value = info.settingValues[setting.key].orEmpty(),
+                        fit = info.settingValues[setting.key + PluginManager.FIT_SUFFIX].orEmpty(),
                         locked = !info.enabled,
                         onValueChange = { onSettingChange(setting.key, it) },
+                        onPickImage = { onImagePick(setting.key) },
+                        onClearImage = { onImageClear(setting.key) },
+                        onFitChange = { onSettingChange(setting.key + PluginManager.FIT_SUFFIX, it) },
                     )
                 }
                 Text(
@@ -4716,8 +5018,14 @@ private fun togglePluginConfig(current: Set<String>, pluginId: String): Set<Stri
 private fun PluginSettingField(
     setting: PluginSetting,
     value: String,
+    /** image 字段的裁切方式（crop / fit / fill），存在 <key>Fit 这个辅助键里。 */
+    fit: String = "",
     locked: Boolean,
     onValueChange: (String) -> Unit,
+    onPickImage: () -> Unit = {},
+    onClearImage: () -> Unit = {},
+    /** 改了裁切方式：写 <key>Fit 这个辅助键，不动图片路径本身。 */
+    onFitChange: (String) -> Unit = {},
 ) {
     // 表单自己持有草稿：宿主快照要等防抖后的 reload 才刷新，直接绑快照会把用户刚敲的
     // 每个字符立刻回滚掉。prefs 在每次改动时同步写入，所以草稿丢了也能从磁盘恢复。
@@ -4751,6 +5059,19 @@ private fun PluginSettingField(
             PluginSettingType.BOOLEAN -> Unit
             PluginSettingType.SELECT -> PluginSelectField(setting, draft, locked, update)
             PluginSettingType.SECRET -> PluginSecretField(setting, draft, locked, update)
+            // image：显示缩略图 + 选择 / 清除，再加一个三选一的裁切方式。
+            PluginSettingType.IMAGE -> PluginImageField(
+                value = draft,
+                fit = fit,
+                locked = locked,
+                onPick = onPickImage,
+                onClear = {
+                    update("")
+                    onClearImage()
+                },
+                onFitChange = onFitChange,
+            )
+
             else -> PluginTextField(setting, draft, locked, numberProblem != null, update)
         }
         // 说明与错误各占一行：填错时说明仍然看得见，用户才知道这一项该去哪儿拿。
@@ -4842,6 +5163,78 @@ private fun PluginSecretField(
             }
         },
     )
+}
+
+/**
+ * image：一张用户自选的本地图片。
+ *
+ * 文件由宿主复制进插件私有目录（filesDir/plugins/<id>/user-images/），prefs 里只存路径，
+ * 插件脚本永远拿不到原始 uri，也不需要处理二进制 —— ui.json 里写 `"src": "user:<key>"` 即可。
+ */
+@Composable
+private fun PluginImageField(
+    value: String,
+    fit: String,
+    locked: Boolean,
+    onPick: () -> Unit,
+    onClear: () -> Unit,
+    onFitChange: (String) -> Unit,
+) {
+    val bitmap = rememberPluginImage(value)
+    Row(
+        Modifier.fillMaxWidth().padding(top = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Surface(
+            modifier = Modifier.size(48.dp),
+            shape = RoundedCornerShape(DesignTokens.Radius.Control),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            border = BorderStroke(DesignTokens.Border.Hairline, MaterialTheme.colorScheme.outline),
+        ) {
+            if (bitmap != null) {
+                Image(bitmap = bitmap, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            } else {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.Image, contentDescription = null, tint = Muted, modifier = Modifier.size(18.dp))
+                }
+            }
+        }
+        TextButton(onClick = onPick, enabled = !locked) { Text("选择图片") }
+        if (value.isNotBlank()) {
+            TextButton(onClick = onClear, enabled = !locked) {
+                Text("清除", color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+    if (value.isNotBlank()) {
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf("crop" to "居中裁切", "fit" to "适应", "fill" to "填充").forEach { (key, label) ->
+                AppFilterChip((if (fit.isBlank()) "crop" else fit) == key, { if (!locked) onFitChange(key) }) { Text(label) }
+            }
+        }
+    }
+}
+
+/** 读设置里那张图的缩略图：路径来自 prefs，读不到就当作没选（不抛异常）。 */
+@Composable
+private fun rememberPluginImage(path: String): ImageBitmap? {
+    val bitmap by produceState<ImageBitmap?>(initialValue = null, path) {
+        value = if (path.isBlank()) {
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val file = File(path)
+                    if (!file.isFile) null else BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap()
+                }.getOrNull()
+            }
+        }
+    }
+    return bitmap
 }
 
 /** select：与设置页其它单选一致，用横向 chips（选项多时可横向滑动）。 */
@@ -5708,6 +6101,23 @@ private fun displayNameOf(context: Context, uri: Uri): String = runCatching {
 }.getOrNull()?.takeIf { it.isNotBlank() }
     ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
     ?: "plugin.zip"
+
+/**
+ * 选中图片的后缀：先看 MIME（SAF 给的 displayName 常常没有后缀），再退回名字后缀。
+ * 只用于给落盘文件挑一个后缀，插件拿不到这个值，所以不做严格校验。
+ */
+private fun extensionOf(context: Context, uri: Uri): String? {
+    val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
+    val fromMime = when (mime) {
+        "image/png" -> "png"
+        "image/webp" -> "webp"
+        "image/gif" -> "gif"
+        "image/jpeg" -> "jpg"
+        else -> null
+    }
+    if (fromMime != null) return fromMime
+    return displayNameOf(context, uri)?.substringAfterLast('.', "")?.lowercase()?.takeIf { it.isNotBlank() }
+}
 
 private fun isApiFailure(result: String): Boolean {
     val text = result.lowercase()

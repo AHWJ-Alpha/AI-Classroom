@@ -9,8 +9,10 @@ import com.aiclassroom.feature.plugin.js.jsFunction
 import com.aiclassroom.feature.plugin.js.jsObject
 import com.aiclassroom.feature.plugin.js.jsPayload
 import com.aiclassroom.feature.plugin.js.jsString
+import com.aiclassroom.feature.plugin.ui.UiProviderState
 import org.mozilla.javascript.Context
 import org.mozilla.javascript.Scriptable
+import org.mozilla.javascript.ScriptableObject
 import org.mozilla.javascript.Undefined
 import java.io.Closeable
 
@@ -44,6 +46,16 @@ class PluginRuntime internal constructor(
 
     /** 该插件在 before_send 阶段注册的钩子入口函数名，没有则 null。 */
     val promptHookEntry: String? get() = manifest.promptHookEntry()
+
+    /** 界面取数函数名（ui_overlay.provider）；没有则走「插件主动 setState」的旧路径。 */
+    val uiProviderEntry: String? get() = manifest.extensionsOf(PluginExtensionType.UI_OVERLAY)
+        .firstNotNullOfOrNull { it.provider }
+
+    /**
+     * provider 最近一次成功返回的扁平 state 表（key -> 字符串值）。
+     * 失败时**保留上一次的值**，因此界面不会因为一次脚本报错闪成空白。
+     */
+    private var providerState: Map<String, String> = emptyMap()
 
     fun hasFunction(name: String): Boolean = synchronized(invocationLock) { engine.hasFunction(name) }
 
@@ -85,6 +97,81 @@ class PluginRuntime internal constructor(
 
     /** 执行任意表达式，主要给宿主自检与测试用。 */
     fun evalValue(expression: String): Any? = synchronized(invocationLock) { engine.evalValue(expression) }
+
+    /**
+     * 界面取数：调 provider(ctx) 拿最新 state，ctx = {now(), state, settings, storage, log}。
+     *
+     * 三条硬约束：
+     * 1. **超时独立且更短**：[PluginLimits.UI_PROVIDER_TIMEOUT_MILLIS]（3 秒），provider 在渲染路径上，
+     *    卡一次就是整屏卡一帧；
+     * 2. **异常隔离**：脚本报错 / 超时 / 返回值不是对象，一律**沿用上一次的值**并返回 ok=false，
+     *    界面不会因为一次失败闪成空白；
+     * 3. **扁平化**：返回值按 JS 语义转成字符串（数字给 "7"，布尔给 "true"），供 ui.json 的
+     *    `textFrom: "state.hh"` 直接取用；嵌套对象 / 数组不是界面能画的东西，跳过并记一条日志。
+     */
+    fun provideUiState(timeoutMillis: Long = PluginLimits.UI_PROVIDER_TIMEOUT_MILLIS): UiProviderState {
+        val entry = uiProviderEntry ?: return UiProviderState(null, false, "插件没有声明 provider")
+        return synchronized(invocationLock) {
+            try {
+                val raw = engine.callFunction(entry, timeoutMillis) { cx, scope ->
+                    listOf(buildProviderContext(cx, scope))
+                }
+                val parsed = flattenProviderValue(raw, entry)
+                if (parsed == null) {
+                    UiProviderState(providerState, false, "provider $entry 没有返回对象")
+                } else {
+                    providerState = parsed
+                    UiProviderState(parsed, true, null)
+                }
+            } catch (t: Throwable) {
+                UiProviderState(providerState, false, t.message ?: t.javaClass.simpleName)
+            }
+        }
+    }
+
+    /** 上一次成功的 provider 值（失败时宿主继续用它渲染）。 */
+    fun lastProvidedState(): Map<String, String> = synchronized(invocationLock) { providerState }
+
+    /** JS 对象 -> Map<String,String>；null / undefined / 非对象返回 null（调用方沿用旧值）。 */
+    private fun flattenProviderValue(raw: Any?, entry: String): Map<String, String>? =
+        when {
+            raw == null || raw is Undefined -> null
+            raw is Scriptable -> {
+                val result = LinkedHashMap<String, String>()
+                for (id in raw.ids) {
+                    val key = Context.toString(id)
+                    val value = ScriptableObject.getProperty(raw, key)
+                    if (value == Scriptable.NOT_FOUND || value is Undefined) continue
+                    if (value is Scriptable) {
+                        logger(
+                            "[plugin:" + manifest.id + "] provider $entry 的字段 '$key' 是对象/数组，" +
+                                "界面只能取标量，已跳过",
+                        )
+                        continue
+                    }
+                    result[key] = Context.toString(value)
+                }
+                result
+            }
+
+            else -> null
+        }
+
+    /** provider 的 ctx：{now(), state, settings, storage, log}，没有 event/value —— 它不是事件回调。 */
+    private fun buildProviderContext(cx: Context, scope: Scriptable): Scriptable {
+        val state = scope.get("state", scope).let { if (it == Scriptable.NOT_FOUND) null else it }
+        return jsObject(
+            cx,
+            scope,
+            mapOf(
+                "now" to nowFunction(),
+                "state" to state,
+                "storage" to storageObject(cx, scope),
+                "log" to logFunction(),
+                "settings" to settingsObject(cx, scope),
+            ),
+        )
+    }
 
     /**
      * 执行 before_send 钩子：JS 侧 onBeforePrompt(ctx) 返回字符串即替换，返回 null/undefined 表示不改。

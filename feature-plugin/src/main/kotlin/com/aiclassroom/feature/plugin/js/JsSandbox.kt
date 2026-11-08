@@ -46,16 +46,22 @@ class JsSandbox(val timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS) {
         }
     }
 
-    /** 在受保护的 Context 里执行 [block]；超时会被翻译成 [PluginScriptException]（timeout = true）。 */
-    fun <T> call(block: (Context) -> T): T {
+    /**
+     * 在受保护的 Context 里执行 [block]；超时会被翻译成 [PluginScriptException]（timeout = true）。
+     *
+     * [timeoutOverrideMillis] 让单个调用使用更短（或更长）的预算：界面取数 provider 走渲染路径，
+     * 必须比普通逻辑脚本更早掐断，否则一次卡顿就是整屏掉帧。
+     */
+    fun <T> call(timeoutOverrideMillis: Long? = null, block: (Context) -> T): T {
         val previous = deadlineNanos
-        deadlineNanos = System.nanoTime() + timeoutMillis * NANOS_PER_MILLI
+        val budget = timeoutOverrideMillis ?: timeoutMillis
+        deadlineNanos = System.nanoTime() + budget * NANOS_PER_MILLI
         try {
             return factory.call(object : ContextAction<T> {
                 override fun run(cx: Context): T = block(cx)
             })
         } catch (t: Throwable) {
-            throw translate(t)
+            throw translate(t, budget)
         } finally {
             deadlineNanos = previous
         }
@@ -66,11 +72,11 @@ class JsSandbox(val timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS) {
         if (deadline != 0L && System.nanoTime() > deadline) throw ScriptTimeoutSignal()
     }
 
-    private fun translate(t: Throwable): Throwable {
+    private fun translate(t: Throwable, budgetMillis: Long = timeoutMillis): Throwable {
         var cause: Throwable? = t
         while (cause != null) {
             if (cause is ScriptTimeoutSignal) {
-                return PluginScriptException("插件脚本执行超过 ${timeoutMillis}ms，已中断", t, timeout = true)
+                return PluginScriptException("插件脚本执行超过 ${budgetMillis}ms，已中断", t, timeout = true)
             }
             cause = cause.cause
         }

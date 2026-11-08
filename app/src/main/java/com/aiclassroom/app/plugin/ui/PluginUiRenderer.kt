@@ -23,11 +23,14 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Send
@@ -43,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -107,6 +111,10 @@ private class Paint(
     val assets: File?,
     val palette: AppPalette,
     val onEvent: (PluginUiEvent) -> Unit,
+    /** 用户在设置里选的图片：ui.json 写 "src": "user:bg" 时按这个表找文件。 */
+    val userImages: Map<String, File> = emptyMap(),
+    /** user: 图片的裁切方式（剪裁 / 适应 / 填充），由插件的设置项给出。 */
+    val userImageFit: Map<String, String> = emptyMap(),
 )
 
 /** GLOBAL_OVERLAY：铺满父容器但不拦截触摸，每个插件按自己的 anchor / offset 定位。 */
@@ -117,13 +125,32 @@ internal fun PluginUiOverlay(
     palette: AppPalette,
     onEvent: (PluginUiEvent) -> Unit,
     modifier: Modifier = Modifier,
+    /** 插件 id -> 该插件这一版 state 的版本号；变了就重组，实现「宿主调一次 provider 界面就更新」。 */
+    stateVersions: Map<String, Int> = emptyMap(),
+    userImages: Map<String, Map<String, File>> = emptyMap(),
+    userImageFits: Map<String, Map<String, String>> = emptyMap(),
 ) {
     if (bindings.isEmpty()) return
     Box(modifier.fillMaxSize()) {
         bindings.forEach { binding ->
             val root = binding.root ?: return@forEach
-            Box(Modifier.align(alignmentOf(root.anchor)), contentAlignment = Alignment.TopStart) {
-                PaintNode(root, Paint(binding.pluginId, states[binding.pluginId], null, binding.assets, palette, onEvent))
+            /** 每个插件一个 key：A 插件刷新不会连带把 B 插件的节点重新组合。 */
+            key(binding.pluginId, stateVersions[binding.pluginId] ?: 0) {
+                Box(Modifier.align(alignmentOf(root.anchor)), contentAlignment = Alignment.TopStart) {
+                    PaintNode(
+                        root,
+                        Paint(
+                            pluginId = binding.pluginId,
+                            state = states[binding.pluginId],
+                            message = null,
+                            assets = binding.assets,
+                            palette = palette,
+                            onEvent = onEvent,
+                            userImages = userImages[binding.pluginId].orEmpty(),
+                            userImageFit = userImageFits[binding.pluginId].orEmpty(),
+                        ),
+                    )
+                }
             }
         }
     }
@@ -138,12 +165,29 @@ internal fun PluginUiMessageTail(
     palette: AppPalette,
     onEvent: (PluginUiEvent) -> Unit,
     modifier: Modifier = Modifier,
+    stateVersions: Map<String, Int> = emptyMap(),
+    userImages: Map<String, Map<String, File>> = emptyMap(),
+    userImageFits: Map<String, Map<String, String>> = emptyMap(),
 ) {
     if (bindings.isEmpty()) return
     Column(modifier.fillMaxWidth().padding(top = DesignTokens.Spacing.Xs)) {
         bindings.forEach { binding ->
             val root = binding.root ?: return@forEach
-            PaintNode(root, Paint(binding.pluginId, states[binding.pluginId], message, binding.assets, palette, onEvent))
+            key(binding.pluginId, stateVersions[binding.pluginId] ?: 0) {
+                PaintNode(
+                    root,
+                    Paint(
+                        pluginId = binding.pluginId,
+                        state = states[binding.pluginId],
+                        message = message,
+                        assets = binding.assets,
+                        palette = palette,
+                        onEvent = onEvent,
+                        userImages = userImages[binding.pluginId].orEmpty(),
+                        userImageFit = userImageFits[binding.pluginId].orEmpty(),
+                    ),
+                )
+            }
         }
     }
 }
@@ -155,18 +199,105 @@ internal fun PluginUiTopBarActions(
     states: Map<String, JSONObject?>,
     palette: AppPalette,
     onEvent: (PluginUiEvent) -> Unit,
+    stateVersions: Map<String, Int> = emptyMap(),
+    userImages: Map<String, Map<String, File>> = emptyMap(),
+    userImageFits: Map<String, Map<String, String>> = emptyMap(),
 ) {
     if (bindings.isEmpty()) return
     bindings.forEach { binding ->
         val root = binding.root
         val entry = binding.entry
         when {
-            root != null -> PaintNode(
-                root,
-                Paint(binding.pluginId, states[binding.pluginId], null, binding.assets, palette, onEvent),
-            )
+            root != null -> key(binding.pluginId, stateVersions[binding.pluginId] ?: 0) {
+                PaintNode(
+                    root,
+                    Paint(
+                        pluginId = binding.pluginId,
+                        state = states[binding.pluginId],
+                        message = null,
+                        assets = binding.assets,
+                        palette = palette,
+                        onEvent = onEvent,
+                        userImages = userImages[binding.pluginId].orEmpty(),
+                        userImageFit = userImageFits[binding.pluginId].orEmpty(),
+                    ),
+                )
+            }
+
             entry != null && !binding.label.isNullOrBlank() -> TopBarFallbackButton(binding, palette, onEvent)
         }
+    }
+}
+
+/**
+ * FULLSCREEN：独占整屏的插件层。
+ *
+ * 三条约定：
+ * 1. **覆盖在底栏之上**：全屏层的意义就是"什么都看不见了"，留一条底栏在下面没有意义；
+ * 2. **保留安全区**：内容按 `statusBarsPadding + navigationBarsPadding` 内缩，刘海 / 挖孔 / 手势条不压字，
+ *    这样"隐藏系统栏"退化成视觉上的沉浸，而不是把内容塞到系统手势区里；
+ * 3. **兜底退出**：右上角固定画一个极小退出按钮，**与插件自己的退出入口无关**——
+ *    插件没做退出按钮、或者做了但被藏起来，用户也不会被困在别人的界面里。
+ */
+@Composable
+internal fun PluginUiFullscreen(
+    binding: PluginUiBinding,
+    state: JSONObject?,
+    palette: AppPalette,
+    onEvent: (PluginUiEvent) -> Unit,
+    onExit: () -> Unit,
+    stateVersion: Int = 0,
+    userImages: Map<String, File> = emptyMap(),
+    userImageFit: Map<String, String> = emptyMap(),
+) {
+    val root = binding.root ?: return
+    val paint = Paint(
+        pluginId = binding.pluginId,
+        state = state,
+        message = null,
+        assets = binding.assets,
+        palette = palette,
+        onEvent = onEvent,
+        userImages = userImages,
+        userImageFit = userImageFit,
+    )
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(palette.page)
+            .clickable(
+                interactionSource = MutableInteractionSource(),
+                indication = null,
+                // 全屏层自己吃掉点击：它盖住了整个课堂页，穿透会让用户误触下面的消息卡片。
+                onClick = {},
+            ),
+    ) {
+        Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+            key(binding.pluginId, stateVersion) { PaintNode(root, paint, Modifier.fillMaxSize()) }
+        }
+        FullscreenExitButton(palette, onExit)
+    }
+}
+
+/** 宿主兜底退出：极小、半透明、始终在右上角，不抢插件视觉但一眼能找到。 */
+@Composable
+private fun BoxScope.FullscreenExitButton(palette: AppPalette, onExit: () -> Unit) {
+    Surface(
+        onClick = onExit,
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .statusBarsPadding()
+            .padding(DesignTokens.Spacing.Xs),
+        shape = shapeOf(UiRadius.FULL),
+        color = palette.card.copy(alpha = 0.55f),
+        contentColor = palette.ink,
+    ) {
+        Icon(
+            Icons.Default.Close,
+            contentDescription = "退出全屏",
+            tint = palette.muted,
+            modifier = Modifier.padding(DesignTokens.Spacing.Xs).size(DesignTokens.Size.IconSm),
+        )
     }
 }
 
@@ -286,13 +417,15 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
         UiNodeType.IMAGE -> {
             val sprite = node.animation as? UiAnimation.Sprite
             val path = if (sprite != null) spriteFrame(sprite) else node.src
-            val bitmap = rememberAsset(paint.assets, path)
+            // user:<key> 指向用户在设置页选中的图片（已复制进插件私有目录），
+            // 其余一律按包内相对路径解析 —— 插件拿不到这两条以外的任何文件。
+            val bitmap = rememberAsset(paint.assets, path, paint.userImages)
             if (bitmap != null) {
                 Image(
                     bitmap = bitmap,
                     contentDescription = null,
                     modifier = modifier.then(if (node.width == null) Modifier.size(48.dp) else Modifier),
-                    contentScale = ContentScale.Fit,
+                    contentScale = contentScaleOf(paint, path),
                 )
             }
         }
@@ -595,6 +728,9 @@ private fun clickModifier(node: UiNode, paint: Paint): Modifier {
     )
 }
 
+/** 用户图片的引用前缀：ui.json 写 "src": "user:bg" 时去设置里的 bg 字段取路径。 */
+private const val USER_IMAGE_PREFIX = "user:"
+
 /** 插件包内素材：只允许包内相对路径，越界一律当作不存在。 */
 private fun resolveAsset(dir: File?, path: String?): File? {
     if (dir == null || path.isNullOrBlank()) return null
@@ -603,9 +739,37 @@ private fun resolveAsset(dir: File?, path: String?): File? {
     return if (file.isFile) file else null
 }
 
+/** user: 图片的路径由宿主解析（设置里存的是插件私有目录下的绝对路径），再做一次包内边界检查。 */
+private fun resolveUserAsset(dir: File?, userImages: Map<String, File>, path: String): File? {
+    val key = path.removePrefix(USER_IMAGE_PREFIX)
+    val file = userImages[key] ?: return null
+    if (dir == null) return null
+    val rootPath = dir.absolutePath
+    // 只认插件自己目录里的文件：设置页理论上不会写别处的路径，这里也不允许。
+    if (!file.absolutePath.startsWith(rootPath)) return null
+    return if (file.isFile) file else null
+}
+
+/** 裁切方式：用户在设置里选「剪裁 / 适应 / 填充」，user: 图片默认按剪裁铺满。 */
+private fun contentScaleOf(paint: Paint, path: String?): ContentScale {
+    if (path == null || !path.startsWith(USER_IMAGE_PREFIX)) return ContentScale.Fit
+    val key = path.removePrefix(USER_IMAGE_PREFIX)
+    return when (paint.userImageFit[key]) {
+        "fit" -> ContentScale.Fit
+        "fill" -> ContentScale.FillBounds
+        else -> ContentScale.Crop
+    }
+}
+
 @Composable
-private fun rememberAsset(dir: File?, path: String?): ImageBitmap? {
-    val file = remember(dir, path) { resolveAsset(dir, path) }
+private fun rememberAsset(dir: File?, path: String?, userImages: Map<String, File> = emptyMap()): ImageBitmap? {
+    val file = remember(dir, path, userImages) {
+        if (path != null && path.startsWith(USER_IMAGE_PREFIX)) {
+            resolveUserAsset(dir, userImages, path)
+        } else {
+            resolveAsset(dir, path)
+        }
+    }
     val bitmap by produceState<ImageBitmap?>(initialValue = null, file) {
         value = if (file == null) {
             null

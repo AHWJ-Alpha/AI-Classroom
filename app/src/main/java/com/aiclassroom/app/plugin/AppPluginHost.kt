@@ -38,6 +38,10 @@ class AppPluginHost(
     private val readKnowledgeImpl: suspend () -> PluginResult = { notAvailable("knowledge.read") },
     private val readAllDialogsImpl: suspend (String?, Int) -> PluginResult =
         { _, _ -> notAvailable("dialogs.readAll") },
+    private val enterFullscreenImpl: (String) -> Unit = {},
+    private val exitFullscreenImpl: (String) -> Unit = {},
+    private val pickImageImpl: suspend (String) -> PluginResult =
+        { _ -> notAvailable("storage.readImage") },
 ) : PluginHostApi {
 
     override suspend fun generateImage(prompt: String, width: Int?, height: Int?): PluginResult =
@@ -93,6 +97,25 @@ class AppPluginHost(
             logger("requestUiRefresh 失败（" + pluginId + "）：" + (t.message ?: t.javaClass.simpleName))
         }
     }
+
+    override fun enterFullscreen(pluginId: String) {
+        try {
+            enterFullscreenImpl(pluginId)
+        } catch (t: Throwable) {
+            logger("enterFullscreen 失败（" + pluginId + "）：" + (t.message ?: t.javaClass.simpleName))
+        }
+    }
+
+    override fun exitFullscreen(pluginId: String) {
+        try {
+            exitFullscreenImpl(pluginId)
+        } catch (t: Throwable) {
+            logger("exitFullscreen 失败（" + pluginId + "）：" + (t.message ?: t.javaClass.simpleName))
+        }
+    }
+
+    override suspend fun pickImage(pluginId: String): PluginResult =
+        guard("storage.readImage") { pickImageImpl(pluginId) }
 
     private suspend fun guard(capability: String, block: suspend () -> PluginResult): PluginResult = try {
         block()

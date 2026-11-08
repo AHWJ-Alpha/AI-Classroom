@@ -46,6 +46,12 @@ object PluginPermissions {
     /** 使用定时器（manifest 里声明 timer 扩展点需要它）。 */
     const val TIMER = "timer"
 
+    /** 全屏层：占用 FULLSCREEN 插槽、调用 host.enterFullscreen / exitFullscreen。 */
+    const val UI_FULLSCREEN = "ui.fullscreen"
+
+    /** 读取用户在设置里选中的图片（settings 里 type=image 的字段）。 */
+    const val STORAGE_READ_IMAGE = "storage.readImage"
+
     val ALL: Set<String> = linkedSetOf(
         IMAGE_GENERATE,
         TTS_SPEAK,
@@ -62,6 +68,8 @@ object PluginPermissions {
         KNOWLEDGE_READ,
         DIALOGS_READ_ALL,
         TIMER,
+        UI_FULLSCREEN,
+        STORAGE_READ_IMAGE,
     )
 }
 
@@ -87,6 +95,12 @@ enum class PluginExtensionType(val wire: String) {
 
     /** 事件触发器：宿主在 event 对应的时机调 entry。 */
     EVENT("event"),
+
+    /**
+     * 界面时钟：每 intervalMs 毫秒调一次 entry，跑完立刻让宿主重绘该插件的界面。
+     * 与 timer 的区别：timer 是纯后台触发器（最小 60 秒），ui_ticker 是渲染驱动（最小 250 毫秒）。
+     */
+    UI_TICKER("ui_ticker"),
     ;
 
     companion object {
@@ -104,8 +118,15 @@ enum class PluginExtensionType(val wire: String) {
  * 已经装好的老插件不受影响，新插件才有新的挂载点。
  */
 object PluginSlots {
-    /** 悬浮层：GLOBAL_OVERLAY 覆盖在课堂页最上层，chat_* 为旧值（保留兼容）。 */
-    val UI_OVERLAY: Set<String> = linkedSetOf("GLOBAL_OVERLAY", "chat_top", "chat_bottom", "chat_float")
+    /**
+     * 悬浮层：GLOBAL_OVERLAY 覆盖在课堂页最上层，chat_* 为旧值（保留兼容）。
+     * FULLSCREEN 是独占的整屏层：同一时刻只有一个插件占用它，见 PluginUiDriver。
+     */
+    val UI_OVERLAY: Set<String> =
+        linkedSetOf("GLOBAL_OVERLAY", "FULLSCREEN", "chat_top", "chat_bottom", "chat_float")
+
+    /** 全屏层插槽名（独占、可由插件自己 enter/exit）。 */
+    const val FULLSCREEN = "FULLSCREEN"
 
     /** 按钮位：TOP_BAR_ACTIONS 在顶栏右侧动作区，top_bar / bottom_bar 为旧值。 */
     val BAR_BUTTON: Set<String> = linkedSetOf("TOP_BAR_ACTIONS", "top_bar", "bottom_bar")

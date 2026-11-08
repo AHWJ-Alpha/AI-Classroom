@@ -24,6 +24,27 @@ object PluginLimits {
     /** 同一插件最多几个 timer 扩展点。 */
     const val MAX_TIMER_EXTENSIONS = 1
 
+    /**
+     * ui_ticker.intervalMs 的下限：250ms（每秒 4 帧）。再快就不是「刷新」而是刷屏，
+     * 每个 tick 都要跑一次 Rhino 调用 + 一次 Compose 重组，宿主不为它买单。
+     */
+    const val MIN_UI_TICKER_INTERVAL_MILLIS = 250
+
+    /** ui_ticker.intervalMs 的上限：60000ms。比这更慢的刷新应该用 timer。 */
+    const val MAX_UI_TICKER_INTERVAL_MILLIS = 60_000
+
+    /** ui_ticker.intervalMs 的默认值。 */
+    const val DEFAULT_UI_TICKER_INTERVAL_MILLIS = 1_000
+
+    /** 同一插件最多几个 ui_ticker 扩展点。 */
+    const val MAX_UI_TICKER_EXTENSIONS = 1
+
+    /**
+     * ui_provider（界面取数函数）的单次调用超时。**独立于脚本超时**：
+     * provider 在渲染路径上被调用，卡住一次就是整屏卡一帧，所以这里比逻辑脚本的 3 秒更早掐断。
+     */
+    const val UI_PROVIDER_TIMEOUT_MILLIS = 3_000L
+
     /** 同一插件最多几个 event 扩展点。 */
     const val MAX_EVENT_EXTENSIONS = 8
 

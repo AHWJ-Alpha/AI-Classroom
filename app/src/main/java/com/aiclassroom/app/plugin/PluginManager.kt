@@ -8,7 +8,9 @@ import com.aiclassroom.feature.plugin.PluginHostApi
 import com.aiclassroom.feature.plugin.PluginPackage
 import com.aiclassroom.feature.plugin.PluginRuntime
 import com.aiclassroom.feature.plugin.PluginSetting
+import com.aiclassroom.feature.plugin.PluginSettingType
 import com.aiclassroom.feature.plugin.PluginSettingsCodec
+import com.aiclassroom.feature.plugin.PluginSlots
 import com.aiclassroom.feature.plugin.PluginStateStore
 import com.aiclassroom.feature.plugin.ui.PluginUiParser
 import com.aiclassroom.feature.plugin.ui.UiNode
@@ -86,6 +88,8 @@ data class PluginUiBinding(
     val root: UiNode?,
     val errors: List<String>,
     val assets: File,
+    /** ui_overlay 的取数函数：非空时宿主每次渲染前调它拿最新 state（见 PluginManager.uiStates）。 */
+    val provider: String? = null,
 )
 
 /** 一次导入/安装的结果。Conflict 只表示「需要用户确认覆盖」，还没有落盘。 */
@@ -179,14 +183,117 @@ class PluginManager(
     /** 指定插槽上的界面扩展点；没有插件声明时返回空列表，渲染点据此直接不渲染。 */
     fun uiBindings(slot: String): List<PluginUiBinding> = uiBindings().filter { it.slot == slot }
 
-    /** 插件脚本里顶层 state 的 JSON 快照，供 state.xxx 取值表达式使用。 */
+    /**
+     * 插件界面此刻要画的 state，供 ui.json 的 `state.xxx` 取值表达式使用。
+     *
+     * 声明了 `provider` 的插件走 provider（宿主每次渲染前现问一次，失败沿用上一次的值）；
+     * 没声明的沿用旧路径：读脚本顶层 `state` 对象的 JSON 快照。
+     */
     fun uiStates(): Map<String, JSONObject?> = snapshot().associate { runtime ->
-        runtime.manifest.id to runCatching {
-            runtime.stateJson()?.let { text -> JSONObject(text) }
-        }.onFailure {
-            logger("读取插件 " + runtime.manifest.id + " 的 state 失败：" + (it.message ?: it.javaClass.simpleName))
-        }.getOrNull()
+        runtime.manifest.id to stateOf(runtime)
     }
+
+    /** 声明了 FULLSCREEN 插槽的全部 binding（正常情况下不会用到，只有仲裁时才需要）。 */
+    fun fullscreenBindings(): List<PluginUiBinding> = uiBindings(PluginSlots.FULLSCREEN)
+
+    private fun stateOf(runtime: PluginRuntime): JSONObject? {
+        val id = runtime.manifest.id
+        val providerEntry = runtime.uiProviderEntry
+        val json = if (providerEntry == null) {
+            runCatching { runtime.stateJson() }
+                .onFailure { logger("读取插件 " + id + " 的 state 失败：" + describe(it)) }
+                .getOrNull()
+        } else {
+            val provided = runtime.provideUiState()
+            if (!provided.ok) {
+                logger("插件 " + id + " 的 provider " + providerEntry + " 调用失败（沿用上一次的值）：" + (provided.error ?: ""))
+            }
+            provided.stateJson()
+        }
+        return json?.let { text -> runCatching { JSONObject(text) }.getOrNull() }
+    }
+
+    /** 只取一个插件的 state（全屏层 / 单插槽刷新时用，避免为了一帧去问所有插件）。 */
+    fun uiStateOf(pluginId: String): JSONObject? {
+        val runtime = snapshot().firstOrNull { it.manifest.id == pluginId } ?: return null
+        return stateOf(runtime)
+    }
+
+    /**
+     * 当前占用全屏层的插件 binding。谁被选中由 FullscreenArbiter 决定（宿主侧仲裁），
+     * 这里只按 id 把界面描述取出来；找不到（插件被卸载 / 关掉）返回 null，全屏层随之消失。
+     */
+    fun fullscreenBinding(pluginId: String): PluginUiBinding? =
+        uiBindings().firstOrNull { it.pluginId == pluginId && it.slot == PluginSlots.FULLSCREEN }
+
+    /** 声明了 FULLSCREEN 插槽的插件 id，按启用顺序（装载顺序）。 */
+    fun fullscreenPluginIds(): List<String> = snapshot()
+        .filter { it.manifest.fullscreenExtension != null }
+        .map { it.manifest.id }
+
+    /** 声明了界面插槽的插件 id（全屏与 ticker 的可见性判定都用它）。 */
+    fun uiPluginIds(): List<String> {
+        val ids = LinkedHashSet<String>()
+        for (binding in uiBindings()) ids += binding.pluginId
+        return ids.toList()
+    }
+
+    /** 插件设置里 type=image 的字段值（key -> 私有目录下的绝对路径）。 */
+    fun pluginImagePaths(pluginId: String): Map<String, File> {
+        val runtime = allRuntimes().firstOrNull { it.manifest.id == pluginId } ?: return emptyMap()
+        val dir = File(root, pluginId)
+        val result = LinkedHashMap<String, File>()
+        for (setting in runtime.manifest.settings) {
+            if (setting.type != PluginSettingType.IMAGE) continue
+            val raw = pluginSettings(pluginId)[setting.key]
+            if (raw.isNullOrBlank()) continue
+            val file = File(raw)
+            // 只认插件自己目录里的文件：设置页理论上不会写别处的路径，这里也不允许。
+            if (!file.isAbsolute || !file.absolutePath.startsWith(dir.absolutePath)) continue
+            if (!file.isFile) continue
+            result[setting.key] = file
+        }
+        return result
+    }
+
+    /** 用户为图片字段选的裁切方式（键名 <field>Fit，取值为 crop / fit / fill）。 */
+    fun pluginImageFits(pluginId: String): Map<String, String> {
+        val runtime = allRuntimes().firstOrNull { it.manifest.id == pluginId } ?: return emptyMap()
+        val stored = pluginSettings(pluginId)
+        val result = LinkedHashMap<String, String>()
+        for (setting in runtime.manifest.settings) {
+            if (setting.type != PluginSettingType.IMAGE) continue
+            val value = stored[setting.key + FIT_SUFFIX]
+            if (value.isNullOrBlank()) continue
+            if (value !in IMAGE_FITS) continue
+            result[setting.key] = value
+        }
+        return result
+    }
+
+    /** 设置页保存图片后调用：把用户选的图片复制进插件私有目录，返回落盘路径。 */
+    fun importPluginImage(pluginId: String, key: String, source: java.io.InputStream, extension: String?): File {
+        val dir = File(File(root, pluginId), IMAGE_DIR)
+        if (!dir.mkdirs() && !dir.isDirectory) throw IllegalStateException("无法创建图片目录 " + dir.absolutePath)
+        // 只保留白名单后缀：图片文件的扩展名会影响系统解码器选择，不能直接信 uri 里那段。
+        val suffix = extension?.lowercase()?.takeIf { it in IMAGE_EXTENSIONS } ?: "jpg"
+        val target = File(dir, key + "." + suffix)
+        // 同名旧文件先删掉：换图后不应在目录里留下两张图。
+        dir.listFiles()?.filter { it.name.substringBeforeLast('.') == key }?.forEach { it.delete() }
+        source.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+        return target
+    }
+
+    /** 清除某个图片字段的文件（设置页点「清除」）。 */
+    fun clearPluginImage(pluginId: String, key: String) {
+        val dir = File(File(root, pluginId), IMAGE_DIR)
+        dir.listFiles()?.filter { it.name.substringBeforeLast('.') == key }?.forEach { it.delete() }
+    }
+
+    /** 声明了 ui_ticker 的插件 id（宿主据此判断要不要给它起界面时钟）。 */
+    fun tickerPluginIds(): List<String> = snapshot()
+        .filter { it.manifest.uiTickerExtension != null }
+        .map { it.manifest.id }
 
     /** 宿主调插件界面回调：由调用方决定线程（主 app 放在 IO），异常只记日志。 */
     fun invokeUiEntry(pluginId: String, entry: String, event: String, value: String?) {
@@ -232,6 +339,7 @@ class PluginManager(
                 root = parsed?.root,
                 errors = parsed?.errors.orEmpty(),
                 assets = assets,
+                provider = extension.provider,
             )
         }
     }
@@ -328,6 +436,22 @@ class PluginManager(
             runtimes.values.forEach { runCatching { it.close() } }
             runtimes.clear()
         }
+    }
+
+    private fun describe(t: Throwable): String = t.message ?: t.javaClass.simpleName
+
+    companion object {
+        /** 图片字段的裁切方式存在 <key>Fit 这个辅助键里，plugin manifest 不用声明它。 */
+        const val FIT_SUFFIX = "Fit"
+
+        /** 允许的裁切方式：居中裁切（铺满）/ 适应（留边）/ 填充（拉伸）。 */
+        val IMAGE_FITS: Set<String> = linkedSetOf("crop", "fit", "fill")
+
+        /** 用户图片落在插件私有目录的这个子目录里（包内 assets/ 是只读的插件包内容）。 */
+        const val IMAGE_DIR = "user-images"
+
+        /** 允许的图片后缀；其余一律按 jpg 存。 */
+        val IMAGE_EXTENSIONS: Set<String> = linkedSetOf("jpg", "jpeg", "png", "webp", "gif")
     }
 
     private fun writeDirectory(dir: File, pkg: PluginPackage) {

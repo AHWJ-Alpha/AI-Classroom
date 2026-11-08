@@ -22,7 +22,9 @@ data class ManifestValidation(val manifest: PluginManifest?, val errors: List<St
  * 10. extensions[].entry 必须是合法函数名，且能在 logic.js 里静态找到声明；
  * 11. timer：intervalSeconds 必须是 60..86400 的整数，同一插件最多 1 个；
  * 12. event：event 必须在事件白名单内，同一插件最多 8 个；
- * 13. settings：配置表单声明，逐项校验 key / label / type / required / default / min / max / options。
+ * 13. settings：配置表单声明，逐项校验 key / label / type / required / default / min / max / options；
+ * 14. ui_overlay 的 provider：合法函数名 + 在 logic.js 里存在；FULLSCREEN 插槽必须申请 ui.fullscreen 权限；
+ * 15. ui_ticker：entry 必需，intervalMs 在 250..60000 之间，同一插件最多 1 个。
  */
 object ManifestValidator {
 
@@ -147,6 +149,7 @@ object ManifestValidator {
         val result = mutableListOf<PluginExtension>()
         var timerCount = 0
         var eventCount = 0
+        var tickerCount = 0
         for ((index, item) in array.items.withIndex()) {
             val extension = item.asObjectOrNull
             if (extension == null) {
@@ -172,6 +175,14 @@ object ManifestValidator {
                     if (eventCount > PluginLimits.MAX_EVENT_EXTENSIONS) {
                         errors += "extensions[" + index + "] 同一插件最多 " +
                             PluginLimits.MAX_EVENT_EXTENSIONS + " 个 event，这是第 " + eventCount + " 个"
+                    }
+                }
+
+                PluginExtensionType.UI_TICKER -> {
+                    tickerCount++
+                    if (tickerCount > PluginLimits.MAX_UI_TICKER_EXTENSIONS) {
+                        errors += "extensions[" + index + "] 同一插件最多 " +
+                            PluginLimits.MAX_UI_TICKER_EXTENSIONS + " 个 ui_ticker，这是第 " + tickerCount + " 个"
                     }
                 }
 
@@ -207,7 +218,9 @@ object ManifestValidator {
         val config = extension.fields["config"]?.asStringOrNull
         val entry = extension.fields["entry"]?.asStringOrNull
         val event = extension.fields["event"]?.asStringOrNull
+        val provider = extension.fields["provider"]?.asStringOrNull
         val intervalSeconds = parseIntervalSeconds(extension, prefix, errors)
+        val intervalMillis = parseIntervalMillis(extension, prefix, errors)
 
         when (type) {
             PluginExtensionType.UI_OVERLAY -> {
@@ -215,8 +228,22 @@ object ManifestValidator {
                     errors += "$prefix (ui_overlay) 缺少 slot"
                 } else if (slot !in PluginSlots.UI_OVERLAY) {
                     errors += "$prefix (ui_overlay) 未知 slot '$slot'（允许：${PluginSlots.UI_OVERLAY.joinToString(", ")}）"
+                } else if (slot == PluginSlots.FULLSCREEN &&
+                    PluginPermissions.UI_FULLSCREEN !in permissions
+                ) {
+                    errors += "$prefix (ui_overlay) 声明 FULLSCREEN 插槽必须同时申请 " +
+                        PluginPermissions.UI_FULLSCREEN + " 权限（全屏层会隐藏系统栏）"
                 }
                 if (config == null) errors += "$prefix (ui_overlay) 缺少 config（指向界面描述 json）"
+            }
+
+            PluginExtensionType.UI_TICKER -> {
+                if (entry == null) errors += "$prefix (ui_ticker) 缺少 entry"
+                if (intervalMillis == null) {
+                    errors += "$prefix (ui_ticker) intervalMs 缺失或越界（必须是 " +
+                        PluginLimits.MIN_UI_TICKER_INTERVAL_MILLIS + ".." +
+                        PluginLimits.MAX_UI_TICKER_INTERVAL_MILLIS + " 之间的整数）"
+                }
             }
 
             PluginExtensionType.BAR_BUTTON -> {
@@ -302,6 +329,22 @@ object ManifestValidator {
             }
         }
 
+        // provider：只有 ui_overlay 有意义，其它类型写了就是作者写错了，直接报错而不是静默忽略。
+        val resolvedProvider = if (provider == null) {
+            null
+        } else if (type != PluginExtensionType.UI_OVERLAY) {
+            errors += "$prefix.provider 只对 ui_overlay 有效，当前 type=" + type.wire
+            null
+        } else if (!ENTRY_PATTERN.matches(provider)) {
+            errors += "$prefix.provider 不是合法的函数名：'$provider'"
+            null
+        } else if (!logicHasFunction(logicSource, provider)) {
+            errors += "$prefix.provider 函数 '$provider' 在 " + PluginPackage.LOGIC_FILE + " 中不存在"
+            null
+        } else {
+            provider
+        }
+
         return PluginExtension(
             type = type,
             slot = slot,
@@ -311,6 +354,8 @@ object ManifestValidator {
             stage = stage,
             intervalSeconds = intervalSeconds.takeIf { type == PluginExtensionType.TIMER },
             event = event.takeIf { type == PluginExtensionType.EVENT },
+            provider = resolvedProvider,
+            intervalMillis = intervalMillis.takeIf { type == PluginExtensionType.UI_TICKER },
         )
     }
 
@@ -434,6 +479,18 @@ object ManifestValidator {
                     val text = defaultNode.asStringOrNull
                     if (text == null) {
                         errors += prefix + ".default 必须是字符串（type=select）"
+                        null
+                    } else {
+                        PluginSettingDefault.Text(text)
+                    }
+                }
+
+                // image 的值是宿主给出的私有目录路径，插件写 default 没有意义；
+                // 真写了就按普通字符串收下（等于预置一张图），不做额外解释。
+                PluginSettingType.IMAGE -> {
+                    val text = defaultNode.asStringOrNull
+                    if (text == null) {
+                        errors += prefix + ".default 必须是字符串（type=image）"
                         null
                     } else {
                         PluginSettingDefault.Text(text)
@@ -603,6 +660,27 @@ object ManifestValidator {
         val max = PluginLimits.MAX_TIMER_INTERVAL_SECONDS
         if (value < min || value > max) {
             errors += "$prefix.intervalSeconds 越界：" + value + "（必须是 " + min + ".." + max + " 秒之间的整数）"
+            return null
+        }
+        return value
+    }
+
+    /** intervalMs：缺省时返回默认值 1000；非整数 / 越界记错误并返回 null。 */
+    private fun parseIntervalMillis(
+        extension: JsonNode.Obj,
+        prefix: String,
+        errors: MutableList<String>,
+    ): Int? {
+        val node = extension.fields["intervalMs"] ?: return PluginLimits.DEFAULT_UI_TICKER_INTERVAL_MILLIS
+        val value = node.asIntOrNull
+        if (value == null) {
+            errors += "$prefix.intervalMs 必须是整数"
+            return null
+        }
+        val min = PluginLimits.MIN_UI_TICKER_INTERVAL_MILLIS
+        val max = PluginLimits.MAX_UI_TICKER_INTERVAL_MILLIS
+        if (value < min || value > max) {
+            errors += "$prefix.intervalMs 越界：" + value + "（必须是 " + min + ".." + max + " 毫秒之间的整数）"
             return null
         }
         return value

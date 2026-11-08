@@ -113,6 +113,23 @@ class RecordingHostApi : PluginHostApi {
         refreshCount++
         calls += "requestUiRefresh:$pluginId"
     }
+
+    /** 全屏层：记录谁进谁出，测试据此断言 JS 侧 host.enterFullscreen() 真的到了宿主。 */
+    val fullscreenCalls = mutableListOf<String>()
+    var pickImageResult: PluginResult = PluginResult.Success("ok", "/tmp/pick.png")
+
+    override fun enterFullscreen(pluginId: String) {
+        fullscreenCalls += "enter:$pluginId"
+    }
+
+    override fun exitFullscreen(pluginId: String) {
+        fullscreenCalls += "exit:$pluginId"
+    }
+
+    override suspend fun pickImage(pluginId: String): PluginResult {
+        calls += "pickImage:$pluginId"
+        return pickImageResult
+    }
 }
 
 /** 把「文件名 -> 文本」打成真正的 ZIP，验证插件包格式解析走的是真实压缩包路径。 */
