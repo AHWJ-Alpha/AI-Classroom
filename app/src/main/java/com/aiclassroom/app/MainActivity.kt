@@ -190,6 +190,7 @@ import com.aiclassroom.feature.exam.tool.custom.validateCustomTool
 import com.aiclassroom.feature.exam.tool.custom.validateCustomToolExecution
 import com.aiclassroom.feature.exam.tool.image.ImageConfig
 import com.aiclassroom.feature.exam.tool.image.ImageSink
+import com.aiclassroom.feature.exam.tool.image.ImageTools
 import com.aiclassroom.feature.exam.tool.image.registerImageTools
 import com.aiclassroom.feature.exam.tool.universal.UniversalAsync
 import com.aiclassroom.feature.exam.tool.universal.UniversalAuth
@@ -198,7 +199,21 @@ import com.aiclassroom.feature.exam.tool.universal.UniversalRequest
 import com.aiclassroom.feature.exam.tool.universal.UniversalResponse
 import com.aiclassroom.feature.exam.tool.universal.registerUniversalTools
 import com.aiclassroom.feature.fs.FileTools
+import com.aiclassroom.feature.net.NetRequestTool
 import com.aiclassroom.feature.net.registerNetTools
+import com.aiclassroom.app.plugin.AppPluginHost
+import com.aiclassroom.app.plugin.LoadedPluginInfo
+import com.aiclassroom.app.plugin.PLUGIN_LOG_TAG
+import com.aiclassroom.app.plugin.PluginImportResult
+import com.aiclassroom.app.plugin.PluginInstallTool
+import com.aiclassroom.app.plugin.PluginManager
+import com.aiclassroom.app.plugin.PrefsPluginStateStore
+import com.aiclassroom.app.plugin.importPluginArchive
+import com.aiclassroom.feature.plugin.PluginResult
+import com.aiclassroom.feature.plugin.hook.PromptHookPipeline
+import com.aiclassroom.feature.plugin.hook.PromptMeta
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -443,6 +458,123 @@ private fun AIClassroomApp() {
     // 做成 state 是为了「保存 → registry 重建 → AI 立刻能调」，不用重启 app。
     var customToolsJson by remember { mutableStateOf(store.loadCustomTools()) }
     val imageSink = remember { ImageSinkImpl(context) }
+
+    // ---- 插件运行时（:feature-plugin 接入）----
+    // 插件包落在 filesDir/plugins/<id>/，启动时扫描装载；导入 / 卸载后 pluginVersion 自增触发重组与刷新。
+    // 装载失败只打日志，绝不影响课堂与发送链路。
+    var pluginVersion by remember { mutableIntStateOf(0) }
+    val pluginStateStore = remember { PrefsPluginStateStore(context) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    // 生图 / 网络能力直接复用已有工具实现，插件侧与 AI 侧走的是同一条链路。
+    val pluginImageTools = remember { ImageTools(config = { store.loadImageConfig() }, sink = imageSink) }
+    val pluginNetTool = remember { NetRequestTool({ line -> Log.i("NetTool", line) }) }
+    val pluginHost = remember {
+        AppPluginHost(
+            stateStore = pluginStateStore,
+            // 生图：复用 generate_image 工具（ImageProvider + ImageSink），config 每次现读 prefs。
+            generateImageImpl = { prompt, width, height ->
+                when {
+                    prompt.isBlank() -> PluginResult.Failure("invalid_argument", "prompt 不能为空")
+                    !imageToolsEnabled -> PluginResult.Failure("image_disabled", "生图插件已在设置里关闭")
+                    else -> {
+                        val arguments = JSONObject().put("prompt", prompt)
+                        width?.let { arguments.put("width", it) }
+                        height?.let { arguments.put("height", it) }
+                        val outcome = withContext(Dispatchers.IO) {
+                            pluginImageTools.handlers.first { it.name == "generate_image" }.execute(arguments.toString())
+                        }
+                        when (outcome) {
+                            is ToolResult.Ok -> {
+                                val path = runCatching { JSONObject(outcome.contentJson).optString("path") }.getOrDefault("")
+                                if (path.isBlank()) {
+                                    PluginResult.Failure("image_failed", "生图没有返回落盘路径")
+                                } else {
+                                    PluginResult.Success(outcome.contentJson, path)
+                                }
+                            }
+
+                            is ToolResult.Error -> PluginResult.Failure("image_failed", outcome.message)
+                        }
+                    }
+                }
+            },
+            // TTS：复用 speakText 那条链路的 callTts（同一套密钥 / 模型 / 音色），音频落到 cacheDir 后把路径交给插件。
+            speakImpl = { text ->
+                val config = classes[classIndex.coerceIn(0, classes.lastIndex)].config
+                val clean = stripMarkdownForSpeech(text).take(1800)
+                when {
+                    clean.isBlank() -> PluginResult.Failure("invalid_argument", "text 不能为空")
+                    config.ttsApiKey.isBlank() || config.ttsModel.isBlank() ->
+                        PluginResult.Failure("tts_not_configured", "未配置语音密钥或模型，请到「设置 → 语音」配置")
+
+                    else -> {
+                        val audio = callTts(config, clean)
+                        if (audio.isEmpty()) {
+                            PluginResult.Failure("tts_failed", "TTS 接口没有返回音频")
+                        } else {
+                            val file = File(context.cacheDir, "plugin_tts_" + System.currentTimeMillis() + ".mp3")
+                            withContext(Dispatchers.IO) { FileOutputStream(file).use { it.write(audio) } }
+                            PluginResult.Success("已合成语音 " + audio.size + " 字节", file.absolutePath)
+                        }
+                    }
+                }
+            },
+            // 网络：复用 net_request，并受「网络工具」总开关约束——关闭时插件拿不到网络能力。
+            httpImpl = { url, method, body ->
+                when {
+                    !netToolsEnabled -> PluginResult.Failure("net_disabled", "网络工具总开关已关闭，插件不能发起网络请求")
+                    !url.startsWith("http://") && !url.startsWith("https://") ->
+                        PluginResult.Failure("invalid_argument", "只支持 http / https：" + url)
+
+                    else -> {
+                        val arguments = JSONObject().put("url", url).put("method", method.trim().ifBlank { "GET" }.uppercase())
+                        body?.takeIf { it.isNotBlank() }?.let { arguments.put("body", it) }
+                        when (val outcome = withContext(Dispatchers.IO) { pluginNetTool.execute(arguments.toString()) }) {
+                            is ToolResult.Ok -> PluginResult.Success(outcome.contentJson)
+                            is ToolResult.Error -> PluginResult.Failure("net_failed", outcome.message)
+                        }
+                    }
+                }
+            },
+            // 对话读取：只看当前课堂，最多 50 条，单条截断到 300 字，避免把整段历史塞给脚本。
+            readDialogImpl = { limit ->
+                val room = classes[classIndex.coerceIn(0, classes.lastIndex)]
+                val lines = room.messages.takeLast(limit.coerceIn(1, 50)).map { message ->
+                    message.role + ": " + message.text.replace("\n", " ").take(300)
+                }
+                PluginResult.Success(lines.joinToString("\n"))
+            },
+            // 对话写入：BlockingSuspend 会阻塞脚本线程，切主线程会互相等待，
+            // 所以把写入投递到主线程排队，脚本立刻拿到成功结果，重组由快照列表自己触发。
+            insertDialogImpl = { role, text ->
+                val cleanRole = if (role.trim() == "user") "user" else "assistant"
+                val cleanText = text.trim()
+                if (cleanText.isBlank()) {
+                    PluginResult.Failure("invalid_argument", "text 不能为空")
+                } else {
+                    mainHandler.post {
+                        val index = classIndex.coerceIn(0, classes.lastIndex)
+                        classes[index].messages.add(ChatMessage(cleanRole, cleanText))
+                        persist("插件写入了一条对话")
+                    }
+                    PluginResult.Success("已插入一条 " + cleanRole + " 消息")
+                }
+            },
+            uiRefreshImpl = { pluginId ->
+                Log.d(PLUGIN_LOG_TAG, "插件 " + pluginId + " 请求刷新界面")
+                mainHandler.post { pluginVersion++ }
+            },
+        )
+    }
+    val pluginManager = remember { PluginManager(context, pluginHost, pluginStateStore) }
+    val promptHookPipeline = remember { PromptHookPipeline(logger = { line -> Log.i(PLUGIN_LOG_TAG, line) }) }
+    LaunchedEffect(Unit) {
+        val loaded = withContext(Dispatchers.IO) { pluginManager.loadAll() }
+        pluginVersion++
+        Log.i(PLUGIN_LOG_TAG, "启动时装载插件 " + loaded + " 个")
+    }
+    val pluginInfos = remember(pluginVersion) { pluginManager.infos() }
+
     val toolRegistry = remember(customToolsJson) {
         ToolRegistry().apply {
             // 考试工具：直接操作当前进行中的考试；update 给到的已是新实例，换回 Compose 快照列表以便作答重绘，
@@ -479,6 +611,11 @@ private fun AIClassroomApp() {
             gateTools("fs_", { fsToolsEnabled }, "文件插件已在设置里关闭，本次没有读写任何文件；需要文件工具请到「设置 → 插件」打开开关。")
             gateTools("config_", { configToolsEnabled }, "配置插件已在设置里关闭，本次没有改动任何配置；需要配置工具请到「设置 → 插件」打开开关。")
             gateTools("generate_image", { imageToolsEnabled }, "生图插件已在设置里关闭，本次没有发起任何请求；需要生图请到「设置 → 插件 → 生图」打开开关。")
+            // 插件元工具：AI 可以在对话里现场造一个 .aip 插件（manifest + logic.js）并立刻生效。
+            register(PluginInstallTool(pluginManager) { info ->
+                mainHandler.post { pluginVersion++ }
+                Log.i(PLUGIN_LOG_TAG, "AI 安装了插件 " + info.id + "（" + info.name + "）")
+            })
             // 用户自定义插件放在闸门之后注册：spec 现读 state（保存后 json 变 → registry 重建），
             // 每个 spec 生成一个 ToolHandler，工具参数名就是 bodyTemplate 里的占位符。
             registerCustomTools(this, { CustomToolSpec.listFromJson(customToolsJson) }, imageSink)
@@ -703,15 +840,46 @@ private fun AIClassroomApp() {
             room.messages.add(ChatMessage("assistant", ""))
             var streamed = ""
             val chatSystemPrompt = systemPrompt(room) + "\n" + EXAM_TOOL_PROMPT + "\n" + EXAM_TOOL_PROMPT_V2
+            // 插件 prompt 钩子：真正发请求之前串行改写 system prompt。
+            // 整段 runCatching 兜住——插件报错 / 超时 / 列表为空都退回原 prompt，绝不阻塞发送。
+            // 钩子在 IO 线程执行（宿主能力的阻塞桥不能在主线程等）。
+            val sendSystemPrompt = withContext(Dispatchers.IO) {
+                runCatching {
+                    val plugins = pluginManager.snapshot()
+                    if (plugins.isEmpty()) {
+                        chatSystemPrompt
+                    } else {
+                        val hooked = promptHookPipeline.apply(
+                            plugins,
+                            chatSystemPrompt,
+                            PromptMeta(System.currentTimeMillis(), roomIndex, text),
+                        )
+                        hooked.skipped.forEach { skipped ->
+                            Log.w(PLUGIN_LOG_TAG, "跳过 " + skipped.pluginId + " 的 prompt 钩子：" + skipped.reason)
+                        }
+                        if (hooked.appliedPluginIds.isNotEmpty()) {
+                            Log.i(
+                                PLUGIN_LOG_TAG,
+                                "prompt 钩子生效 " + hooked.appliedPluginIds.joinToString(",") +
+                                    " 尾段=" + hooked.prompt.takeLast(200),
+                            )
+                        }
+                        hooked.prompt
+                    }
+                }.getOrElse { error ->
+                    Log.w(PLUGIN_LOG_TAG, "prompt 钩子失败，改用原 prompt 发送", error)
+                    chatSystemPrompt
+                }
+            }
             val onDelta: (String) -> Unit = { delta ->
                 streamed += delta
                 room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(stripExamBlock(streamed), room.config.efficientMode))
             }
             // toolsJson 为空时走的仍是原来那条纯聊天通路，请求体与响应解析一字不改。
             val result = if (requestToolsJson == null) {
-                callChatStreamWithFallback(room.config, activeModelChain, chatSystemPrompt, promptMessagesForRoom(room, room.messages.dropLast(1).toList()), onDelta = onDelta)
+                callChatStreamWithFallback(room.config, activeModelChain, sendSystemPrompt, promptMessagesForRoom(room, room.messages.dropLast(1).toList()), onDelta = onDelta)
             } else {
-                runToolLoop(room, chatSystemPrompt, requestToolsJson, onDelta)
+                runToolLoop(room, sendSystemPrompt, requestToolsJson, onDelta)
             }
             // 文本格式的【考试】块只作兜底：本轮工具已经建好考试时不再采用，
             // 否则会把工具写入的参考解析（referenceAnswer）覆盖掉。
@@ -772,6 +940,79 @@ private fun AIClassroomApp() {
 
     val imageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { sendImageMessage(it) }
+    }
+
+    // 插件导入（设置页「⊕ 导入插件文件」）：SAF 选文件 → 读字节 → 解析校验 → 落盘注册。
+    // 同 id 插件已存在时先问「覆盖 / 取消」；非法包只提示原因，不写盘、不影响启动。
+    var pendingPluginConflict by remember { mutableStateOf<PluginImportResult.Conflict?>(null) }
+    var pluginImportError by remember { mutableStateOf<String?>(null) }
+    fun applyPluginImport(result: PluginImportResult) {
+        when (result) {
+            is PluginImportResult.Installed -> {
+                pluginVersion++
+                saveNotice = "插件「" + result.info.name + "」" + (if (result.replaced) "已覆盖生效" else "已导入并生效")
+                Log.i(PLUGIN_LOG_TAG, "导入插件 " + result.info.id + " v" + result.info.version)
+            }
+
+            is PluginImportResult.Conflict -> pendingPluginConflict = result
+
+            is PluginImportResult.Failed -> {
+                saveNotice = "插件导入失败"
+                pluginImportError = result.message
+                Log.w(PLUGIN_LOG_TAG, "插件导入失败：" + result.message)
+            }
+        }
+    }
+    val pluginImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                saveNotice = "正在导入插件…"
+                val result = withContext(Dispatchers.IO) {
+                    val bytes = runCatching {
+                        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    }.getOrNull()
+                    if (bytes == null || bytes.isEmpty()) {
+                        PluginImportResult.Failed("读取插件文件失败")
+                    } else {
+                        importPluginArchive(pluginManager, bytes, displayNameOf(context, uri), replace = false)
+                    }
+                }
+                applyPluginImport(result)
+            }
+        }
+    }
+    pendingPluginConflict?.let { conflict ->
+        AlertDialog(
+            onDismissRequest = { pendingPluginConflict = null },
+            title = { Text("已存在同 id 插件") },
+            text = { Text("插件「" + conflict.name + "」（" + conflict.pluginId + "）已经装好了。要用选中的文件覆盖它吗？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val pending = conflict
+                    pendingPluginConflict = null
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            importPluginArchive(pluginManager, pending.bytes, pending.sourceName, replace = true)
+                        }
+                        applyPluginImport(result)
+                    }
+                }) { Text("覆盖") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingPluginConflict = null
+                    saveNotice = "已取消导入插件"
+                }) { Text("取消") }
+            }
+        )
+    }
+    pluginImportError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { pluginImportError = null },
+            title = { Text("插件导入失败") },
+            text = { Text(message + "\n\n插件没有被装载，其它功能不受影响。") },
+            confirmButton = { TextButton(onClick = { pluginImportError = null }) { Text("知道了") } }
+        )
     }
 
     fun sendBranchMessage(branchIndex: Int) {
@@ -1117,6 +1358,15 @@ private fun AIClassroomApp() {
                         },
                         existingToolNames = { toolRegistry.all().map { it.name } },
                         imageSink = imageSink,
+                        pluginInfos = pluginInfos,
+                        onImportPlugin = { pluginImportLauncher.launch(arrayOf("*/*")) },
+                        onUninstallPlugin = { pluginId ->
+                            scope.launch {
+                                val removed = withContext(Dispatchers.IO) { pluginManager.uninstall(pluginId) }
+                                pluginVersion++
+                                saveNotice = if (removed) "插件已卸载" else "插件未装载"
+                            }
+                        },
                         onOpenManual = { showManualDialog = true },
                         onFetchModels = {
                             scope.launch {
@@ -3044,6 +3294,9 @@ private fun ModelScreen(
     onCustomToolsJson: (String) -> Unit,
     existingToolNames: () -> List<String>,
     imageSink: ImageSink,
+    pluginInfos: List<LoadedPluginInfo>,
+    onImportPlugin: () -> Unit,
+    onUninstallPlugin: (String) -> Unit,
     onOpenManual: () -> Unit,
     onFetchModels: () -> Unit
 ) {
@@ -3465,6 +3718,27 @@ private fun ModelScreen(
                     imageSink = imageSink,
                     onSpecsChange = { onCustomToolsJson(CustomToolSpec.encodeList(it)) }
                 )
+                Spacer(Modifier.height(DesignTokens.Spacing.Md))
+                Text("插件包（.aip） · " + pluginInfos.size + " 个已装载", fontWeight = FontWeight.Bold)
+                Text(
+                    "插件包里是 manifest.json（权限与扩展点）加 logic.js（脚本）。导入后按 manifest 声明的能力工作；" +
+                        "本版本接入了 prompt 钩子（发送前改写提示词），界面类扩展点暂不渲染。",
+                    color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
+                )
+                pluginInfos.forEach { info ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(info.name + " · v" + info.version, fontWeight = FontWeight.Bold)
+                            Text(info.summary, color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp)
+                        }
+                        TextButton(onClick = { onUninstallPlugin(info.id) }) {
+                            Text("卸载", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+                TextButton(onClick = onImportPlugin) {
+                    Text("⊕ 导入插件文件（.aip）", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                }
             }
         }
         item {
@@ -4717,6 +4991,15 @@ private fun stripMarkdownForSpeech(text: String): String = sanitizeMathText(text
     .replace(Regex("[#>*_`\\[\\]()]"), " ")
     .replace(Regex("\\s+"), " ")
     .trim()
+
+/** SAF 选中的文件展示名：优先 DISPLAY_NAME，读不到再退回路径最后一段。 */
+private fun displayNameOf(context: Context, uri: Uri): String = runCatching {
+    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else null
+    }
+}.getOrNull()?.takeIf { it.isNotBlank() }
+    ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+    ?: "plugin.aip"
 
 private fun isApiFailure(result: String): Boolean {
     val text = result.lowercase()

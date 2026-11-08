@@ -1,0 +1,87 @@
+package com.aiclassroom.feature.plugin
+
+import java.io.ByteArrayOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+
+/** 内存版 PluginStateStore，能看到宿主实际写进去的 JSON。 */
+class InMemoryStateStore : PluginStateStore {
+    private val data = LinkedHashMap<String, String>()
+
+    override fun read(pluginId: String): String? = data[pluginId]
+
+    override fun write(pluginId: String, json: String) {
+        data[pluginId] = json
+    }
+
+    fun snapshot(pluginId: String): String? = data[pluginId]
+}
+
+/** 假的宿主实现：记录调用参数，返回可预期的结果，不真的联网 / 生图 / 发音。 */
+class RecordingHostApi : PluginHostApi {
+    val calls = mutableListOf<String>()
+    val pluginStorage = LinkedHashMap<String, String>()
+    var refreshCount = 0
+
+    var imageResult: PluginResult = PluginResult.Success("ok", "/tmp/image.png")
+    var speakResult: PluginResult = PluginResult.Success("ok", "/tmp/voice.mp3")
+    var httpResult: PluginResult = PluginResult.Success("{}")
+    var dialogReadResult: PluginResult = PluginResult.Success("[]")
+    var insertResult: PluginResult = PluginResult.Success("ok")
+
+    override suspend fun generateImage(prompt: String, width: Int?, height: Int?): PluginResult {
+        calls += "generateImage:$prompt:$width:$height"
+        return imageResult
+    }
+
+    override suspend fun speak(text: String): PluginResult {
+        calls += "speak:$text"
+        return speakResult
+    }
+
+    override suspend fun httpRequest(url: String, method: String, body: String?): PluginResult {
+        calls += "httpRequest:$method:$url:$body"
+        return httpResult
+    }
+
+    override suspend fun readDialog(limit: Int): PluginResult {
+        calls += "readDialog:$limit"
+        return dialogReadResult
+    }
+
+    override suspend fun insertDialog(role: String, text: String): PluginResult {
+        calls += "insertDialog:$role:$text"
+        return insertResult
+    }
+
+    override fun storageGet(pluginId: String, key: String): String? = pluginStorage["$pluginId/$key"]
+
+    override fun storagePut(pluginId: String, key: String, value: String) {
+        pluginStorage["$pluginId/$key"] = value
+    }
+
+    override fun requestUiRefresh(pluginId: String) {
+        refreshCount++
+        calls += "requestUiRefresh:$pluginId"
+    }
+}
+
+/** 把「文件名 -> 文本」打成真正的 ZIP，验证插件包格式解析走的是真实压缩包路径。 */
+fun zipOf(entries: Map<String, String>): ByteArray {
+    val out = ByteArrayOutputStream()
+    ZipOutputStream(out).use { zip ->
+        for ((path, content) in entries) {
+            zip.putNextEntry(ZipEntry(path))
+            zip.write(content.toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+        }
+    }
+    return out.toByteArray()
+}
+
+fun readTestResource(path: String): String =
+    checkNotNull(TestSupportMarker::class.java.classLoader?.getResourceAsStream(path)) {
+        "找不到测试资源：$path"
+    }.use { it.readBytes().toString(Charsets.UTF_8) }
+
+private object TestSupportMarker

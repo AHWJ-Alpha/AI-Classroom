@@ -1,0 +1,12 @@
+{
+  "id": "time_flow",
+  "name": "时间流动",
+  "version": "1.0.0",
+  "description": "每次发送前把宿主时间推进 30 分钟，并把「当前时间」补进提示词",
+  "author": "AI Classroom",
+  "minApiVersion": 1,
+  "permissions": ["storage"],
+  "extensions": [
+    { "type": "prompt_hook", "stage": "before_send", "config": "logic.js", "entry": "onBeforePrompt" }
+  ]
+}
