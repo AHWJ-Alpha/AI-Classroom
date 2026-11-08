@@ -16,3 +16,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "AI Classroom"
 include(":app")
+include(":feature-exam")
+include(":feature-tools-fs")
+include(":feature-tools-net")

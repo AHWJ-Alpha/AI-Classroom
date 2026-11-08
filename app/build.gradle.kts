@@ -12,8 +12,8 @@ android {
         applicationId = "com.aiclassroom.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 38
-        versionName = "3.3.5"
+        versionCode = 40
+        versionName = "3.5.0"
     }
 
     // 签名：debug 与 release 共用同一把 developer 钥匙。
@@ -115,10 +115,16 @@ android {
 
     buildFeatures {
         compose = true
+        // 开启后 BuildConfig.VERSION_NAME 由 versionName 自动生成，
+        // 避免再出现「APP_VERSION 常量忘了跟着版本号改」导致误报更新。
+        buildConfig = true
     }
 }
 
 dependencies {
+    implementation(project(":feature-exam"))
+    implementation(project(":feature-tools-fs"))
+    implementation(project(":feature-tools-net"))
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")

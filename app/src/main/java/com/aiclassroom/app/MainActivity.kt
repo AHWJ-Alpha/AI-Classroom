@@ -34,6 +34,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -55,6 +56,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountTree
@@ -78,6 +80,8 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Quiz
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -112,6 +116,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -163,6 +168,21 @@ import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.Dispatchers
+import com.aiclassroom.feature.exam.EXAM_TOOL_PROMPT
+import com.aiclassroom.feature.exam.EXAM_TOOL_PROMPT_V2
+import com.aiclassroom.feature.exam.ExamQuestion
+import com.aiclassroom.feature.exam.ExamSession
+import com.aiclassroom.feature.exam.detectExamSession
+import com.aiclassroom.feature.exam.isExamRequest
+import com.aiclassroom.feature.exam.packExamAnswers
+import com.aiclassroom.feature.exam.stripExamBlock
+import com.aiclassroom.feature.exam.tool.ToolHandler
+import com.aiclassroom.feature.exam.tool.ToolRegistry
+import com.aiclassroom.feature.exam.tool.ToolResult
+import com.aiclassroom.feature.exam.tool.exam.registerExamTools
+import com.aiclassroom.feature.fs.FileTools
+import com.aiclassroom.feature.net.registerNetTools
+import android.util.Log
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -204,7 +224,18 @@ private enum class Tab(val title: String, val icon: ImageVector) {
 /** 底栏悬浮面板总高（含导航 inset）：固定底元素据此抬升，滚动内容透到面板之下。 */
 private val LocalBottomBarLift = compositionLocalOf { 0.dp }
 
-private data class ChatMessage(val role: String, val text: String)
+/**
+ * 一条对话消息。
+ * [toolCallsJson] / [toolCallId] 只服务于 function calling 的临时消息列表：
+ * 默认 null，旧存档（只写 role/text）读回来就是这两个默认值，
+ * 序列化端也不写这两个字段，因此纯聊天链路的数据格式完全不变。
+ */
+private data class ChatMessage(
+    val role: String,
+    val text: String,
+    val toolCallsJson: String? = null,
+    val toolCallId: String? = null
+)
 private data class BranchClass(val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String, val context: MutableList<ChatMessage> = mutableStateListOf())
 private data class KnowledgeFile(
     val name: String,
@@ -229,8 +260,6 @@ private data class MemoryCard(
     val evidence: String = ""
 )
 private data class LearningMemoryPack(val corePremises: List<String>, val cards: List<MemoryCard>)
-private data class ExamQuestion(val premise: String, val question: String, val answer: String = "", val unknown: Boolean = false)
-private data class ExamSession(val title: String, val questions: MutableList<ExamQuestion>, val draft: String = "", val submitted: Boolean = false)
 private data class UpdateInfo(val version: String, val name: String, val url: String, val notes: String)
 private data class DrawStroke(val points: List<Offset>)
 private data class ThemePreset(val mode: String, val title: String, val subtitle: String, val primary: Long, val secondary: Long)
@@ -345,6 +374,24 @@ private fun AIClassroomApp() {
     val hazeState = SharedHazeState
     val memoryJobs = remember { java.util.IdentityHashMap<Classroom, Job>() }
     val memoryWatermarks = remember { java.util.IdentityHashMap<Classroom, Int>() }
+    // function calling 工具注册表：考试 / 文件 / 网络三条线共用同一个实例，
+    // 按注册顺序生成请求里的 tools 数组。
+    var netToolsEnabled by remember { mutableStateOf(true) }
+    val toolRegistry = remember {
+        ToolRegistry().apply {
+            // 考试工具：直接操作当前进行中的考试；update 给到的已是新实例，换回 Compose 快照列表以便作答重绘。
+            registerExamTools(this, current = { examSession }, update = { examSession = it.withComposeState() })
+            // 文件工具：边界＝应用私有目录（用户已确认）。外部目录暂未开放。
+            runCatching { FileTools.registerFileTools(this, listOf(context.filesDir.absolutePath)) }
+            // 网络工具：用户已授权任意 host:port；保留总开关与脱敏日志两道护栏。
+            registerNetTools(this, enabled = { netToolsEnabled }, logger = { line -> Log.i("NetTool", line) })
+        }
+    }
+    // 注册表非空即外发 tools；若将来把工具全部关闭，这里自然返回 null，请求体回到纯聊天形态。
+    val requestToolsJson = remember(toolRegistry) {
+        if (toolRegistry.all().isEmpty()) null else toolsJsonOf(toolRegistry)
+    }
+
     if (classIndex > classes.lastIndex) classIndex = classes.lastIndex.coerceAtLeast(0)
     val current = classes[classIndex]
     val activeModel = current.config.chatModels().firstOrNull().orEmpty()
@@ -516,6 +563,44 @@ private fun AIClassroomApp() {
         }
     }
 
+    /**
+     * 工具执行循环（function calling 骨架）：
+     * 模型返回 tool_calls 时逐个 ToolRegistry.dispatch，把结果以 role=tool + tool_call_id
+     * 追加到本轮临时消息列表后重发一次；终止条件二选一：本轮没有 tool_calls，
+     * 或已经发满 [TOOL_LOOP_MAX_ROUNDS] 次请求（最多 5 次，含首次），避免无限调用。
+     * 返回最后一轮模型的普通文本回复；工具消息只活在临时列表里，不写回 room.messages。
+     */
+    suspend fun runToolLoop(room: Classroom, system: String, toolsJson: String, onDelta: (String) -> Unit): String {
+        val messages = promptMessagesForRoom(room, room.messages.dropLast(1).toList()).toMutableList()
+        var requestRound = 0
+        while (true) {
+            val sink = ToolCallSink()
+            val reply = callChatStreamWithFallback(room.config, activeModelChain, system, messages, toolsJson, sink, onDelta)
+            val callsJson = sink.resultJson()
+            val calls = parseToolCalls(callsJson)
+            val lastRound = requestRound >= TOOL_LOOP_MAX_ROUNDS - 1
+            Log.d(TOOL_LOG_TAG, "round=$requestRound reply=${reply.take(120)} tool_calls=${callsJson.orEmpty()}")
+            if (calls.isEmpty() || lastRound || isApiFailure(reply)) {
+                if (calls.isNotEmpty() && lastRound) Log.w(TOOL_LOG_TAG, "工具循环达到 $TOOL_LOOP_MAX_ROUNDS 次请求上限，丢弃本轮 tool_calls")
+                return reply
+            }
+            // 只调用工具的回复内容为空，历史里按 OpenAI 规范写成空 content，不把占位提示发给模型。
+            messages += ChatMessage("assistant", if (reply == NO_CONTENT_REPLY) "" else reply, toolCallsJson = callsJson)
+            calls.forEach { call ->
+                // 文件与网络工具都是阻塞 IO（HttpURLConnection 无异步 API），必须切到 IO 线程；
+                // 否则一次网络工具超时就会把主线程卡住，直接 ANR。
+                val outcome = withContext(Dispatchers.IO) { toolRegistry.dispatch(call.name, call.argumentsJson) }
+                val output = when (outcome) {
+                    is ToolResult.Ok -> outcome.contentJson
+                    is ToolResult.Error -> "{\"error\":\"" + outcome.message.escapeJson() + "\"}"
+                }
+                Log.d(TOOL_LOG_TAG, "dispatch ${call.name}(${call.argumentsJson}) -> ${output.take(300)}")
+                messages += ChatMessage("tool", output, toolCallId = call.id)
+            }
+            requestRound++
+        }
+    }
+
     fun sendMessage(seed: String? = null, allowExamTrigger: Boolean = true) {
         val text = (seed ?: input).trim()
         if (text.isBlank() || isLoading) return
@@ -530,14 +615,21 @@ private fun AIClassroomApp() {
             val assistantIndex = room.messages.size
             room.messages.add(ChatMessage("assistant", ""))
             var streamed = ""
-            val result = callChatStreamWithFallback(room.config, activeModelChain, systemPrompt(room) + "\n" + EXAM_TOOL_PROMPT + "\n" + EXAM_TOOL_PROMPT_V2, promptMessagesForRoom(room, room.messages.dropLast(1).toList())) { delta ->
+            val chatSystemPrompt = systemPrompt(room) + "\n" + EXAM_TOOL_PROMPT + "\n" + EXAM_TOOL_PROMPT_V2
+            val onDelta: (String) -> Unit = { delta ->
                 streamed += delta
                 room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(stripExamBlock(streamed), room.config.efficientMode))
+            }
+            // toolsJson 为空时走的仍是原来那条纯聊天通路，请求体与响应解析一字不改。
+            val result = if (requestToolsJson == null) {
+                callChatStreamWithFallback(room.config, activeModelChain, chatSystemPrompt, promptMessagesForRoom(room, room.messages.dropLast(1).toList()), onDelta = onDelta)
+            } else {
+                runToolLoop(room, chatSystemPrompt, requestToolsJson, onDelta)
             }
             val detectedExam = if (allowExamTrigger) detectExamSession(result, userRequestedExam = isExamRequest(text)) else null
             val visibleResult = stripExamBlock(result).ifBlank { if (detectedExam != null) "已为你准备好本次测试。" else result }
             room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(visibleResult, room.config.efficientMode))
-            detectedExam?.let { examSession = it }
+            detectedExam?.let { examSession = it.withComposeState() }
             isLoading = false
             persist("回复已保存，记忆将在后台整理")
             if (room.config.ttsAutoRead && visibleResult.isNotBlank()) speakText(context, room.config, visibleResult)
@@ -553,6 +645,7 @@ private fun AIClassroomApp() {
             }
         }
     }
+
 
     fun sendImageMessage(uri: Uri) {
         if (isLoading) return
@@ -900,8 +993,9 @@ private fun AIClassroomApp() {
                     )
                 }
                 examSession?.let { session ->
-                    ExamOverlay(session, current.messages, current.branches, onUpdate = { examSession = it }, onClose = { examSession = null; persist("已退出考试模式") }, onSubmit = { packed ->
+                    ExamOverlay(session, current.messages, current.branches, palette, immersive = immersiveMode, onImmersiveChange = { immersiveMode = it }, onUpdate = { examSession = it }, onClose = { examSession = null; immersiveMode = false; persist("已退出考试模式") }, onSubmit = { packed ->
                         examSession = null
+                        immersiveMode = false
                         sendMessage(packed, allowExamTrigger = false)
                     }, onUnknown = { questionIndex, question ->
                         val branchText = "考试不会题：\n前提：${question.premise}\n问题：${question.question}\n请讲解这道题的思路。"
@@ -1828,8 +1922,10 @@ private fun ReleaseNotesDialog(palette: AppPalette, onClose: () -> Unit) {
         onDismissRequest = onClose,
         title = { Text("New!", fontWeight = FontWeight.Bold) },
         text = {
-            LazyColumn(Modifier.height(360.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                item { MarkdownText(RELEASE_NOTES_TEXT, color = palette.ink) }
+            // 整份说明是一个不可分割的 Markdown 块，用 LazyColumn 的单 item 会被直接裁掉；
+            // 改为可滚动的 Column，长文案才能滑动查看。
+            Column(Modifier.height(360.dp).verticalScroll(rememberScrollState())) {
+                MarkdownText(RELEASE_NOTES_TEXT, color = palette.ink)
             }
         },
         confirmButton = { AppPrimaryButton(onClick = onClose) { Text("知道了") } }
@@ -1842,10 +1938,16 @@ private fun UpdateDialog(info: UpdateInfo, onClose: () -> Unit) {
         onDismissRequest = onClose,
         title = { Text("发现新版本", fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 同样需要可滚动：更新说明一长就超出弹窗高度。
+            Column(
+                Modifier
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Text(info.name.ifBlank { info.version }, fontWeight = FontWeight.Bold)
                 Text("GitHub Release 已发布更新，可前往仓库下载新版 APK。", color = Muted)
-                if (info.notes.isNotBlank()) MarkdownText(info.notes.take(320))
+                if (info.notes.isNotBlank()) MarkdownText(info.notes)
                 Text(info.url, color = MaterialTheme.colorScheme.primary, fontSize = DesignTokens.Type.Small)
             }
         },
@@ -1859,8 +1961,8 @@ private fun UserManualDialog(palette: AppPalette, onClose: () -> Unit) {
         onDismissRequest = onClose,
         title = { Text("使用手册", fontWeight = FontWeight.Bold) },
         text = {
-            LazyColumn(Modifier.height(460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                item { MarkdownText(USER_MANUAL_TEXT, color = palette.ink) }
+            Column(Modifier.height(460.dp).verticalScroll(rememberScrollState())) {
+                MarkdownText(USER_MANUAL_TEXT, color = palette.ink)
             }
         },
         confirmButton = { AppPrimaryButton(onClick = onClose) { Text("关闭") } }
@@ -1872,6 +1974,9 @@ private fun ExamOverlay(
     session: ExamSession,
     messages: List<ChatMessage>,
     branches: List<BranchClass>,
+    palette: AppPalette,
+    immersive: Boolean,
+    onImmersiveChange: (Boolean) -> Unit,
     onUpdate: (ExamSession) -> Unit,
     onClose: () -> Unit,
     onSubmit: (String) -> Unit,
@@ -1881,19 +1986,125 @@ private fun ExamOverlay(
     var sidePanel by remember { mutableStateOf<String?>(null) }
     var draftMode by remember { mutableStateOf("text") }
     val strokes = remember { mutableStateListOf<DrawStroke>() }
+    // 横屏两栏占比：题目栏权重可拖动，范围 30%～80%（草稿纸因此恒有 20%～70%），不会再被拖没。
+    var listFraction by remember { mutableFloatStateOf(0.58f) }
+    // 草稿纸全屏：进入前记住当时的占比，双击退出时按原值还原。
+    var panelFullscreen by remember { mutableStateOf(false) }
+    var fractionBeforeFullscreen by remember { mutableFloatStateOf(0.58f) }
     LaunchedEffect(isLandscape) {
-        if (!isLandscape) sidePanel = null
+        if (!isLandscape) {
+            sidePanel = null
+            panelFullscreen = false
+            onImmersiveChange(false)
+        }
     }
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        if (isLandscape) {
-            Row(Modifier.fillMaxSize().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ExamQuestionList(session, Modifier.weight(if (sidePanel == null) 1f else 0.58f).fillMaxHeight(), true, sidePanel, onSidePanel = { sidePanel = if (sidePanel == it) null else it }, onClose, onSubmit, onUpdate, onUnknown)
-                sidePanel?.let { panel ->
-                    ExamSidePanel(panel, session, messages, branches, draftMode, onDraftMode = { draftMode = it }, strokes, onUpdate = onUpdate, modifier = Modifier.weight(0.42f).fillMaxHeight())
+    Surface(Modifier.fillMaxSize(), color = palette.page) {
+        Box(Modifier.fillMaxSize()) {
+            val openPanel = sidePanel
+            if (isLandscape && openPanel != null) {
+                BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = DesignTokens.Spacing.Lg, vertical = DesignTokens.Spacing.Md)) {
+                    val rowWidthPx = with(LocalDensity.current) { maxWidth.toPx() }.coerceAtLeast(1f)
+                    Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Md)) {
+                        if (!panelFullscreen) {
+                            ExamQuestionList(session, Modifier.weight(listFraction.coerceIn(0.30f, 0.80f)).fillMaxHeight(), palette, true, immersive, openPanel, panelFullscreen = false, onTogglePanelFullscreen = {}, onSidePanel = { sidePanel = if (sidePanel == it) null else it }, onClose, onSubmit, onUpdate, onUnknown)
+                        }
+                        // 分界线：12dp 命中区 + 1dp 细线 + 三个抓握点；只有这一小块拦截触摸，不影响两栏滚动。
+                        Box(
+                            Modifier
+                                .width(DesignTokens.Spacing.Lg)
+                                .fillMaxHeight()
+                                .pointerInput(rowWidthPx, panelFullscreen, fractionBeforeFullscreen) {
+                                    detectDragGestures(
+                                        onDragStart = {
+                                            if (panelFullscreen) {
+                                                panelFullscreen = false
+                                                listFraction = fractionBeforeFullscreen
+                                            }
+                                        }
+                                    ) { change, drag ->
+                                        change.consume()
+                                        listFraction = (listFraction + drag.x / rowWidthPx).coerceIn(0.30f, 0.80f)
+                                    }
+                                }
+                                .pointerInput(Unit) {
+                                    detectTapGestures(onDoubleTap = {
+                                        if (panelFullscreen) {
+                                            panelFullscreen = false
+                                            listFraction = fractionBeforeFullscreen
+                                        } else {
+                                            fractionBeforeFullscreen = listFraction
+                                            panelFullscreen = true
+                                        }
+                                    })
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                Modifier
+                                    .width(DesignTokens.Border.Hairline)
+                                    .fillMaxHeight(0.72f)
+                                    .background(palette.outline, RoundedCornerShape(DesignTokens.Radius.Pill))
+                            )
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Xs),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                repeat(3) {
+                                    Box(
+                                        Modifier
+                                            .size(DesignTokens.Spacing.Xs)
+                                            .background(palette.muted.copy(alpha = 0.55f), RoundedCornerShape(DesignTokens.Radius.Pill))
+                                    )
+                                }
+                            }
+                        }
+                        ExamSidePanel(openPanel, session, messages, branches, draftMode, palette, panelFullscreen = panelFullscreen, onTogglePanelFullscreen = {
+                            if (panelFullscreen) {
+                                panelFullscreen = false
+                                listFraction = fractionBeforeFullscreen
+                            } else {
+                                fractionBeforeFullscreen = listFraction
+                                panelFullscreen = true
+                            }
+                        }, onDraftMode = { draftMode = it }, strokes, onUpdate = onUpdate, modifier = Modifier.weight(if (panelFullscreen) 1f else (1f - listFraction).coerceIn(0.20f, 0.70f)).fillMaxHeight().padding(bottom = LocalBottomBarLift.current))
+                    }
+                }
+            } else if (isLandscape) {
+                ExamQuestionList(session, Modifier.fillMaxSize().padding(horizontal = DesignTokens.Spacing.Lg, vertical = DesignTokens.Spacing.Md), palette, true, immersive, null, panelFullscreen = false, onTogglePanelFullscreen = {}, onSidePanel = { sidePanel = if (sidePanel == it) null else it }, onClose, onSubmit, onUpdate, onUnknown)
+            } else {
+                ExamQuestionList(session, Modifier.fillMaxSize().padding(DesignTokens.Spacing.Lg), palette, false, false, null, panelFullscreen = false, onTogglePanelFullscreen = {}, onSidePanel = {}, onClose, onSubmit, onUpdate, onUnknown)
+            }
+            // 横屏沉浸开关：贴右下角的小悬浮键。沉浸时顶栏/底栏/提交条都收起，它必须留着自己以便退出。
+            if (isLandscape) {
+                val toggleBottom = if (immersive) {
+                    DesignTokens.Spacing.Lg
+                } else {
+                    DesignTokens.Size.ButtonHeightLarge + DesignTokens.Spacing.Xxl
+                }
+                // 恒定贴右下角：侧栏展开时右下角是草稿纸的空白绘图区，既不压题目文字，
+                // 也不压草稿纸输入框（它在左上方），更不压分界线（那是拖动热区）。
+                Surface(
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(start = DesignTokens.Spacing.Lg, end = DesignTokens.Spacing.Lg, bottom = toggleBottom + LocalBottomBarLift.current)
+                        .size(DesignTokens.Size.IconButton),
+                    shape = RoundedCornerShape(DesignTokens.Radius.Pill),
+                    color = palette.surface.copy(alpha = 0.72f),
+                    border = BorderStroke(DesignTokens.Border.Hairline, palette.outline.copy(alpha = 0.7f))
+                ) {
+                    Box(
+                        Modifier.fillMaxSize().clickable { onImmersiveChange(!immersive) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            if (immersive) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            contentDescription = if (immersive) "退出沉浸模式" else "进入沉浸模式",
+                            tint = if (immersive) palette.primary else palette.muted,
+                            modifier = Modifier.size(DesignTokens.Size.IconSm)
+                        )
+                    }
                 }
             }
-        } else {
-            ExamQuestionList(session, Modifier.fillMaxSize().padding(12.dp), false, null, onSidePanel = {}, onClose, onSubmit, onUpdate, onUnknown)
         }
     }
 }
@@ -1902,57 +2113,188 @@ private fun ExamOverlay(
 private fun ExamQuestionList(
     session: ExamSession,
     modifier: Modifier,
+    palette: AppPalette,
     isLandscape: Boolean,
+    immersive: Boolean,
     sidePanel: String?,
+    panelFullscreen: Boolean,
+    onTogglePanelFullscreen: () -> Unit,
     onSidePanel: (String) -> Unit,
     onClose: () -> Unit,
     onSubmit: (String) -> Unit,
     onUpdate: (ExamSession) -> Unit,
     onUnknown: (Int, ExamQuestion) -> Unit
 ) {
-    LazyColumn(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item {
-            InfoCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Quiz, null, tint = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.width(8.dp))
-                    Text(session.title, fontWeight = FontWeight.Bold, fontSize = DesignTokens.Type.Headline, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    TextButton(onClick = onClose) { Text("退出") }
-                }
-                if (isLandscape) {
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { onSidePanel("draft") }) { Text(if (sidePanel == "draft") "关闭草稿纸" else "打开草稿纸") }
-                        OutlinedButton(onClick = { onSidePanel("overview") }) { Text(if (sidePanel == "overview") "关闭总览" else "打开总览") }
+    val total = session.questions.size
+    val answered = session.questions.count { it.unknown || it.answer.isNotBlank() }
+    val answeredFraction = if (total == 0) 0f else answered.toFloat() / total.toFloat()
+    // 横屏高度吃紧：卡片纵向内边距从 13dp 收到 8dp，两张卡就能省出约 55px 给题卡正文。
+    val examCardPadding = PaddingValues(
+        horizontal = DesignTokens.Spacing.CardHorizontal,
+        vertical = if (isLandscape) DesignTokens.Spacing.Md else DesignTokens.Spacing.CardVertical
+    )
+    @Composable
+    fun ExamCard(content: @Composable ColumnScope.() -> Unit) {
+        Surface(
+            Modifier.fillMaxWidth(),
+            shape = AppShapes.card,
+            color = palette.surface,
+            contentColor = palette.ink,
+            border = BorderStroke(DesignTokens.Border.Hairline, palette.outline)
+        ) {
+            Column(Modifier.padding(examCardPadding), content = content)
+        }
+    }
+    // 列表与提交条改为纵向占位布局：按钮作为正常子项占住自己的高度，
+    // 不再叠在列表之上，题目文字因此永远不会被按钮遮住。
+    Column(modifier) {
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(bottom = if (isLandscape) 0.dp else DesignTokens.Spacing.Md),
+            verticalArrangement = Arrangement.spacedBy(if (isLandscape) DesignTokens.Spacing.Xs else DesignTokens.Spacing.Lg)
+        ) {
+            item {
+                InfoCard {
+                    // 横屏可用高度只有约 392dp，草稿纸/总览入口并到标题行；栏宽被拖窄时自动换成第二行，避免标题被挤成竖排。
+                    BoxWithConstraints {
+                        val narrowHeader = maxWidth < 430.dp
+                        val panelButtonPadding = PaddingValues(horizontal = DesignTokens.Spacing.Md, vertical = DesignTokens.Spacing.Xs)
+                        Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Quiz, null, tint = palette.primary, modifier = Modifier.size(DesignTokens.Size.Icon))
+                            Spacer(Modifier.width(DesignTokens.Spacing.Md))
+                            if (isLandscape) {
+                                // 横屏高度只有约 392dp：标题与进度并成一行、且不再画进度条，把省下的高度全给题目卡。
+                                Text(session.title, fontWeight = DesignTokens.Weight.Bold, fontSize = DesignTokens.Type.Subtitle, color = palette.ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                Spacer(Modifier.width(DesignTokens.Spacing.Sm))
+                                Text("已答 $answered 题 / 共 $total 题", fontSize = DesignTokens.Type.Small, color = palette.muted, maxLines = 1)
+                                Spacer(Modifier.width(DesignTokens.Spacing.Sm))
+                            } else {
+                                Column(Modifier.weight(1f)) {
+                                    Text(session.title, fontWeight = DesignTokens.Weight.Bold, fontSize = DesignTokens.Type.Headline, color = palette.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Spacer(Modifier.height(DesignTokens.Spacing.Xxs))
+                                    Text("已答 $answered 题 / 共 $total 题", fontSize = DesignTokens.Type.Small, color = palette.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                            if (isLandscape && !narrowHeader) {
+                                OutlinedButton(onClick = { onSidePanel("draft") }, contentPadding = panelButtonPadding) {
+                                    Text(if (sidePanel == "draft") "关闭草稿纸" else "打开草稿纸", fontSize = DesignTokens.Type.Small)
+                                }
+                                Spacer(Modifier.width(DesignTokens.Spacing.Sm))
+                                OutlinedButton(onClick = { onSidePanel("overview") }, contentPadding = panelButtonPadding) {
+                                    Text(if (sidePanel == "overview") "关闭总览" else "打开总览", fontSize = DesignTokens.Type.Small)
+                                }
+                                if (sidePanel != null) {
+                                    Spacer(Modifier.width(DesignTokens.Spacing.Xs))
+                                    IconButton(onClick = onTogglePanelFullscreen, modifier = Modifier.size(DesignTokens.Size.IconButton)) {
+                                        Icon(
+                                            if (panelFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                            contentDescription = if (panelFullscreen) "退出草稿纸全屏" else "草稿纸全屏",
+                                            tint = palette.muted,
+                                            modifier = Modifier.size(DesignTokens.Size.IconSm)
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.width(DesignTokens.Spacing.Xs))
+                            }
+                            TextButton(onClick = onClose) { Text("退出") }
+                        }
+                        if (isLandscape && narrowHeader) {
+                            Spacer(Modifier.height(DesignTokens.Spacing.Sm))
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Sm)) {
+                                OutlinedButton(onClick = { onSidePanel("draft") }, contentPadding = panelButtonPadding) {
+                                    Text(if (sidePanel == "draft") "关闭草稿纸" else "打开草稿纸", fontSize = DesignTokens.Type.Small)
+                                }
+                                OutlinedButton(onClick = { onSidePanel("overview") }, contentPadding = panelButtonPadding) {
+                                    Text(if (sidePanel == "overview") "关闭总览" else "打开总览", fontSize = DesignTokens.Type.Small)
+                                }
+                                if (sidePanel != null) {
+                                    IconButton(onClick = onTogglePanelFullscreen, modifier = Modifier.size(DesignTokens.Size.IconButton)) {
+                                        Icon(
+                                            if (panelFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                            contentDescription = if (panelFullscreen) "退出草稿纸全屏" else "草稿纸全屏",
+                                            tint = palette.muted,
+                                            modifier = Modifier.size(DesignTokens.Size.IconSm)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        if (!isLandscape) {
+                            Spacer(Modifier.height(DesignTokens.Spacing.Md))
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(DesignTokens.Border.Selected)
+                                    .background(palette.outline, RoundedCornerShape(DesignTokens.Radius.Pill))
+                            ) {
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth(answeredFraction)
+                                        .fillMaxHeight()
+                                        .background(palette.primary, RoundedCornerShape(DesignTokens.Radius.Pill))
+                                )
+                            }
+                        }
+                        }
                     }
                 }
             }
-        }
-        items(session.questions.indices.toList()) { i ->
-            val q = session.questions[i]
-            InfoCard {
-                Text("前提", color = Muted, fontSize = DesignTokens.Type.Small, fontWeight = FontWeight.Bold)
-                Text(q.premise.ifBlank { "无额外前提" }, lineHeight = 21.sp)
-                Spacer(Modifier.height(8.dp))
-                Text("问题 ${i + 1}", color = MaterialTheme.colorScheme.primary, fontSize = DesignTokens.Type.Body, fontWeight = FontWeight.Bold)
-                Text(q.question, lineHeight = 21.sp)
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(q.unknown, {
-                        val updated = q.copy(unknown = it, answer = if (it) "" else q.answer)
-                        session.questions[i] = updated
+            items(session.questions.indices.toList()) { i ->
+                val q = session.questions[i]
+                ExamCard {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("第 ${i + 1} 题 / 共 $total 题", fontSize = DesignTokens.Type.Small, fontWeight = DesignTokens.Weight.Bold, color = palette.primary)
+                        Spacer(Modifier.weight(1f))
+                        if (q.unknown) Text("已标记不会", fontSize = DesignTokens.Type.Small, color = palette.muted)
+                    }
+                    val sectionGap = if (isLandscape) DesignTokens.Spacing.Xs else DesignTokens.Spacing.Lg
+                    Spacer(Modifier.height(sectionGap))
+                    Text("前提", style = DesignTokens.TextStyles.SectionTitle, color = palette.muted)
+                    Spacer(Modifier.height(DesignTokens.Spacing.Xs))
+                    Text(q.premise.ifBlank { "无额外前提" }, color = palette.ink, lineHeight = DesignTokens.Type.LineBody)
+                    Spacer(Modifier.height(sectionGap))
+                    Text("问题", style = DesignTokens.TextStyles.SectionTitle, color = palette.muted)
+                    Spacer(Modifier.height(DesignTokens.Spacing.Xs))
+                    Text(q.question, color = palette.ink, lineHeight = DesignTokens.Type.LineBody)
+                    Spacer(Modifier.height(sectionGap))
+                    Text("作答", style = DesignTokens.TextStyles.SectionTitle, color = palette.muted)
+                    Spacer(Modifier.height(DesignTokens.Spacing.Xs))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(q.unknown, {
+                            val updated = q.copy(unknown = it, answer = if (it) "" else q.answer)
+                            session.questions[i] = updated
+                            onUpdate(session.copy(questions = session.questions))
+                            if (it) onUnknown(i, updated)
+                        })
+                        Spacer(Modifier.width(DesignTokens.Spacing.Xs))
+                        Text("不会", color = if (q.unknown) palette.primary else palette.muted, fontSize = DesignTokens.Type.Body)
+                    }
+                    Spacer(Modifier.height(DesignTokens.Spacing.Md))
+                    OutlinedTextField(q.answer, {
+                        session.questions[i] = q.copy(answer = it)
                         onUpdate(session.copy(questions = session.questions))
-                        if (it) onUnknown(i, updated)
-                    })
-                    Text("不会", color = if (q.unknown) Blue else Muted)
+                    }, Modifier.fillMaxWidth(), enabled = !q.unknown, minLines = 3, placeholder = { Text(if (q.unknown) "已标记不会" else "在这里作答") })
                 }
-                OutlinedTextField(q.answer, {
-                    session.questions[i] = q.copy(answer = it)
-                    onUpdate(session.copy(questions = session.questions))
-                }, Modifier.fillMaxWidth(), enabled = !q.unknown, minLines = 3, placeholder = { Text(if (q.unknown) "已标记不会" else "在这里作答") })
             }
         }
-        item { Button(onClick = { onSubmit(packExamAnswers(session)) }, modifier = Modifier.fillMaxWidth()) { Text("提交答案") } }
+        // 提交条固定在底部并占据布局空间（不是浮层），保证题目内容不被遮挡。
+        // 横屏可视高度仍偏紧，但可用右下悬浮键切沉浸模式，一键收起顶栏/底栏/提交条。
+        // 沉浸模式下整条不渲染，把全部高度让给题目。
+        if (!immersive) {
+            Surface(
+                Modifier.fillMaxWidth(),
+                color = palette.page
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = if (isLandscape) 0.dp else DesignTokens.Spacing.Xs, bottom = LocalBottomBarLift.current)
+                ) {
+                    AppPrimaryButton(onClick = { onSubmit(packExamAnswers(session)) }, modifier = Modifier.fillMaxWidth()) { Text("提交答案") }
+                }
+            }
+        }
     }
 }
 
@@ -1963,6 +2305,9 @@ private fun ExamSidePanel(
     messages: List<ChatMessage>,
     branches: List<BranchClass>,
     draftMode: String,
+    palette: AppPalette,
+    panelFullscreen: Boolean,
+    onTogglePanelFullscreen: () -> Unit,
     onDraftMode: (String) -> Unit,
     strokes: MutableList<DrawStroke>,
     onUpdate: (ExamSession) -> Unit,
@@ -1970,29 +2315,43 @@ private fun ExamSidePanel(
 ) {
     Box(modifier) {
         InfoCard {
-            if (panel == "draft") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("草稿纸", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    AppFilterChip(draftMode == "text", { onDraftMode("text") }) { Text("打字") }
-                    Spacer(Modifier.width(6.dp))
-                    AppFilterChip(draftMode == "draw", { onDraftMode("draw") }) { Text("涂绘") }
-                }
-                Spacer(Modifier.height(8.dp))
-                if (draftMode == "text") {
-                    OutlinedTextField(session.draft, { onUpdate(session.copy(draft = it)) }, Modifier.fillMaxWidth(), minLines = 14, placeholder = { Text("草稿纸") })
+            Column(Modifier.fillMaxHeight()) {
+                if (panel == "draft") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("草稿纸", fontWeight = DesignTokens.Weight.Bold, color = palette.ink, modifier = Modifier.weight(1f))
+                        // 草稿纸全屏时题目栏整列收起，这里保留退出全屏的入口，避免只能靠双击分界线。
+                        IconButton(onClick = onTogglePanelFullscreen, modifier = Modifier.size(DesignTokens.Size.IconButton)) {
+                            Icon(
+                                if (panelFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                contentDescription = if (panelFullscreen) "退出草稿纸全屏" else "草稿纸全屏",
+                                tint = palette.muted,
+                                modifier = Modifier.size(DesignTokens.Size.IconSm)
+                            )
+                        }
+                        AppFilterChip(draftMode == "text", { onDraftMode("text") }) { Text("打字") }
+                        Spacer(Modifier.width(DesignTokens.Spacing.Sm))
+                        AppFilterChip(draftMode == "draw", { onDraftMode("draw") }) { Text("涂绘") }
+                    }
+                    Spacer(Modifier.height(DesignTokens.Spacing.Lg))
+                    if (draftMode == "text") {
+                        OutlinedTextField(session.draft, { onUpdate(session.copy(draft = it)) }, Modifier.fillMaxWidth().weight(1f), minLines = 3, placeholder = { Text("草稿纸") })
+                    } else {
+                        DrawPad(strokes, palette, Modifier.weight(1f).fillMaxWidth())
+                        Spacer(Modifier.height(DesignTokens.Spacing.Lg))
+                        OutlinedButton(onClick = { strokes.clear() }, modifier = Modifier.fillMaxWidth()) { Text("清空涂绘") }
+                    }
                 } else {
-                    DrawPad(strokes, Modifier.height(430.dp).fillMaxWidth())
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedButton(onClick = { strokes.clear() }, modifier = Modifier.fillMaxWidth()) { Text("清空涂绘") }
-                }
-            } else {
-                Text("过去总览", fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(8.dp))
-                LazyColumn(Modifier.height(470.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    item { Text("过往对话", color = Muted, fontWeight = FontWeight.Bold) }
-                    items(messages.takeLast(12)) { MarkdownText((if (it.role == "user") "我：" else "AI：") + it.text.take(360)) }
-                    item { Text("不会题分支", color = Muted, fontWeight = FontWeight.Bold) }
-                    items(branches.takeLast(6)) { Text(it.title, fontWeight = FontWeight.Bold); MarkdownText(it.messages.lastOrNull()?.text.orEmpty().take(360)) }
+                    Text("过去总览", fontWeight = DesignTokens.Weight.Bold, color = palette.ink)
+                    Spacer(Modifier.height(DesignTokens.Spacing.Lg))
+                    LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Md)) {
+                        item { Text("过往对话", style = DesignTokens.TextStyles.SectionTitle, color = palette.muted) }
+                        items(messages.takeLast(12)) { MarkdownText((if (it.role == "user") "我：" else "AI：") + it.text.take(360), color = palette.ink) }
+                        item { Text("不会题分支", style = DesignTokens.TextStyles.SectionTitle, color = palette.muted) }
+                        items(branches.takeLast(6)) {
+                            Text(it.title, fontWeight = DesignTokens.Weight.Bold, color = palette.ink)
+                            MarkdownText(it.messages.lastOrNull()?.text.orEmpty().take(360), color = palette.ink)
+                        }
+                    }
                 }
             }
         }
@@ -2000,13 +2359,13 @@ private fun ExamSidePanel(
 }
 
 @Composable
-private fun DrawPad(strokes: MutableList<DrawStroke>, modifier: Modifier) {
+private fun DrawPad(strokes: MutableList<DrawStroke>, palette: AppPalette, modifier: Modifier) {
     var current by remember { mutableStateOf<List<Offset>>(emptyList()) }
-    val strokeColor = MaterialTheme.colorScheme.onSurface
+    val strokeColor = palette.ink
     Canvas(
         modifier
-            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(DesignTokens.Radius.Tile))
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(DesignTokens.Radius.Tile))
+            .background(palette.surface, RoundedCornerShape(DesignTokens.Radius.Tile))
+            .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Tile))
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { current = listOf(it) },
@@ -3226,7 +3585,7 @@ private suspend fun callChat(baseUrl: String, apiKey: String, model: String, sys
         connection.connectTimeout = 20000
         connection.readTimeout = 60000
         OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages, deepThinkingEnabled = deepThinkingEnabled, reasoningEffort = reasoningEffort)) }
-        Regex("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").find(readBody(connection))?.groupValues?.get(1)?.unescapeJson() ?: "模型没有返回内容。"
+        Regex("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").find(readBody(connection))?.groupValues?.get(1)?.unescapeJson() ?: NO_CONTENT_REPLY
     }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
 }
 
@@ -3238,7 +3597,9 @@ private suspend fun callChatStream(
     messages: List<ChatMessage>,
     onDelta: (String) -> Unit,
     deepThinkingEnabled: Boolean = false,
-    reasoningEffort: String = "medium"
+    reasoningEffort: String = "medium",
+    toolsJson: String? = null,
+    toolSink: ToolCallSink? = null
 ): String = withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) return@withContext "请先填写 API Key。"
     if (model.isBlank()) return@withContext "请先选择或填写模型名。"
@@ -3251,14 +3612,23 @@ private suspend fun callChatStream(
         connection.setRequestProperty("Accept", "text/event-stream")
         connection.connectTimeout = 20000
         connection.readTimeout = 120000
-        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages, stream = true, deepThinkingEnabled = deepThinkingEnabled, reasoningEffort = reasoningEffort)) }
+        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages, stream = true, deepThinkingEnabled = deepThinkingEnabled, reasoningEffort = reasoningEffort, toolsJson = toolsJson)) }
         if (connection.responseCode !in 200..299) return@runCatching readBody(connection).ifBlank { "调用失败：HTTP ${connection.responseCode}" }
         val builder = StringBuilder()
+        // 只有开了工具的请求才做整包 JSON 兜底：纯聊天路径保持"读不到 data: 行就是没有内容"的老行为。
+        val wholeBody = StringBuilder()
+        var sawEventStream = false
         BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).useLines { lines ->
             lines.forEach { line ->
-                if (!line.startsWith("data:")) return@forEach
+                if (!sawEventStream && !line.startsWith("data:")) {
+                    if (toolSink != null) wholeBody.append(line).append('\n')
+                    return@forEach
+                }
+                sawEventStream = true
                 val payload = line.removePrefix("data:").trim()
                 if (payload == "[DONE]") return@forEach
+                // 流式 tool_calls 是分片到达的，按 index 累积后统一归一化。
+                toolSink?.mergeDelta(payload)
                 val delta = parseStreamDelta(payload)
                 if (delta.isNotEmpty()) {
                     builder.append(delta)
@@ -3266,7 +3636,16 @@ private suspend fun callChatStream(
                 }
             }
         }
-        builder.toString().ifBlank { "模型没有返回内容。" }
+        if (!sawEventStream && toolSink != null) {
+            // 服务端忽略了 stream=true：整包解析 message.content / message.tool_calls。
+            val turn = parseNonStreamTurn(wholeBody.toString())
+            toolSink.setRawJson(turn.toolCallsJson)
+            if (turn.content.isNotEmpty()) {
+                builder.append(turn.content)
+                withContext(Dispatchers.Main) { onDelta(turn.content) }
+            }
+        }
+        builder.toString().ifBlank { NO_CONTENT_REPLY }
     }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
 }
 
@@ -3339,12 +3718,16 @@ private suspend fun callChatStreamWithFallback(
     models: List<String>,
     system: String,
     messages: List<ChatMessage>,
+    toolsJson: String? = null,
+    toolSink: ToolCallSink? = null,
     onDelta: (String) -> Unit
 ): String {
     val candidates = models.ifEmpty { config.orderedModels() }
     var last = "请先选择或填写模型名。"
     candidates.forEach { model ->
-        val result = callChatStream(config.baseUrl, config.apiKey, model, system, messages, onDelta, config.deepThinkingEnabled, config.reasoningEffort)
+        // 换模型重试时清空上一轮累积的 tool_calls，避免把两个模型的调用拼在一起。
+        toolSink?.reset()
+        val result = callChatStream(config.baseUrl, config.apiKey, model, system, messages, onDelta, config.deepThinkingEnabled, config.reasoningEffort, toolsJson, toolSink)
         if (!isApiFailure(result)) return result
         last = result
     }
@@ -3376,7 +3759,7 @@ private suspend fun callVision(baseUrl: String, apiKey: String, model: String, s
         connection.readTimeout = 90000
         OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildVisionJson(model, system, prompt, dataUrl)) }
         if (connection.responseCode !in 200..299) return@runCatching readBody(connection).ifBlank { "调用失败：HTTP ${connection.responseCode}" }
-        Regex("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").find(readBody(connection))?.groupValues?.get(1)?.unescapeJson() ?: "模型没有返回内容。"
+        Regex("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").find(readBody(connection))?.groupValues?.get(1)?.unescapeJson() ?: NO_CONTENT_REPLY
     }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
 }
 
@@ -3440,25 +3823,116 @@ private fun JSONObject.optNonNullString(name: String): String? {
     if (!has(name) || isNull(name)) return null
     return optString(name).takeUnless { it == "null" }
 }
+// ---------- function calling 基础设施（阶段B 线①） ----------
 
-private const val EXAM_TOOL_PROMPT = """
-当你明确要发起考试、随堂测试或模拟测验时，必须在回复中使用以下格式，应用会自动进入沉浸式考试界面：
-【考试】
-前提：题目背景、材料、阅读短文或说明
-问题：具体问题一
-问题：具体问题二
-可以重复多组“前提/问题”。不要把考试作为普通聊天问题发出。
-"""
+private const val TOOL_LOOP_MAX_ROUNDS = 5
+private const val TOOL_LOG_TAG = "ToolLoop"
+private const val NO_CONTENT_REPLY = "模型没有返回内容。"
 
-private const val EXAM_TOOL_PROMPT_V2 = """
-When you start an exam, quiz, mock test, or the user asks to be tested, append a machine-readable exam block at the end:
-[EXAM]
-premise: background, reading passage, data, or instructions
-question: concrete question one
-question: concrete question two
-[/EXAM]
-Repeat premise/question groups when needed. Put real exam questions inside the block.
-"""
+
+/** OpenAI 兼容 tool_calls 里的一条调用。 */
+private data class ToolCall(val id: String, val name: String, val argumentsJson: String)
+
+/** 一次带工具请求的结果：普通文本 + 归一化后的 tool_calls（没有调用时为 null）。 */
+private data class ChatTurn(val content: String, val toolCallsJson: String?)
+
+/**
+ * 流式 tool_calls 累积器：delta.tool_calls 是按 index 分片下发的，
+ * id / function.name 取后到的非空值，function.arguments 是字符串拼接。
+ */
+private class ToolCallSink {
+    private val ids = LinkedHashMap<Int, String>()
+    private val names = LinkedHashMap<Int, String>()
+    private val arguments = LinkedHashMap<Int, StringBuilder>()
+    private var implicitSlot = 0
+    private var rawJson: String? = null
+
+    fun reset() {
+        ids.clear()
+        names.clear()
+        arguments.clear()
+        implicitSlot = 0
+        rawJson = null
+    }
+
+    /** 非流式响应：整包的 message.tool_calls 原样保留。 */
+    fun setRawJson(toolCallsJson: String?) {
+        rawJson = toolCallsJson
+    }
+
+    /** 合并一条 SSE data 分片里的 choices[0].delta.tool_calls。 */
+    fun mergeDelta(payload: String) {
+        val calls = runCatching {
+            JSONObject(payload).optJSONArray("choices")?.optJSONObject(0)
+                ?.optJSONObject("delta")?.optJSONArray("tool_calls")
+        }.getOrNull() ?: return
+        mergeCalls(calls)
+    }
+
+    fun mergeCalls(calls: JSONArray) {
+        for (position in 0 until calls.length()) {
+            val item = calls.optJSONObject(position) ?: continue
+            // 个别兼容实现省略 index：按出现顺序补位。
+            val slot = if (item.has("index") && !item.isNull("index")) item.optInt("index") else implicitSlot++
+            item.optNonNullString("id")?.takeIf { it.isNotBlank() }?.let { ids[slot] = it }
+            val function = item.optJSONObject("function")
+            function?.optNonNullString("name")?.takeIf { it.isNotBlank() }?.let { names[slot] = it }
+            function?.optNonNullString("arguments")?.let { arguments.getOrPut(slot) { StringBuilder() }.append(it) }
+        }
+    }
+
+    /** 归一化后的 tool_calls JSON 数组；没有调用时返回 null。 */
+    fun resultJson(): String? {
+        rawJson?.takeIf { it.isNotBlank() }?.let { return it }
+        val slots = (ids.keys + names.keys + arguments.keys).distinct().sorted()
+        if (slots.isEmpty()) return null
+        val array = JSONArray()
+        slots.forEach { slot ->
+            array.put(JSONObject().apply {
+                put("id", ids[slot] ?: "call_$slot")
+                put("type", "function")
+                put("function", JSONObject().apply {
+                    put("name", names[slot].orEmpty())
+                    put("arguments", arguments[slot]?.toString().orEmpty())
+                })
+            })
+        }
+        return array.toString()
+    }
+}
+
+/** 把 tool_calls JSON 解析成待执行的调用列表；名字为空的分片直接丢弃。 */
+private fun parseToolCalls(toolCallsJson: String?): List<ToolCall> {
+    if (toolCallsJson.isNullOrBlank()) return emptyList()
+    val array = runCatching { JSONArray(toolCallsJson) }.getOrNull() ?: return emptyList()
+    return List(array.length()) { position ->
+        val item = array.optJSONObject(position) ?: JSONObject()
+        val function = item.optJSONObject("function") ?: JSONObject()
+        ToolCall(
+            id = item.optNonNullString("id") ?: "call_$position",
+            name = function.optNonNullString("name").orEmpty(),
+            argumentsJson = function.optNonNullString("arguments").orEmpty().ifBlank { "{}" }
+        )
+    }.filter { it.name.isNotBlank() }
+}
+
+/** 非流式（服务端忽略 stream=true）响应解析：取 message.content 与 message.tool_calls。 */
+private fun parseNonStreamTurn(body: String): ChatTurn {
+    val choice = runCatching { JSONObject(body).optJSONArray("choices")?.optJSONObject(0) }.getOrNull()
+    val message = choice?.optJSONObject("message") ?: choice?.optJSONObject("delta")
+        ?: return ChatTurn("", null)
+    val sink = ToolCallSink()
+    message.optJSONArray("tool_calls")?.let { sink.mergeCalls(it) }
+    return ChatTurn(message.optNonNullString("content").orEmpty(), sink.resultJson())
+}
+
+/** 注册表 → OpenAI 兼容的 tools 数组（不含外层 "tools" 键）；空注册表返回 null。 */
+private fun toolsJsonOf(registry: ToolRegistry): String? =
+    registry.all().takeIf { it.isNotEmpty() }?.joinToString(",") { handler ->
+        "{\"type\":\"function\",\"function\":{\"name\":\"${handler.name.escapeJson()}\",\"description\":\"${handler.description.escapeJson()}\",\"parameters\":${handler.parametersJson.ifBlank { "{\"type\":\"object\",\"properties\":{}}" }}}}"
+    }
+
+
 
 private suspend fun buildConversationChapters(messages: List<ChatMessage>, config: ClassroomConfig, model: String): List<ConversationChapter> = withContext(Dispatchers.IO) {
     val chunks = messages.chunked(CHAPTER_SIZE)
@@ -3697,69 +4171,9 @@ private fun inferVisibility(text: String): String {
     return if (characterSignals.any { text.contains(it, ignoreCase = true) }) "character_private" else "author_private"
 }
 
-private fun isExamRequest(text: String): Boolean {
-    val triggers = listOf("考试", "测验", "测试", "考我", "出题", "随堂", "模拟考", "quiz", "exam", "test")
-    return triggers.any { text.contains(it, ignoreCase = true) }
-}
-
-private fun detectExamSession(text: String, userRequestedExam: Boolean): ExamSession? {
-    parseExamBlock(text)?.let { return it }
-    parseReadableExam(text)?.let { return it }
-    return if (userRequestedExam && hasExplicitExamStart(text)) fallbackExamFromText(text) else null
-}
-
-private fun hasExplicitExamStart(text: String): Boolean {
-    val triggers = listOf("【考试】", "[EXAM]", "开始考试", "进入考试", "模拟考试", "随堂测试", "本次测试", "开始测验", "进入测验")
-    return triggers.any { text.contains(it, ignoreCase = true) }
-}
-
-private fun stripExamBlock(text: String): String =
-    text.replace(Regex("\\[EXAM][\\s\\S]*?\\[/EXAM]", RegexOption.IGNORE_CASE), "").trim()
-
-private fun parseExamBlock(text: String): ExamSession? {
-    val block = Regex("\\[EXAM]([\\s\\S]*?)\\[/EXAM]", RegexOption.IGNORE_CASE).find(text)?.groupValues?.getOrNull(1) ?: return null
-    val questions = mutableListOf<ExamQuestion>()
-    var premise = "请根据当前课堂内容作答。"
-    block.lines().map { it.trim() }.filter { it.isNotBlank() }.forEach { line ->
-        when {
-            line.startsWith("premise:", true) -> premise = line.substringAfter(":").trim().ifBlank { premise }
-            line.startsWith("question:", true) -> line.substringAfter(":").trim().takeIf { it.isNotBlank() }?.let { questions.add(ExamQuestion(premise, it)) }
-        }
-    }
-    return questions.takeIf { it.isNotEmpty() }?.let { ExamSession("AI 随堂考试", it.toMutableStateList()) }
-}
-
-private fun parseReadableExam(text: String): ExamSession? {
-    val normalized = text.replace('：', ':')
-    if (!hasExplicitExamStart(normalized)) return null
-    val premise = Regex("(?:前提|材料|背景):([\\s\\S]*?)(?=(?:问题|题目|Q\\d*)[:：]|$)")
-        .find(normalized)?.groupValues?.getOrNull(1)?.replace("【考试】", "")?.trim().orEmpty().ifBlank { "请根据当前课堂内容作答。" }
-    val questions = Regex("(?:问题|题目|Q\\d*)[:：]([\\s\\S]*?)(?=(?:问题|题目|Q\\d*|前提|材料|背景)[:：]|$)")
-        .findAll(normalized).mapNotNull { it.groupValues.getOrNull(1)?.trim()?.takeIf { q -> q.isNotBlank() }?.let { q -> ExamQuestion(premise, q) } }
-        .toList()
-    return questions.takeIf { it.isNotEmpty() }?.let { ExamSession("AI 随堂考试", it.toMutableStateList()) }
-}
-
-private fun fallbackExamFromText(text: String): ExamSession {
-    val candidates = text.lines().map { it.trim() }.filter { line ->
-        line.length >= 8 && (line.contains("？") || line.contains("?") || line.matches(Regex(".*(简述|说明|分析|解释|计算|写出).*")))
-    }.take(6)
-    val questions = candidates.ifEmpty { listOf("请结合刚才课堂内容，回答本轮测试的核心问题。") }
-        .map { ExamQuestion("请根据当前课堂内容作答。", it.removePrefix("问题:").removePrefix("题目:").trim()) }
-    return ExamSession("AI 随堂考试", questions.toMutableStateList())
-}
-
-private fun packExamAnswers(session: ExamSession): String = buildString {
-    appendLine("以下是用户在沉浸式考试工具中的作答，请批改并给出讲解：")
-    session.questions.forEachIndexed { index, q ->
-        appendLine("题目 ${index + 1}")
-        appendLine("前提：${q.premise}")
-        appendLine("问题：${q.question}")
-        appendLine("状态：${if (q.unknown) "不会" else "已作答"}")
-        appendLine("答案：${q.answer}")
-    }
-    if (session.draft.isNotBlank()) appendLine("草稿：${session.draft}")
-}
+// 考试数据层已迁到纯 JVM 模块 :feature-exam（不依赖 Compose），解析结果回到 UI 前换成
+// Compose 快照列表，保证作答时列表项写入能触发重绘，与迁移前 toMutableStateList 行为一致。
+private fun ExamSession.withComposeState(): ExamSession = copy(questions = questions.toMutableStateList())
 
 private fun fallbackChapters(messages: List<ChatMessage>): List<ConversationChapter> = messages.chunked(CHAPTER_SIZE).mapIndexed { index, chunk ->
     val start = index * CHAPTER_SIZE
@@ -3793,16 +4207,26 @@ private fun readBody(connection: HttpURLConnection): String {
     return BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
 }
 
-private fun buildJson(model: String, system: String, messages: List<ChatMessage>, stream: Boolean = false, deepThinkingEnabled: Boolean = false, reasoningEffort: String = "medium"): String {
+private fun buildJson(model: String, system: String, messages: List<ChatMessage>, stream: Boolean = false, deepThinkingEnabled: Boolean = false, reasoningEffort: String = "medium", toolsJson: String? = null): String {
     val all = listOf(ChatMessage("system", system)) + messages
-    val jsonMessages = all.joinToString(",") { "{\"role\":\"${it.role}\",\"content\":\"${it.text.escapeJson()}\"}" }
+    val jsonMessages = all.joinToString(",") { messageJson(it) }
     val normalizedEffort = reasoningEffort.lowercase()
     val safeEffort = when (normalizedEffort) {
         "low", "medium", "high" -> normalizedEffort
         else -> "medium"
     }
     val reasoning = if (deepThinkingEnabled) ",\"reasoning_effort\":\"$safeEffort\"" else ""
-    return "{\"model\":\"${model.escapeJson()}\",\"messages\":[$jsonMessages],\"temperature\":0.35,\"stream\":$stream$reasoning}"
+    // toolsJson 为空时这个片段是空串，请求体与改造前逐字节一致。
+    val tools = toolsJson?.takeIf { it.isNotBlank() }?.let { ",\"tools\":[$it],\"tool_choice\":\"auto\"" }.orEmpty()
+    return "{\"model\":\"${model.escapeJson()}\",\"messages\":[$jsonMessages],\"temperature\":0.35,\"stream\":$stream$reasoning$tools}"
+}
+
+/** 单条消息的 JSON：没有工具字段时就是老的 {"role":..,"content":..}。 */
+private fun messageJson(message: ChatMessage): String = buildString {
+    append("{\"role\":\"").append(message.role).append("\",\"content\":\"").append(message.text.escapeJson()).append('"')
+    message.toolCallId?.takeIf { it.isNotBlank() }?.let { append(",\"tool_call_id\":\"").append(it.escapeJson()).append('"') }
+    message.toolCallsJson?.takeIf { it.isNotBlank() }?.let { append(",\"tool_calls\":").append(it) }
+    append('}')
 }
 
 private fun buildVisionJson(model: String, system: String, prompt: String, dataUrl: String): String {
@@ -4111,7 +4535,8 @@ private fun truncatePromptSection(text: String, limit: Int): String {
     return clean.take(limit) + "\n[以上资料已按上下文预算截断，截断部分不可臆测。]"
 }
 
-private const val APP_VERSION = "3.3.0"
+// 直接取构建产物里的 versionName，避免与 build.gradle.kts 脱节（曾因写死 3.3.0 而在 3.3.5 上误报更新）。
+private val APP_VERSION: String = BuildConfig.VERSION_NAME
 
 private object AppShapes {
     val panel = RoundedCornerShape(DesignTokens.Radius.Panel)
@@ -4122,30 +4547,30 @@ private object AppShapes {
 }
 
 private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 3.3.0
+# AI Classroom 3.5.0
 
 # New!
 
-## 对话模型与推理控制
-- 模型选择收纳为紧凑图标，点击后可直接切换当前课堂的备选模型。
-- 深度思考收纳为独立图标，开启后可选择低、中、高三档推理强度。
-- 关闭深度思考时不会发送 `reasoning_effort`，避免普通模型被错误启用推理参数。
-- 模型和推理设置按课堂保存，不会影响其他课堂。
+## AI 工具调用
+- 新增 12 个可被 AI 自主调用的工具：模型会自己判断何时使用，不再只能靠固定格式输出。
+- 考试工具 7 个：创建考试、读取当前考试、加题、改题、删题、改标题、标记「不会」。
+- 文件工具 4 个：列目录、读文件、写文件、删文件，限定在应用私有目录内，路径越权会被拒绝。
+- 网络工具 1 个：可以调用本机或外部服务的 HTTP 接口，带总开关与脱敏调用日志。
 
-## 沉浸式对话
-- 新增沉浸模式：隐藏顶部标题栏与底部导航，只保留对话和输入框。
-- 沉浸状态可快速切换浅色或深色界面，无需进入设置页。
-- 控制入口改为低存在感小图标，减少输入区域的常驻占用。
+## 考试系统插件化
+- 考试的数据与解析逻辑抽成独立模块，与主程序解耦，便于单独维护。
+- 横屏新增悬浮键：一键收起顶栏、底栏与提交条，把整屏让给题目，再点一次恢复。
+- 分界线可以拖动，实时调整题目与草稿纸的宽度占比。
+- 双击分界线切换草稿纸全屏，退出时回到原来的比例。
+- 提交条改为独立占位，不再遮挡题目文字。
 
-## 连续性与兼容性
-- 长时世界书、章节索引、长期记忆卡、知识库检索和分支课堂逻辑保持不变。
-- 角色卡、人物私密信息与不同视角边界继续参与小说写作上下文。
-- 旧课堂数据会自动使用安全默认值，不需要重新创建课堂。
+## 修复
+- 修复误报更新：版本号改为读取构建产物，不再与构建配置脱节。
+- 修复长文案弹窗无法滑动：更新说明、更新提示、使用手册均可上下滚动。
 
-## 其他
-
-- 保留多模型 fallback、Vision、TTS、考试工具和本地自动保存。
-- 旧课堂数据可以继续加载，新增简介字段向后兼容。
+## 兼容性
+- 业务逻辑保持不变：对话、记忆、章节、知识库、分支课堂均按原逻辑运行。
+- 旧课堂数据可直接加载，无需重建课堂。
 
 """
 private const val USER_MANUAL_TEXT = """
