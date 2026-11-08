@@ -1,5 +1,6 @@
 package com.aiclassroom.feature.exam.tool.universal
 
+import com.aiclassroom.feature.exam.tool.exam.JsonValue
 import com.aiclassroom.feature.exam.tool.image.ImageFailure
 import com.aiclassroom.feature.exam.tool.image.MAX_IMAGE_BYTES
 import java.io.ByteArrayOutputStream
@@ -35,12 +36,18 @@ internal class UniversalFetch(
  */
 internal object UniversalHttp {
 
+    /**
+     * [stopAtCompleteJson] 给数据型（response.type = json）用：读到「已经是完整 JSON」就收手。
+     * 有的 API（Clash 的 /traffic 就是）把响应做成每秒一条的流，读到 EOF 永远等不到，
+     * 而模型要的只是第一条完整数据。
+     */
     fun send(
         method: String,
         url: String,
         headers: Map<String, String>,
         body: ByteArray?,
         timeoutSeconds: Int,
+        stopAtCompleteJson: Boolean = false,
     ): UniversalFetch {
         val connection = open(url, timeoutSeconds)
         try {
@@ -55,7 +62,7 @@ internal object UniversalHttp {
             }
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-            val bytes = stream?.let { readCapped(it, MAX_RESPONSE_BYTES, url) } ?: ByteArray(0)
+            val bytes = stream?.let { readCapped(it, MAX_RESPONSE_BYTES, url, stopAtCompleteJson) } ?: ByteArray(0)
             return UniversalFetch(status, bytes)
         } catch (failure: ImageFailure) {
             throw failure
@@ -94,7 +101,12 @@ internal object UniversalHttp {
         return connection
     }
 
-    private fun readCapped(stream: InputStream, limit: Int, url: String): ByteArray {
+    private fun readCapped(
+        stream: InputStream,
+        limit: Int,
+        url: String,
+        stopAtCompleteJson: Boolean = false,
+    ): ByteArray {
         val out = ByteArrayOutputStream(minOf(limit, 64 * 1024))
         val buffer = ByteArray(16 * 1024)
         var total = 0
@@ -105,9 +117,22 @@ internal object UniversalHttp {
                 total += read
                 if (total > limit) throw ImageFailure("响应体超过上限 " + (limit / (1024 * 1024)) + "MB（" + url + "）")
                 out.write(buffer, 0, read)
+                if (stopAtCompleteJson && isCompleteJson(out)) break
             }
         }
         return out.toByteArray()
+    }
+
+    /** 已经读到的那一段能不能直接当 JSON 用（流式响应用它决定「够了，别等了」）。 */
+    private fun isCompleteJson(out: ByteArrayOutputStream): Boolean {
+        val text = String(out.toByteArray(), Charsets.UTF_8).trim()
+        if (text.isEmpty()) return false
+        return try {
+            JsonValue.parse(text)
+            true
+        } catch (incomplete: Exception) {
+            false
+        }
     }
 
     private fun describe(io: IOException): String =

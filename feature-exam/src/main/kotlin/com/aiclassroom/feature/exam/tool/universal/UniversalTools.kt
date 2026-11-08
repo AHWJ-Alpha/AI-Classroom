@@ -24,14 +24,15 @@ private val TEMPLATE_KEYS: List<String> =
  *
  * 与 ImageTools 的分工：generate_image 是「已知后端」的快捷方式（三个 provider 各写一个类），
  * universal_call 是「未知后端」的通用入口（配置驱动，不再为每个服务写代码）。
- * 保存图片仍然走同一个 [ImageSink]，所以上层拿到的路径形态和 generate_image 完全一致。
+ * 保存图片仍然走同一个 [ImageSink]，所以上层拿到的路径形态和 generate_image 完全一致；
+ * 数据型接口（response.type = json / universal_get_json）不落盘，[sink] 传 null 也能用。
  */
 class UniversalTools(
-    private val sink: ImageSink,
+    private val sink: ImageSink?,
     private val library: () -> String = { "" },
 ) {
 
-    val handlers: List<ToolHandler> = listOf(UniversalCallTool(), ListProfilesTool())
+    val handlers: List<ToolHandler> = listOf(UniversalCallTool(), UniversalGetJsonTool(), ListProfilesTool())
 
     fun register(registry: ToolRegistry): UniversalTools {
         handlers.forEach(registry::register)
@@ -63,6 +64,7 @@ class UniversalTools(
                 "就能提交并取回图片，结果是已保存到本机的 {ok,path,bytes,mime,elapsedMs}。" +
                 "请求体模板里的 {{prompt}} {{negative}} {{width}} {{height}} {{steps}} {{cfg}} {{model}} 会做 JSON 转义替换；" +
                 "response.type 支持 json_base64 / json_url（相对地址会自动带同样的认证再下载）/ binary；" +
+                "要「只拿数据、不落盘」（查询 / 控制 / 状态类接口）就用 response.type = json，结果是 {ok,status,json}；" +
                 "async 支持「先提交、再从响应取结果地址、必要时轮询」。不知道服务协议时先 probe_endpoint 探测，" +
                 "再用 list_profiles 看有没有现成 profile（nightmare / openai-images / sd-webui）。失败会带上服务端响应片段。"
 
@@ -128,6 +130,58 @@ class UniversalTools(
                 async = UniversalAsync.fromJson(arguments["async"], base.async),
                 timeoutSeconds = timeout,
                 values = values,
+            )
+        }
+    }
+
+    /**
+     * universal_call 的简化版：GET + response.type = json。
+     * 数据型接口不必写嵌套对象，省得模型每次都拼一遍 {request,response}。
+     */
+    private inner class UniversalGetJsonTool : ToolHandler {
+        override val name: String = "universal_get_json"
+        override val description: String =
+            "GET 一个返回 JSON 的接口，把数据直接回给模型（不落盘、不生成文件）：给 baseUrl + path" +
+                "（可选 auth / extract）等价于 universal_call 的 GET + response.type=json。" +
+                "适合查询 / 控制 / 状态类 API，例如 Clash 的 http://127.0.0.1:48597 + /version。" +
+                "结果是 {ok,status,json}；响应体超过 64KB 会截断并标 truncated，非 JSON 响应给出 text 片段。"
+
+        override val parametersJson: String = UniversalToolSchemas.UNIVERSAL_GET_JSON
+
+        override suspend fun execute(argumentsJson: String): ToolResult {
+            return try {
+                val arguments = parseArguments(argumentsJson, name)
+                ToolResult.Ok(UniversalCaller(sink).execute(buildPlan(arguments)))
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (failure: ImageFailure) {
+                ToolResult.Error(failure.message ?: "universal_get_json 失败")
+            } catch (throwable: Throwable) {
+                ToolResult.Error("universal_get_json 失败：" + (throwable.message ?: throwable::class.java.simpleName))
+            }
+        }
+
+        private fun buildPlan(arguments: Map<String, JsonValue>): UniversalCallPlan {
+            val baseUrl = text(arguments, "baseUrl")?.trim()?.ifEmpty { null }
+                ?: throw ImageFailure("universal_get_json 需要 baseUrl，例如 http://127.0.0.1:48597")
+            val path = text(arguments, "path")?.trim()?.ifEmpty { null }
+                ?: throw ImageFailure("universal_get_json 需要 path，例如 /version")
+            val timeout = arguments.intArgument("timeoutSeconds") ?: DEFAULT_TIMEOUT_SECONDS
+            if (timeout < 1 || timeout > MAX_TIMEOUT_SECONDS) {
+                throw ImageFailure("timeoutSeconds 必须在 1-" + MAX_TIMEOUT_SECONDS + " 之间，收到 " + timeout)
+            }
+            return UniversalCallPlan(
+                profileName = "get_json",
+                baseUrl = baseUrl,
+                auth = UniversalAuth.fromJson(arguments["auth"], UniversalAuth()),
+                request = UniversalRequest(method = "GET", path = path),
+                response = UniversalResponse(
+                    extract = text(arguments, "extract")?.trim().orEmpty(),
+                    type = UniversalResponse.TYPE_JSON,
+                ),
+                async = UniversalAsync(),
+                timeoutSeconds = timeout,
+                values = emptyMap(),
             )
         }
     }
@@ -221,6 +275,6 @@ class UniversalTools(
  */
 fun registerUniversalTools(
     registry: ToolRegistry,
-    sink: ImageSink,
+    sink: ImageSink?,
     library: () -> String = { "" },
 ): UniversalTools = UniversalTools(sink, library).register(registry)

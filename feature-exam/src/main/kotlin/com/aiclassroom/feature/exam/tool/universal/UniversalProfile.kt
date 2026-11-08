@@ -83,9 +83,12 @@ data class UniversalRequest(
     }
 }
 
-/** 响应提取：从 JSON 里按路径取值，再决定值是什么形态（base64 / URL / 原始二进制）。 */
+/**
+ * 响应提取：从 JSON 里按路径取值，再决定值是什么形态（base64 / URL / 原始二进制），
+ * 或者干脆不取值——[TYPE_JSON] 把数据本身回给模型，不落盘。
+ */
 data class UniversalResponse(
-    /** 极简路径，例如 results[0].url 或 data[0].b64_json；type = binary 时可留空。 */
+    /** 极简路径，例如 results[0].url 或 data[0].b64_json；type = binary / json 时可留空。 */
     val extract: String = "",
     val type: String = TYPE_JSON_URL,
     val mime: String = "",
@@ -95,7 +98,10 @@ data class UniversalResponse(
         const val TYPE_JSON_URL: String = "json_url"
         const val TYPE_BINARY: String = "binary"
 
-        val TYPES: List<String> = listOf(TYPE_JSON_BASE64, TYPE_JSON_URL, TYPE_BINARY)
+        /** 数据型：查询 / 控制 / 状态类 API 用，直接返回 JSON 数据，不经过 ImageSink。 */
+        const val TYPE_JSON: String = "json"
+
+        val TYPES: List<String> = listOf(TYPE_JSON_BASE64, TYPE_JSON_URL, TYPE_BINARY, TYPE_JSON)
 
         internal fun fromJson(value: JsonValue?, fallback: UniversalResponse): UniversalResponse {
             if (value == null || value === JsonValue.Null) return fallback

@@ -1,7 +1,23 @@
 package com.aiclassroom.feature.exam.tool.universal
 
-/** universal_call / list_profiles 的 function calling 参数 Schema。 */
+/** universal_call / universal_get_json / list_profiles 的 function calling 参数 Schema。 */
 internal object UniversalToolSchemas {
+
+    /** auth 参数在两个工具里完全一致，只写一份，免得改漏一处。 */
+    private val AUTH_ARGS: String = """
+        {
+          "type": "object",
+          "description": "认证方式；不传则不认证（给了 profile 时用 profile 里的）。",
+          "properties": {
+            "type": { "type": "string", "enum": ["none", "bearer", "header", "basic", "query"] },
+            "header": { "type": "string", "description": "type=header 时的请求头名（如 X-Api-Key）；type=query 时的 query 参数名。" },
+            "token": { "type": "string", "description": "凭据原文。bearer 不用自己加 Bearer 前缀。" },
+            "prefix": { "type": "string", "description": "值前缀，例如 \"\" 或 ghost-。" }
+          },
+          "required": ["type"],
+          "additionalProperties": false
+        }
+    """.trimIndent()
 
     val UNIVERSAL_CALL: String = """
         {
@@ -19,18 +35,7 @@ internal object UniversalToolSchemas {
               "type": "string",
               "description": "内联 profile JSON（别人分享的配置），优先级高于 profile。"
             },
-            "auth": {
-              "type": "object",
-              "description": "认证方式。不传则用 profile 里的。",
-              "properties": {
-                "type": { "type": "string", "enum": ["none", "bearer", "header", "basic", "query"] },
-                "header": { "type": "string", "description": "type=header 时的请求头名（如 X-Api-Key）；type=query 时的 query 参数名。" },
-                "token": { "type": "string", "description": "凭据原文。bearer 不用自己加 Bearer 前缀。" },
-                "prefix": { "type": "string", "description": "值前缀，例如 \"\" 或 ghost-。" }
-              },
-              "required": ["type"],
-              "additionalProperties": false
-            },
+            "auth": $AUTH_ARGS,
             "request": {
               "type": "object",
               "description": "请求描述。path 可以是相对路径（拼在 baseUrl 后）或完整 URL。",
@@ -48,11 +53,11 @@ internal object UniversalToolSchemas {
             },
             "response": {
               "type": "object",
-              "description": "怎么从响应里取出图片。json_base64 = 取出的值是 base64；json_url = 取出的值是图片地址（相对路径也行，会自动带同样的认证再 GET）；binary = 响应体本身就是图片。",
+              "description": "怎么从响应里取结果。json_base64 = 取出的值是 base64；json_url = 取出的值是图片地址（相对路径也行，会自动带同样的认证再 GET）；binary = 响应体本身就是图片；json = 直接返回 JSON 数据、不落盘（适合查询 / 控制 / 状态类接口）。",
               "properties": {
-                "extract": { "type": "string", "description": "极简路径，例如 results[0].url、data[0].b64_json、images[0]。binary 可留空。" },
-                "type": { "type": "string", "enum": ["json_base64", "json_url", "binary"] },
-                "mime": { "type": "string", "description": "可选，如 image/png；留空按字节探测。" }
+                "extract": { "type": "string", "description": "极简路径，例如 results[0].url、data[0].b64_json、b.c[1]。binary 可留空；json 留空表示返回整个响应体。" },
+                "type": { "type": "string", "enum": ["json_base64", "json_url", "binary", "json"] },
+                "mime": { "type": "string", "description": "可选，如 image/png；留空按字节探测。只对图片类型有意义。" }
               },
               "required": ["type"],
               "additionalProperties": false
@@ -83,6 +88,30 @@ internal object UniversalToolSchemas {
             },
             "timeoutSeconds": { "type": "integer", "description": "单次 HTTP 请求超时秒数，1-300，默认 120。" }
           },
+          "additionalProperties": false
+        }
+    """.trimIndent()
+
+    val UNIVERSAL_GET_JSON: String = """
+        {
+          "type": "object",
+          "properties": {
+            "baseUrl": {
+              "type": "string",
+              "description": "服务根地址，例如 http://127.0.0.1:48597。"
+            },
+            "path": {
+              "type": "string",
+              "description": "GET 路径，例如 /version 或 /configs；也可以直接写完整 URL。"
+            },
+            "auth": $AUTH_ARGS,
+            "extract": {
+              "type": "string",
+              "description": "可选，只取子对象：极简路径，例如 b.c[1]、proxies.DIRECT；留空返回整个响应体。"
+            },
+            "timeoutSeconds": { "type": "integer", "description": "单次 HTTP 请求超时秒数，1-300，默认 120。" }
+          },
+          "required": ["baseUrl", "path"],
           "additionalProperties": false
         }
     """.trimIndent()

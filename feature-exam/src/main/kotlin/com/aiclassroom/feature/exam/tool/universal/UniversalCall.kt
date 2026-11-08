@@ -18,6 +18,12 @@ private const val POLL_INTERVAL_MILLIS: Long = 1_000L
 
 private val DATA_URI_PREFIX: Regex = Regex("^data:[^,]*,")
 
+/** 数据型响应的上限：超了先截断，别把几十 KB 的 JSON 灌进模型上下文。 */
+private const val MAX_JSON_BYTES: Int = 64 * 1024
+
+/** 响应不是合法 JSON 时回给模型的正文长度。 */
+private const val TEXT_FALLBACK_LIMIT: Int = 2000
+
 /** 一次调用要用到的全部参数（profile 与顶层参数合成后的结果）。 */
 internal class UniversalCallPlan(
     val profileName: String,
@@ -33,13 +39,19 @@ internal class UniversalCallPlan(
 /** 拿到手的图片字节 + 它的来源（来源会回填在结果里，便于回查服务端）。 */
 internal class UniversalPayload(val bytes: ByteArray, val sourceUrl: String)
 
+/** 已经拿到结果的那一次响应 + 它的来源标签（错误文案里用它区分「提交响应 / 轮询响应」）。 */
+private class ResolvedResponse(val fetch: UniversalFetch, val label: String)
+
 /**
  * universal_call 的执行器：一个方法覆盖「提交 → 提取 → 下载/解码 → 保存」全流程。
  *
  * 认证与查询参数拼装直接复用 ImageAuth.kt 的 buildAuth() / appendQueryAuth()：
  * 通用服务与内置 provider 用同一套认证语义，不出现第二份实现。
+ *
+ * response.type = json 是「数据型」分支：不碰 [ImageSink]，直接把 JSON 数据回给模型，
+ * 所以 sink 是可选的——只跑数据型接口时传 null 也能用。
  */
-internal class UniversalCaller(private val sink: ImageSink) {
+internal class UniversalCaller(private val sink: ImageSink?) {
 
     suspend fun execute(plan: UniversalCallPlan): String {
         val startedAt = System.nanoTime()
@@ -59,16 +71,28 @@ internal class UniversalCaller(private val sink: ImageSink) {
             headers,
             body?.toByteArray(Charsets.UTF_8),
             plan.timeoutSeconds,
+            stopAtCompleteJson = plan.response.type == UniversalResponse.TYPE_JSON,
         )
         if (!submitted.ok) {
             throw ImageFailure("提交请求失败 HTTP " + submitted.status + "（" + method + " " + url + "）：" + snippet(submitted.text()))
         }
-        val payload = if (plan.async.enabled) {
+        val resolved = if (plan.async.enabled) {
             resolveAsync(plan, config, submitted)
         } else {
-            payloadFromText(plan.response, submitted.text(), submitted.bytes, plan, config, "提交响应", allowMissing = false)
-                ?: throw ImageFailure("提交响应里没有取到图片：" + snippet(submitted.text()))
+            ResolvedResponse(submitted, "提交响应")
         }
+        if (plan.response.type == UniversalResponse.TYPE_JSON) {
+            return jsonResult(plan, resolved.fetch, startedAt)
+        }
+        val payload = payloadFromText(
+            plan.response,
+            resolved.fetch.text(),
+            resolved.fetch.bytes,
+            plan,
+            config,
+            resolved.label,
+            allowMissing = false,
+        ) ?: throw ImageFailure(resolved.label + "里没有取到图片：" + snippet(resolved.fetch.text()))
 
         val bytes = payload.bytes
         if (bytes.isEmpty()) throw ImageFailure("没有拿到图片字节：服务端返回了空内容")
@@ -77,7 +101,8 @@ internal class UniversalCaller(private val sink: ImageSink) {
         }
         val mime = plan.response.mime.trim().ifEmpty { sniffMime(bytes) }
         val suggestedName = "universal_" + timestamp() + "." + extensionFor(mime)
-        val saved = sink.save(bytes, suggestedName, mime)
+        val imageSink = sink ?: throw ImageFailure("这次调用要保存图片，但没有可用的保存能力（ImageSink）")
+        val saved = imageSink.save(bytes, suggestedName, mime)
         val path = saved.getOrElse { error ->
             throw ImageFailure("图片已拿到（" + bytes.size + " 字节）但保存失败：" + (error.message ?: error::class.java.simpleName))
         }
@@ -98,10 +123,11 @@ internal class UniversalCaller(private val sink: ImageSink) {
      * 异步：先看提交响应是不是已经给了结果（nightmare 就是这样，直接跳过轮询），
      * 否则按 pollPath 轮询到 doneField 为真（或结果地址出现），超时按 timeoutSeconds 收口。
      */
-    private fun resolveAsync(plan: UniversalCallPlan, config: ImageConfig, submitted: UniversalFetch): UniversalPayload {
+    private fun resolveAsync(plan: UniversalCallPlan, config: ImageConfig, submitted: UniversalFetch): ResolvedResponse {
         val submitText = submitted.text()
-        payloadFromText(plan.response, submitText, submitted.bytes, plan, config, "提交响应", allowMissing = true)
-            ?.let { return it }
+        if (resultPresent(plan.response, submitText, submitted.bytes)) {
+            return ResolvedResponse(submitted, "提交响应")
+        }
         if (plan.async.pollPath.isBlank()) {
             val wanted = plan.response.extract.ifBlank { plan.async.resultUrlFrom }.ifBlank { "(未配置 extract)" }
             throw ImageFailure(
@@ -134,9 +160,53 @@ internal class UniversalCaller(private val sink: ImageSink) {
                 else -> true
             }
             if (!done) continue
-            return payloadFromText(plan.response, lastText, poll.bytes, plan, config, "轮询响应", allowMissing = false)
-                ?: throw ImageFailure("轮询响应里没有取到图片：" + snippet(lastText))
+            return ResolvedResponse(poll, "轮询响应")
         }
+    }
+
+    /**
+     * 这次响应里是不是已经有结果了：binary / json 只要响应体非空就算有，
+     * 其余类型看 extract 路径能不能取到值。异步提交响应可能直接带结果（nightmare 就是这样）。
+     */
+    private fun resultPresent(response: UniversalResponse, text: String, rawBody: ByteArray): Boolean {
+        if (response.type == UniversalResponse.TYPE_BINARY || response.type == UniversalResponse.TYPE_JSON) {
+            return rawBody.isNotEmpty()
+        }
+        if (response.extract.isBlank()) return false
+        val root = parseJsonOrNull(text) ?: return false
+        return UniversalJsonPath.selectText(root, response.extract) != null
+    }
+
+    /**
+     * 数据型结果：不落盘，直接把 JSON 数据回给模型。
+     *
+     * 响应体超过 [MAX_JSON_BYTES] 先截断再解析——截断后的 JSON 通常已经不合法，
+     * 于是退回 text 片段；无论哪种，模型拿到的正文都不会超过上限。
+     */
+    private fun jsonResult(plan: UniversalCallPlan, fetch: UniversalFetch, startedAtNanos: Long): String {
+        val overLimit = fetch.bytes.size > MAX_JSON_BYTES
+        val body = if (overLimit) fetch.bytes.copyOf(MAX_JSON_BYTES) else fetch.bytes
+        val text = String(body, Charsets.UTF_8)
+        val root = parseJsonOrNull(text)
+        val selected = when {
+            root == null -> null
+            plan.response.extract.isBlank() -> root
+            else -> UniversalJsonPath.select(root, plan.response.extract)
+                ?: throw ImageFailure("响应里没有 " + plan.response.extract + "：" + snippet(text))
+        }
+        val fields = ArrayList<Pair<String, JsonValue>>(7)
+        fields.add("ok" to JsonValue.Bool(true))
+        fields.add("status" to JsonValue.Num(fetch.status.toDouble()))
+        if (selected != null) {
+            fields.add("json" to selected)
+        } else {
+            fields.add("json" to JsonValue.Null)
+            fields.add("text" to JsonValue.Str(collapse(text).take(TEXT_FALLBACK_LIMIT)))
+        }
+        fields.add("elapsedMs" to JsonValue.Num(((System.nanoTime() - startedAtNanos) / 1_000_000L).toDouble()))
+        fields.add("profile" to JsonValue.Str(plan.profileName))
+        if (overLimit) fields.add("truncated" to JsonValue.Bool(true))
+        return JsonValue.write(jsonObject(*fields.toTypedArray()))
     }
 
     /**
@@ -302,6 +372,9 @@ internal fun resolveUrl(baseUrl: String, path: String): String {
     if (target.startsWith("?")) return base + target
     return base + "/" + target.trimStart('/')
 }
+
+/** 压成一行：回给模型的正文片段不需要缩进换行（JSON 也好，HTML 错误页也好）。 */
+internal fun collapse(text: String): String = text.replace(Regex("\\s+"), " ").trim()
 
 /** JSON 解析不做错误外抛：异步轮询里「还没好」也可能是非 JSON 文本。 */
 internal fun parseJsonOrNull(text: String): JsonValue? {
