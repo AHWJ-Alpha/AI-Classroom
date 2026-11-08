@@ -26,6 +26,12 @@
   ],
   "extensions": [
     {
+      "type": "bar_button",
+      "slot": "TOP_BAR_ACTIONS",
+      "label": "翻页钟",
+      "config": "btn.json"
+    },
+    {
       "type": "ui_overlay",
       "slot": "FULLSCREEN",
       "config": "clock.json",

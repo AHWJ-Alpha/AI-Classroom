@@ -1,6 +1,11 @@
 
-// 翻页时钟：每秒更新；深夜自动压暗
+// 翻页时钟：点击顶栏进入全屏；每秒更新；深夜自动压暗
 function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+function onEnter(ctx) {
+  ctx.host.enterFullscreen();
+  return 'ok';
+}
 
 function onTick(ctx) {
   var d = new Date(ctx.now());
@@ -9,12 +14,9 @@ function onTick(ctx) {
   ctx.storage.set('mm', pad(m));
   ctx.storage.set('ss', pad(s));
   ctx.storage.set('date', d.getFullYear() + '年' + (d.getMonth()+1) + '月' + d.getDate() + '日');
-
-  // 自动压暗：22:00-06:00 视为夜间
   var night = (h >= 22 || h < 6);
-  ctx.storage.set('night', night ? '1' : '0');
-  // 亮度：白天 1.0，深夜 0.55
   ctx.storage.set('dim', night ? '0.55' : '1.0');
+  ctx.storage.set('period', night ? '夜间' : '日间');
 }
 
 function provideState(ctx) {
@@ -24,6 +26,6 @@ function provideState(ctx) {
     ss: ctx.storage.get('ss') || '--',
     date: ctx.storage.get('date') || '',
     dim: ctx.storage.get('dim') || '1.0',
-    showSec: 'true'
+    period: ctx.storage.get('period') || ''
   };
 }

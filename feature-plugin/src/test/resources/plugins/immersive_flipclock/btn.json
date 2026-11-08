@@ -1,0 +1,20 @@
+{
+  "type": "row",
+  "gap": 4,
+  "onTap": "onEnter",
+  "children": [
+    {
+      "type": "icon",
+      "name": "settings",
+      "size": 18,
+      "color": "primary"
+    },
+    {
+      "type": "text",
+      "text": "翻页钟",
+      "size": "caption",
+      "color": "primary",
+      "weight": "bold"
+    }
+  ]
+}

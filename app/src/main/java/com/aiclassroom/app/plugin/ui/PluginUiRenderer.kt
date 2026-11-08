@@ -273,7 +273,10 @@ internal fun PluginUiFullscreen(
             ),
     ) {
         Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-            key(binding.pluginId, stateVersion) { PaintNode(root, paint, Modifier.fillMaxSize()) }
+            // 闪烁修复：key 只认 pluginId，**不要带上 stateVersion**。
+            // 带上它等于每次 tick 都把整棵渲染树销毁重建（图片重新解码、动画重新开始），
+            // 表现为每秒闪一下。状态变化只需触发重组（recomposition），不需要换 identity。
+            key(binding.pluginId) { PaintNode(root, paint, Modifier.fillMaxSize()) }
         }
         FullscreenExitButton(palette, onExit)
     }
@@ -347,7 +350,10 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
         }
 
         UiNodeType.COLUMN -> Column(
+            // 居中由父容器的 anchor 决定；这里只负责子项对齐，不再擅自 fillMaxWidth ——
+            // 那会把 Row 里的卡片撑满整行，分钟/秒被挤出可视区。
             modifier,
+            horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = node.gap?.let { Arrangement.spacedBy(it.dp) } ?: Arrangement.Top,
         ) {
             node.children.forEach { PaintNode(it, paint) }
@@ -355,7 +361,7 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
 
         UiNodeType.ROW -> Row(
             modifier,
-            horizontalArrangement = node.gap?.let { Arrangement.spacedBy(it.dp) } ?: Arrangement.Start,
+            horizontalArrangement = node.gap?.let { Arrangement.spacedBy(it.dp) } ?: Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             node.children.forEach { PaintNode(it, paint) }

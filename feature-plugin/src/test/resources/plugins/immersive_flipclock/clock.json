@@ -1,23 +1,27 @@
 {
-  "type": "box",
+  "type": "column",
   "background": "surface",
   "width": "fill",
   "height": "fill",
   "children": [
     {
+      "type": "spacer",
+      "height": 200
+    },
+    {
       "type": "row",
       "anchor": "center",
-      "gap": 12,
+      "gap": 10,
       "children": [
         {
           "type": "card",
           "background": "surfaceVariant",
           "radius": "panel",
-          "padding": 18,
+          "padding": 20,
           "children": [
             {
               "type": "column",
-              "gap": 0,
+              "gap": 2,
               "children": [
                 {
                   "type": "text",
@@ -46,11 +50,11 @@
           "type": "card",
           "background": "surfaceVariant",
           "radius": "panel",
-          "padding": 18,
+          "padding": 20,
           "children": [
             {
               "type": "column",
-              "gap": 0,
+              "gap": 2,
               "children": [
                 {
                   "type": "text",
@@ -68,24 +72,53 @@
               ]
             }
           ]
+        },
+        {
+          "type": "card",
+          "background": "surfaceVariant",
+          "radius": "control",
+          "padding": 10,
+          "children": [
+            {
+              "type": "text",
+              "textFrom": "state.ss",
+              "size": "body",
+              "color": "primary",
+              "weight": "bold"
+            }
+          ]
         }
       ]
     },
     {
-      "type": "text",
-      "anchor": "bottom_center",
-      "offsetY": -100,
-      "textFrom": "state.date",
-      "size": "subtitle",
-      "color": "muted"
+      "type": "column",
+      "anchor": "center",
+      "gap": 4,
+      "children": [
+        {
+          "type": "text",
+          "textFrom": "state.date",
+          "size": "subtitle",
+          "color": "onSurface"
+        },
+        {
+          "type": "text",
+          "textFrom": "state.period",
+          "size": "caption",
+          "color": "muted"
+        }
+      ]
+    },
+    {
+      "type": "spacer",
+      "height": 300
     },
     {
       "type": "text",
-      "anchor": "bottom_center",
-      "offsetY": -40,
-      "text": "点击切换 · 长按退出",
+      "text": "长按退出 · 右上角 ✕ 也可退出",
       "size": "caption",
-      "color": "muted"
+      "color": "muted",
+      "anchor": "center"
     }
   ]
 }
