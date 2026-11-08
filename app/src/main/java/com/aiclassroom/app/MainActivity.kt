@@ -70,6 +70,7 @@ import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Search
@@ -422,6 +423,10 @@ private fun AIClassroomApp() {
     // 生图插件：开关与配置都落在 prefs；工具每次调用现读，设置页保存后立即生效。
     var imageToolsEnabled by remember { mutableStateOf(store.loadImageToolsEnabled()) }
     var imageConfig by remember { mutableStateOf(store.loadImageConfig()) }
+    // 考试 / 文件 / 配置三组插件也由「设置 → 插件」统一开关，默认开启，状态落在 prefs。
+    var examToolsEnabled by remember { mutableStateOf(store.loadExamToolsEnabled()) }
+    var fsToolsEnabled by remember { mutableStateOf(store.loadFsToolsEnabled()) }
+    var configToolsEnabled by remember { mutableStateOf(store.loadConfigToolsEnabled()) }
     val imageSink = remember { ImageSinkImpl(context) }
     val toolRegistry = remember {
         ToolRegistry().apply {
@@ -442,10 +447,6 @@ private fun AIClassroomApp() {
             // 生图插件：config 用 lambda 每次现读 prefs，设置页一保存就生效；
             // 保存能力由 app 侧 ImageSinkImpl 注入（feature-exam 是纯 JVM 模块，拿不到 Context）。
             registerImageTools(this, config = { store.loadImageConfig() }, sink = imageSink)
-            // 总开关闸门：包在同名工具外面，关闭时在本地直接回错，连一次网络请求都不发起。
-            find("generate_image")?.let { inner ->
-                register(PluginGateHandler(inner, { imageToolsEnabled }, "生图插件已在设置里关闭，本次没有发起任何请求；需要生图请到「设置 → 插件 → 生图」打开开关。"))
-            }
             // 配置工具：让 AI 能在对话里切换模型 / 改 BaseURL / 调温度；密钥只读且脱敏，无写入入口。
             registerConfigTools(this, ConfigAccessAdapter(
                 readConfig = { classes[classIndex.coerceIn(0, classes.lastIndex)].config },
@@ -455,6 +456,11 @@ private fun AIClassroomApp() {
                     persist("配置已更新")
                 }
             ))
+            // 每组插件统一套一层总开关闸门：关闭时在本地直接回错，工具实现体一行都不会跑。
+            gateTools("exam_", { examToolsEnabled }, "考试插件已在设置里关闭，本次没有创建或改动任何考试；需要考试工具请到「设置 → 插件」打开开关。")
+            gateTools("fs_", { fsToolsEnabled }, "文件插件已在设置里关闭，本次没有读写任何文件；需要文件工具请到「设置 → 插件」打开开关。")
+            gateTools("config_", { configToolsEnabled }, "配置插件已在设置里关闭，本次没有改动任何配置；需要配置工具请到「设置 → 插件」打开开关。")
+            gateTools("generate_image", { imageToolsEnabled }, "生图插件已在设置里关闭，本次没有发起任何请求；需要生图请到「设置 → 插件 → 生图」打开开关。")
         }
     }
     // 注册表非空即外发 tools；若将来把工具全部关闭，这里自然返回 null，请求体回到纯聊天形态。
@@ -1044,6 +1050,24 @@ private fun AIClassroomApp() {
                         modelStatus = modelStatus,
                         saveNotice = saveNotice,
                         onConfig = { replaceCurrent(current.copy(config = it), "设置已保存") },
+                        examToolsEnabled = examToolsEnabled,
+                        onExamToolsEnabledChange = { enabled ->
+                            examToolsEnabled = enabled
+                            store.saveExamToolsEnabled(enabled)
+                            saveNotice = if (enabled) "已启用考试工具" else "已关闭考试工具"
+                        },
+                        fsToolsEnabled = fsToolsEnabled,
+                        onFsToolsEnabledChange = { enabled ->
+                            fsToolsEnabled = enabled
+                            store.saveFsToolsEnabled(enabled)
+                            saveNotice = if (enabled) "已启用文件工具" else "已关闭文件工具"
+                        },
+                        configToolsEnabled = configToolsEnabled,
+                        onConfigToolsEnabledChange = { enabled ->
+                            configToolsEnabled = enabled
+                            store.saveConfigToolsEnabled(enabled)
+                            saveNotice = if (enabled) "已启用配置工具" else "已关闭配置工具"
+                        },
                         netToolsEnabled = netToolsEnabled,
                         onNetToolsEnabledChange = { enabled ->
                             netToolsEnabled = enabled
@@ -2973,6 +2997,12 @@ private fun ModelScreen(
     modelStatus: String,
     saveNotice: String,
     onConfig: (ClassroomConfig) -> Unit,
+    examToolsEnabled: Boolean,
+    onExamToolsEnabledChange: (Boolean) -> Unit,
+    fsToolsEnabled: Boolean,
+    onFsToolsEnabledChange: (Boolean) -> Unit,
+    configToolsEnabled: Boolean,
+    onConfigToolsEnabledChange: (Boolean) -> Unit,
     netToolsEnabled: Boolean,
     onNetToolsEnabledChange: (Boolean) -> Unit,
     imageToolsEnabled: Boolean,
@@ -3016,6 +3046,7 @@ private fun ModelScreen(
     var imageSteps by remember(imageConfig.steps) { mutableStateOf(imageConfig.steps.toString()) }
     var imageCfgScale by remember(imageConfig.cfgScale) { mutableStateOf(imageConfig.cfgScale.toString()) }
     var imageSaveStatus by remember { mutableStateOf("") }
+    var imageDetailExpanded by remember { mutableStateOf(false) }
     var themeMode by remember(config.themeMode) { mutableStateOf(normalizeThemeMode(config.themeMode)) }
     var interfaceMode by remember(config.interfaceMode) { mutableStateOf(normalizeInterfaceMode(config.interfaceMode)) }
     var primaryColor by remember(config.primaryColor) { mutableStateOf(config.primaryColor) }
@@ -3302,99 +3333,94 @@ private fun ModelScreen(
             }
         }
         item {
-            SettingsCard("网络与工具", expandedModule == "tools", { expandedModule = if (expandedModule == "tools") null else "tools" }) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Public, null, tint = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.width(8.dp))
-                    Text("允许 AI 调用网络", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    Switch(netToolsEnabled, onNetToolsEnabledChange)
-                }
-                Text("关闭后 net_request 会在本地直接拒绝并回一条错误给模型，不发起任何网络请求。该开关对所有课堂生效。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
-                Text("http:// 为明文传输，建议只填本地或可信局域网地址。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
-            }
-        }
-        item {
             SettingsCard("插件", expandedModule == "plugin", { expandedModule = if (expandedModule == "plugin") null else "plugin" }) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Image, null, tint = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.width(8.dp))
-                    Text("生图", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    Switch(imageToolsEnabled, onImageToolsEnabledChange)
+                val enabledPlugins = listOf(examToolsEnabled, fsToolsEnabled, netToolsEnabled, configToolsEnabled, imageToolsEnabled).count { it }
+                Text("已启用 " + enabledPlugins + " / 5 个插件 · 共 18 个工具", fontWeight = FontWeight.Bold)
+                Text("插件就是 AI 可以自己决定要不要调用的工具。关掉某个插件后，对应工具会在本地直接拒绝并回一条错误给模型，不产生任何副作用。开关对所有课堂生效。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                Spacer(Modifier.height(DesignTokens.Spacing.Md))
+                PluginRow(Icons.Default.School, "考试工具", 7, "创建/编辑考试并保存到课堂", examToolsEnabled, onExamToolsEnabledChange)
+                PluginRow(Icons.Default.Folder, "文件工具", 4, "读写应用私有目录内的文件", fsToolsEnabled, onFsToolsEnabledChange)
+                PluginRow(Icons.Default.Public, "网络工具", 1, "调用任意 http/https 地址", netToolsEnabled, onNetToolsEnabledChange)
+                Text("关闭后 net_request 在本地直接拒绝，不发起任何网络请求。http:// 为明文传输，建议只填本地或可信局域网地址。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                PluginRow(Icons.Default.Tune, "配置工具", 5, "让 AI 修改模型/BaseURL/温度（密钥不可写）", configToolsEnabled, onConfigToolsEnabledChange)
+                PluginRow(Icons.Default.Image, "生图", 1, "调用云端或本地生图服务生成图片", imageToolsEnabled, onImageToolsEnabledChange)
+                TextButton(onClick = { imageDetailExpanded = !imageDetailExpanded }) {
+                    Text(if (imageDetailExpanded) "收起生图配置" else "生图详细配置（运营商 / Key / 模型 / 尺寸）", color = MaterialTheme.colorScheme.primary)
                 }
-                Text("开启后 AI 可以调用 generate_image 生图并自动存到本机「files/images」。关闭后工具在本地直接拒绝并回一条错误给模型，不发起任何生图请求。该开关对所有课堂生效。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
-                Spacer(Modifier.height(10.dp))
-                Text("运营商", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(6.dp))
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AppFilterChip(imageProvider == ImageConfig.PROVIDER_OPENAI, {
-                        imageProvider = ImageConfig.PROVIDER_OPENAI
-                        imageBaseUrl = "https://api.openai.com/v1"
-                        imageModel = imageModel.ifBlank { "dall-e-3" }
-                        imageSize = imageSize.ifBlank { "1024x1024" }
-                    }) { Text("OpenAI Images") }
-                    AppFilterChip(imageProvider == ImageConfig.PROVIDER_SDWEBUI, {
-                        imageProvider = ImageConfig.PROVIDER_SDWEBUI
-                        imageBaseUrl = "http://127.0.0.1:7860"
-                    }) { Text("SD WebUI") }
-                    AppFilterChip(imageProvider == ImageConfig.PROVIDER_CUSTOM, {
-                        imageProvider = ImageConfig.PROVIDER_CUSTOM
-                    }) { Text("自定义 HTTP") }
-                }
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(imageBaseUrl, { imageBaseUrl = it }, Modifier.fillMaxWidth(), label = { Text("Base URL") }, singleLine = true)
-                Text(
-                    when (imageProvider) {
-                        ImageConfig.PROVIDER_SDWEBUI -> "本地软件示例：http://127.0.0.1:7860（会调用 /sdapi/v1/txt2img）"
-                        ImageConfig.PROVIDER_CUSTOM -> "填自己的生图接口地址，按默认模板 {\"prompt\":\"{{prompt}}\"} 提交"
-                        else -> "OpenAI 兼容服务示例：https://api.openai.com/v1"
-                    },
-                    color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
-                )
-                Text("http:// 为明文传输，建议只填本地或可信局域网地址。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(imageApiKey, { imageApiKey = it }, Modifier.fillMaxWidth(), label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
-                Text(
-                    if (imageProvider == ImageConfig.PROVIDER_SDWEBUI) "本地 SD WebUI 通常留空（开了 --api-auth 才需要填）。" else "密钥只保存在本机，不会显示明文。",
-                    color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
-                )
-                if (imageProvider == ImageConfig.PROVIDER_OPENAI) {
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(imageModel, { imageModel = it }, Modifier.fillMaxWidth(), label = { Text("模型名称（如 dall-e-3 / gpt-image-1）") }, singleLine = true)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(imageSize, { imageSize = it }, Modifier.fillMaxWidth(), label = { Text("尺寸（如 1024x1024 / 1792x1024）") }, singleLine = true)
-                }
-                if (imageProvider == ImageConfig.PROVIDER_SDWEBUI) {
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(imageSteps, { imageSteps = it }, Modifier.weight(1f), label = { Text("步数") }, singleLine = true)
-                        OutlinedTextField(imageCfgScale, { imageCfgScale = it }, Modifier.weight(1f), label = { Text("CFG") }, singleLine = true)
-                    }
-                    Text("采样器沿用默认值（" + imageConfig.sampler + "），宽高默认 1024x1024；模型调用时给了 width / height 就以它为准。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
-                }
-                Spacer(Modifier.height(10.dp))
-                Button(onClick = {
-                    val cleanSteps = imageSteps.trim().toIntOrNull()?.coerceIn(1, 150) ?: imageConfig.steps
-                    val cleanCfg = imageCfgScale.trim().toDoubleOrNull()?.coerceIn(0.0, 30.0) ?: imageConfig.cfgScale
-                    imageSteps = cleanSteps.toString()
-                    imageCfgScale = cleanCfg.toString()
-                    onImageConfig(imageConfig.copy(
-                        provider = imageProvider,
-                        baseUrl = imageBaseUrl.trim(),
-                        apiKey = imageApiKey.trim(),
-                        model = imageModel.trim().ifBlank { imageConfig.model },
-                        size = imageSize.trim().ifBlank { imageConfig.size },
-                        steps = cleanSteps,
-                        cfgScale = cleanCfg
-                    ))
-                    imageSaveStatus = "生图配置已保存，AI 下一次调用立即生效"
-                }) {
-                    Icon(Icons.Default.Check, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("保存生图配置")
-                }
-                if (imageSaveStatus.isNotBlank()) {
+                if (imageDetailExpanded) {
+                    Text("运营商", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
-                    Text(imageSaveStatus, color = MaterialTheme.colorScheme.primary, fontSize = DesignTokens.Type.Small)
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AppFilterChip(imageProvider == ImageConfig.PROVIDER_OPENAI, {
+                            imageProvider = ImageConfig.PROVIDER_OPENAI
+                            imageBaseUrl = "https://api.openai.com/v1"
+                            imageModel = imageModel.ifBlank { "dall-e-3" }
+                            imageSize = imageSize.ifBlank { "1024x1024" }
+                        }) { Text("OpenAI Images") }
+                        AppFilterChip(imageProvider == ImageConfig.PROVIDER_SDWEBUI, {
+                            imageProvider = ImageConfig.PROVIDER_SDWEBUI
+                            imageBaseUrl = "http://127.0.0.1:7860"
+                        }) { Text("SD WebUI") }
+                        AppFilterChip(imageProvider == ImageConfig.PROVIDER_CUSTOM, {
+                            imageProvider = ImageConfig.PROVIDER_CUSTOM
+                        }) { Text("自定义 HTTP") }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(imageBaseUrl, { imageBaseUrl = it }, Modifier.fillMaxWidth(), label = { Text("Base URL") }, singleLine = true)
+                    Text(
+                        when (imageProvider) {
+                            ImageConfig.PROVIDER_SDWEBUI -> "本地软件示例：http://127.0.0.1:7860（会调用 /sdapi/v1/txt2img）"
+                            ImageConfig.PROVIDER_CUSTOM -> "填自己的生图接口地址，按默认模板 {\"prompt\":\"{{prompt}}\"} 提交"
+                            else -> "OpenAI 兼容服务示例：https://api.openai.com/v1"
+                        },
+                        color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
+                    )
+                    Text("http:// 为明文传输，建议只填本地或可信局域网地址。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(imageApiKey, { imageApiKey = it }, Modifier.fillMaxWidth(), label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                    Text(
+                        if (imageProvider == ImageConfig.PROVIDER_SDWEBUI) "本地 SD WebUI 通常留空（开了 --api-auth 才需要填）。" else "密钥只保存在本机，不会显示明文。",
+                        color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
+                    )
+                    if (imageProvider == ImageConfig.PROVIDER_OPENAI) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(imageModel, { imageModel = it }, Modifier.fillMaxWidth(), label = { Text("模型名称（如 dall-e-3 / gpt-image-1）") }, singleLine = true)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(imageSize, { imageSize = it }, Modifier.fillMaxWidth(), label = { Text("尺寸（如 1024x1024 / 1792x1024）") }, singleLine = true)
+                    }
+                    if (imageProvider == ImageConfig.PROVIDER_SDWEBUI) {
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(imageSteps, { imageSteps = it }, Modifier.weight(1f), label = { Text("步数") }, singleLine = true)
+                            OutlinedTextField(imageCfgScale, { imageCfgScale = it }, Modifier.weight(1f), label = { Text("CFG") }, singleLine = true)
+                        }
+                        Text("采样器沿用默认值（" + imageConfig.sampler + "），宽高默认 1024x1024；模型调用时给了 width / height 就以它为准。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Button(onClick = {
+                        val cleanSteps = imageSteps.trim().toIntOrNull()?.coerceIn(1, 150) ?: imageConfig.steps
+                        val cleanCfg = imageCfgScale.trim().toDoubleOrNull()?.coerceIn(0.0, 30.0) ?: imageConfig.cfgScale
+                        imageSteps = cleanSteps.toString()
+                        imageCfgScale = cleanCfg.toString()
+                        onImageConfig(imageConfig.copy(
+                            provider = imageProvider,
+                            baseUrl = imageBaseUrl.trim(),
+                            apiKey = imageApiKey.trim(),
+                            model = imageModel.trim().ifBlank { imageConfig.model },
+                            size = imageSize.trim().ifBlank { imageConfig.size },
+                            steps = cleanSteps,
+                            cfgScale = cleanCfg
+                        ))
+                        imageSaveStatus = "生图配置已保存，AI 下一次调用立即生效"
+                    }) {
+                        Icon(Icons.Default.Check, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("保存生图配置")
+                    }
+                    if (imageSaveStatus.isNotBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(imageSaveStatus, color = MaterialTheme.colorScheme.primary, fontSize = DesignTokens.Type.Small)
+                    }
                 }
             }
         }
@@ -3402,7 +3428,7 @@ private fun ModelScreen(
             InfoCard {
                 Text("使用手册", fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
-                Text("查看 AI Classroom 的课堂、分支、记忆、知识库、模型配置、皮肤和考试工具说明。", color = Muted, lineHeight = 21.sp)
+                Text("查看 AI Classroom 的课堂、分支、记忆、知识库、模型配置、皮肤和插件（含生图）说明。", color = Muted, lineHeight = 21.sp)
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(onClick = onOpenManual) { Text("打开使用手册") }
             }
@@ -3444,6 +3470,34 @@ private class PluginGateHandler(
 
     override suspend fun execute(argumentsJson: String): ToolResult =
         if (enabled()) delegate.execute(argumentsJson) else ToolResult.Error(disabledMessage)
+}
+
+/** 给 [prefix] 开头的已注册工具逐个套上总开关；关闭时直接回错，实现体一行都不会跑。 */
+private fun ToolRegistry.gateTools(prefix: String, enabled: () -> Boolean, disabledMessage: String) {
+    all().filter { it.name == prefix || it.name.startsWith(prefix) }.forEach { inner ->
+        register(PluginGateHandler(inner, enabled, disabledMessage))
+    }
+}
+
+/** 设置页里的一行插件：图标 + 名称 + 工具数 + 一句话说明 + 开关。 */
+@Composable
+private fun PluginRow(
+    icon: ImageVector,
+    title: String,
+    toolCount: Int,
+    description: String,
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit
+) {
+    Column(Modifier.fillMaxWidth().padding(vertical = DesignTokens.Spacing.Xs)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(title + " · " + toolCount + " 个工具", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Switch(enabled, onEnabledChange)
+        }
+        Text(description, color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+    }
 }
 
 @Composable
@@ -3658,6 +3712,25 @@ private class ClassroomStore(context: Context) {
 
     fun saveNetToolsEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("net_tools_enabled", enabled).apply()
+    }
+
+    /** 考试 / 文件 / 配置三组插件的开关，默认开启；关闭后对应工具在本地直接拒绝，实现体不执行。 */
+    fun loadExamToolsEnabled(): Boolean = prefs.getBoolean("plugin_exam_enabled", true)
+
+    fun saveExamToolsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("plugin_exam_enabled", enabled).apply()
+    }
+
+    fun loadFsToolsEnabled(): Boolean = prefs.getBoolean("plugin_fs_enabled", true)
+
+    fun saveFsToolsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("plugin_fs_enabled", enabled).apply()
+    }
+
+    fun loadConfigToolsEnabled(): Boolean = prefs.getBoolean("plugin_config_enabled", true)
+
+    fun saveConfigToolsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("plugin_config_enabled", enabled).apply()
     }
 
     /** 生图插件总开关，默认开启；关闭后 generate_image 在本地直接拒绝，不发任何请求。 */
@@ -5033,6 +5106,27 @@ TTS 模块用于保存语音服务配置，包括服务商、API Key、Base URL�
 考试不是普通入口。AI 明确要进行考试、测试或模拟测验时，应用会自动进入沉浸式考试界面。
 
 题目由“前提”和“问题”组成。用户在每个问题后填写答案并提交批改。标记“不会”后，这道题会自动生成讲解分支，方便考试结束后继续学习。
+
+## 插件
+插件是 AI 可以自己决定要不要调用的工具。你不用点，模型觉得需要时才会用；具体调什么、什么时候调，由它自己判断。
+
+五组插件各管一件事：
+- 考试工具：把题目写进当前考试，也能改标题、加题、删题、标记“不会”。
+- 文件工具：在应用私有目录里列目录、读、写、删文件，出不了这个目录。
+- 网络工具：让 AI 去读一个 http/https 地址，比如接口文档或网页。
+- 配置工具：让 AI 改模型名、BaseURL 和温度，省得你自己翻设置。
+- 生图：按你的描述生成图片，自动存到本机“files/images”。
+
+生图怎么配（“设置 → 插件 → 生图详细配置”）：
+- OpenAI：选 OpenAI Images，填 Key，模型填 dall-e-3 之类，尺寸填 1024x1024。
+- SD WebUI 或本地端口软件：选 SD WebUI，Base URL 填 http://127.0.0.1:端口。只要那个软件是 SD WebUI 兼容的就能直接用。
+- 自定义 HTTP：选“自定义 HTTP”，填自己的接口地址，按 {"prompt":"{{prompt}}"} 的格式提交。
+
+明文 HTTP：本应用已放行 http，方便连本机或局域网里的服务；但 http 是明文传输，链路上能看到内容，建议只填本地或可信局域网地址，走公网时优先用 https。
+
+密钥与安全：AI 看不到你的 API Key，只能看到“已配置”这类状态，也没有工具能改它；配置工具能改的只有模型、BaseURL 和温度。
+
+关掉某个插件：进“设置 → 插件”，把那一行的开关关掉即可，立即生效，AI 再调用会被直接拒绝，不会留下任何改动。
 
 ## 本地保存
 所有课堂、分支、对话、知识库摘要、记忆章节、设置和考试记录都会保存在手机本地。手机重启或应用版本更新后，数据仍会保留。
