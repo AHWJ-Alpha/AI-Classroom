@@ -14,7 +14,10 @@ class TimeFlowPluginTest {
     /** 2023-11-14T22:13:20Z，宿主伪造的「当前时间」。 */
     private val fixedNow = 1_700_000_000_000L
 
-    private fun loadRuntime(store: PluginStateStore): PluginRuntime {
+    private fun loadRuntime(
+        store: PluginStateStore,
+        settings: Map<String, String> = emptyMap(),
+    ): PluginRuntime {
         val bytes = zipOf(
             mapOf(
                 "manifest.json" to readTestResource("plugins/time_flow/manifest.json"),
@@ -23,7 +26,40 @@ class TimeFlowPluginTest {
         )
         val pkg = PluginPackage.read(bytes, "time_flow.aip")
         assertTrue("示例插件必须通过校验：${pkg.validate().errors}", pkg.validate().ok)
-        return PluginRuntime.create(pkg, RecordingHostApi(), store, PluginClock { fixedNow })
+        return PluginRuntime.create(
+            pkg, RecordingHostApi(), store, PluginClock { fixedNow },
+            settingValues = settings,
+        )
+    }
+
+    @Test
+    fun `示例插件声明了 stepMinutes 配置，默认 30`() {
+        val pkg = PluginPackage.ofText(
+            mapOf(
+                "manifest.json" to readTestResource("plugins/time_flow/manifest.json"),
+                "logic.js" to readTestResource("plugins/time_flow/logic.js"),
+            ),
+        )
+        val manifest = pkg.validate().manifest!!
+        assertEquals(1, manifest.settings.size)
+        val setting = manifest.settings.first()
+        assertEquals("stepMinutes", setting.key)
+        assertEquals(PluginSettingType.NUMBER, setting.type)
+        assertEquals(PluginSettingDefault.Number(30.0), setting.defaultValue)
+        // 缺省值必须合并进生效表，插件才读得到 30
+        assertEquals("30", PluginSettingsCodec.resolve(manifest.settings, emptyMap())["stepMinutes"])
+    }
+
+    @Test
+    fun `改了 stepMinutes 之后推进的分钟数跟着变`() {
+        val store = InMemoryStateStore()
+        val plugin = loadRuntime(store, settings = mapOf("stepMinutes" to "90"))
+        val meta = PromptMeta(fixedNow, 0, "现在几点了？")
+        val result = PromptHookPipeline().apply(listOf(plugin), "PROMPT", meta)
+        assertEquals(
+            "PROMPT\n\n[系统信息] 当前时间：2023-11-14T23:43:20.000Z（已推进 90 分钟）",
+            result.prompt,
+        )
     }
 
     @Test

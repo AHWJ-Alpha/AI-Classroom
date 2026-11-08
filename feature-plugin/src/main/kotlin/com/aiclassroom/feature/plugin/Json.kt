@@ -16,6 +16,10 @@ internal sealed class JsonNode {
     val asArrayOrNull: Arr? get() = this as? Arr
     val asStringOrNull: String? get() = (this as? Str)?.value
 
+    /** 任意数字（settings[].default 里的 number 允许小数）。 */
+    val asNumberOrNull: Double?
+        get() = (this as? Num)?.value?.takeIf { !it.isNaN() && !it.isInfinite() }
+
     /** 只接受整数值，避免 1.5 悄悄变成 1。 */
     val asIntOrNull: Int?
         get() {

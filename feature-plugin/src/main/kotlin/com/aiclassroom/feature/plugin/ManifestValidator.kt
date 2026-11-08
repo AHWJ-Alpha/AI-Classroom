@@ -21,13 +21,17 @@ data class ManifestValidation(val manifest: PluginManifest?, val errors: List<St
  * 9. extensions[].config 必须指向包内真实文件（省略时默认 logic.js），路径不得穿越；
  * 10. extensions[].entry 必须是合法函数名，且能在 logic.js 里静态找到声明；
  * 11. timer：intervalSeconds 必须是 60..86400 的整数，同一插件最多 1 个；
- * 12. event：event 必须在事件白名单内，同一插件最多 8 个。
+ * 12. event：event 必须在事件白名单内，同一插件最多 8 个；
+ * 13. settings：配置表单声明，逐项校验 key / label / type / required / default / min / max / options。
  */
 object ManifestValidator {
 
     private val ID_PATTERN = Regex("^[a-z0-9_]{2,32}$")
     private val VERSION_PATTERN = Regex("^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.]+)?(?:\\+[0-9A-Za-z.]+)?$")
     private val ENTRY_PATTERN = Regex("^[A-Za-z_$][A-Za-z0-9_$]*$")
+    // settings 的 key 允许 camelCase（JS 里 ctx.settings.stepMinutes 这样读最自然），
+    // 但首字符必须是小写字母，避免数字开头或与 JS 保留字冲突。
+    private val SETTING_KEY_PATTERN = Regex("^[a-z][A-Za-z0-9_]{0,31}$")
 
     private const val MAX_NAME = 64
     private const val MAX_DESCRIPTION = 512
@@ -35,6 +39,9 @@ object ManifestValidator {
     private const val MAX_LABEL = 24
     private const val MAX_EXTENSIONS = 32
     private const val MAX_PERMISSIONS = 16
+    private const val MAX_SETTINGS = 16
+    private const val MAX_SETTING_LABEL = 32
+    private const val MAX_SETTING_HINT = 120
 
     fun validate(pkg: PluginPackage): ManifestValidation =
         validate(pkg.manifestText, pkg.logicText, pkg.fileNames)
@@ -76,12 +83,23 @@ object ManifestValidator {
         }
         val permissions = parsePermissions(obj, errors)
         val extensions = parseExtensions(obj, permissions, logicSource, fileNames, errors)
+        val settings = parseSettings(obj, errors)
 
         if (errors.isNotEmpty() || id == null || name == null || version == null || minApiVersion == null) {
             return ManifestValidation(null, errors.ifEmpty { listOf("manifest 校验失败") })
         }
         return ManifestValidation(
-            manifest = PluginManifest(id, name, version, description, author, minApiVersion, permissions, extensions),
+            manifest = PluginManifest(
+                id = id,
+                name = name,
+                version = version,
+                description = description,
+                author = author,
+                minApiVersion = minApiVersion,
+                permissions = permissions,
+                extensions = extensions,
+                settings = settings,
+            ),
             errors = emptyList(),
         )
     }
@@ -295,6 +313,275 @@ object ManifestValidator {
             event = event.takeIf { type == PluginExtensionType.EVENT },
         )
     }
+
+    /**
+     * settings：插件声明需要哪些配置，宿主据此自动生成表单。
+     * 数组内 key 不可重复；错误信息一律带 settings[i] 与字段名，插件作者一轮就能改完。
+     */
+    private fun parseSettings(obj: JsonNode.Obj, errors: MutableList<String>): List<PluginSetting> {
+        val node = obj.fields["settings"] ?: return emptyList()
+        if (node is JsonNode.Null) return emptyList()
+        val array = node.asArrayOrNull
+        if (array == null) {
+            errors += "settings 必须是数组"
+            return emptyList()
+        }
+        if (array.items.size > MAX_SETTINGS) errors += "settings 最多 " + MAX_SETTINGS + " 项"
+        val result = mutableListOf<PluginSetting>()
+        val seenKeys = HashSet<String>()
+        for ((index, item) in array.items.withIndex()) {
+            val errorsBefore = errors.size
+            val parsed = parseSetting(index, item, seenKeys, errors)
+            if (parsed != null && errors.size == errorsBefore) result += parsed
+        }
+        return result
+    }
+
+    private fun parseSetting(
+        index: Int,
+        item: JsonNode,
+        seenKeys: MutableSet<String>,
+        errors: MutableList<String>,
+    ): PluginSetting? {
+        val prefix = "settings[" + index + "]"
+        val setting = item.asObjectOrNull
+        if (setting == null) {
+            errors += prefix + " 必须是对象"
+            return null
+        }
+
+        val key = setting.fields["key"]?.asStringOrNull
+        if (key == null) {
+            errors += prefix + " 缺少字符串字段 key"
+        } else if (!SETTING_KEY_PATTERN.matches(key)) {
+            errors += prefix + ".key 非法：'" + key + "'（首字符小写字母，之后字母/数字/下划线，1-32 位，例：stepMinutes）"
+        } else if (!seenKeys.add(key)) {
+            errors += prefix + ".key 重复声明：'" + key + "'"
+        }
+
+        val label = setting.fields["label"]?.asStringOrNull
+        if (label == null) {
+            errors += prefix + " 缺少字符串字段 label"
+        } else if (label.isBlank()) {
+            errors += prefix + ".label 不能为空"
+        } else if (label.length > MAX_SETTING_LABEL) {
+            errors += prefix + ".label 过长（最多 " + MAX_SETTING_LABEL + " 字符）"
+        }
+
+        val typeName = setting.fields["type"]?.asStringOrNull
+        val type = if (typeName == null) {
+            errors += prefix + " 缺少字符串字段 type"
+            null
+        } else {
+            PluginSettingType.fromWire(typeName).also {
+                if (it == null) {
+                    errors += "未知配置类型 " + prefix + ".type='" + typeName +
+                        "'（允许：" + PluginSettingType.wireNames.joinToString(", ") + "）"
+                }
+            }
+        }
+
+        val required = when (val requiredNode = setting.fields["required"]) {
+            null -> false
+            is JsonNode.Null -> false
+            is JsonNode.Bool -> requiredNode.value
+            else -> {
+                errors += prefix + ".required 必须是布尔值"
+                false
+            }
+        }
+
+        val description = optionalSettingHint(setting, "description", prefix, errors)
+        val placeholder = optionalSettingHint(setting, "placeholder", prefix, errors)
+
+        val defaultNode = setting.fields["default"]
+        val defaultValue = if (defaultNode == null || defaultNode is JsonNode.Null) {
+            null
+        } else if (type == null) {
+            // type 已经报错，不再叠加「default 类型不匹配」的噪声。
+            null
+        } else {
+            when (type) {
+                PluginSettingType.TEXT, PluginSettingType.SECRET -> {
+                    val text = defaultNode.asStringOrNull
+                    if (text == null) {
+                        errors += prefix + ".default 必须是字符串（type=" + type.wire + "）"
+                        null
+                    } else {
+                        PluginSettingDefault.Text(text)
+                    }
+                }
+
+                PluginSettingType.NUMBER -> {
+                    val number = defaultNode.asNumberOrNull
+                    if (number == null) {
+                        errors += prefix + ".default 必须是数字（type=number）"
+                        null
+                    } else {
+                        PluginSettingDefault.Number(number)
+                    }
+                }
+
+                PluginSettingType.BOOLEAN -> when (defaultNode) {
+                    is JsonNode.Bool -> PluginSettingDefault.Flag(defaultNode.value)
+                    else -> {
+                        errors += prefix + ".default 必须是布尔值（type=boolean）"
+                        null
+                    }
+                }
+
+                PluginSettingType.SELECT -> {
+                    val text = defaultNode.asStringOrNull
+                    if (text == null) {
+                        errors += prefix + ".default 必须是字符串（type=select）"
+                        null
+                    } else {
+                        PluginSettingDefault.Text(text)
+                    }
+                }
+            }
+        }
+
+        val min = if (type == PluginSettingType.NUMBER) {
+            optionalNumber(setting, "min", prefix, errors)
+        } else {
+            rejectFieldForType(setting, "min", prefix, type, errors)
+            null
+        }
+        val max = if (type == PluginSettingType.NUMBER) {
+            optionalNumber(setting, "max", prefix, errors)
+        } else {
+            rejectFieldForType(setting, "max", prefix, type, errors)
+            null
+        }
+        if (min != null && max != null && min > max) {
+            errors += prefix + " 的 min 不能大于 max（" + min + " > " + max + "）"
+        }
+
+        val options = if (type == PluginSettingType.SELECT) {
+            parseOptions(setting, prefix, errors)
+        } else {
+            rejectFieldForType(setting, "options", prefix, type, errors)
+            emptyList()
+        }
+
+        // default 与 min/max、options 的一致性：只在都合法时校验，避免一个错带出一串错。
+        if (defaultValue is PluginSettingDefault.Number) {
+            val value = defaultValue.value
+            if (min != null && value < min) {
+                errors += prefix + ".default 越界：" + formatNumber(value) + "（不得小于 min=" + formatNumber(min) + "）"
+            }
+            if (max != null && value > max) {
+                errors += prefix + ".default 越界：" + formatNumber(value) + "（不得大于 max=" + formatNumber(max) + "）"
+            }
+        }
+        if (defaultValue is PluginSettingDefault.Text && options.isNotEmpty() && defaultValue.value !in options) {
+            errors += prefix + ".default='" + defaultValue.value + "' 不在 options 里（允许：" +
+                options.joinToString(", ") + "）"
+        }
+
+        return PluginSetting(
+            key = key.orEmpty(),
+            label = label.orEmpty(),
+            type = type ?: PluginSettingType.TEXT,
+            required = required,
+            description = description,
+            placeholder = placeholder,
+            defaultValue = defaultValue,
+            min = min,
+            max = max,
+            options = options,
+        )
+    }
+
+    private fun optionalSettingHint(
+        setting: JsonNode.Obj,
+        field: String,
+        prefix: String,
+        errors: MutableList<String>,
+    ): String? {
+        val node = setting.fields[field] ?: return null
+        if (node is JsonNode.Null) return null
+        val text = node.asStringOrNull
+        if (text == null) {
+            errors += prefix + "." + field + " 必须是字符串"
+            return null
+        }
+        if (text.length > MAX_SETTING_HINT) {
+            errors += prefix + "." + field + " 过长（最多 " + MAX_SETTING_HINT + " 字符）"
+            return null
+        }
+        return text
+    }
+
+    private fun optionalNumber(
+        setting: JsonNode.Obj,
+        field: String,
+        prefix: String,
+        errors: MutableList<String>,
+    ): Double? {
+        val node = setting.fields[field] ?: return null
+        if (node is JsonNode.Null) return null
+        val value = node.asNumberOrNull
+        if (value == null) {
+            errors += prefix + "." + field + " 必须是数字"
+            return null
+        }
+        return value
+    }
+
+    /** min / max / options 只对特定类型有意义，出现在别的类型上是作者写错了，直接报错而不是静默忽略。 */
+    private fun rejectFieldForType(
+        setting: JsonNode.Obj,
+        field: String,
+        prefix: String,
+        type: PluginSettingType?,
+        errors: MutableList<String>,
+    ) {
+        val node = setting.fields[field] ?: return
+        if (node is JsonNode.Null) return
+        val onlyFor = if (field == "options") "select" else "number"
+        errors += prefix + "." + field + " 只对 type=" + onlyFor + " 有效，当前 type=" +
+            (type?.wire ?: "未知")
+    }
+
+    private fun parseOptions(
+        setting: JsonNode.Obj,
+        prefix: String,
+        errors: MutableList<String>,
+    ): List<String> {
+        val node = setting.fields["options"]
+        if (node == null || node is JsonNode.Null) {
+            errors += prefix + " (select) 缺少 options（必须是非空字符串数组）"
+            return emptyList()
+        }
+        val array = node.asArrayOrNull
+        if (array == null) {
+            errors += prefix + ".options 必须是字符串数组"
+            return emptyList()
+        }
+        if (array.items.isEmpty()) {
+            errors += prefix + ".options 不能为空（type=select 至少给一个选项）"
+            return emptyList()
+        }
+        if (array.items.size > MAX_SETTINGS * 2) {
+            errors += prefix + ".options 最多 " + (MAX_SETTINGS * 2) + " 个选项"
+        }
+        val result = mutableListOf<String>()
+        for ((optionIndex, item) in array.items.withIndex()) {
+            val option = item.asStringOrNull
+            when {
+                option == null -> errors += prefix + ".options[" + optionIndex + "] 必须是字符串"
+                option.isBlank() -> errors += prefix + ".options[" + optionIndex + "] 不能为空"
+                option in result -> errors += prefix + ".options 重复：'" + option + "'"
+                else -> result += option
+            }
+        }
+        return result
+    }
+
+    private fun formatNumber(value: Double): String =
+        if (value == Math.floor(value) && !value.isInfinite()) value.toLong().toString() else value.toString()
 
     /** config 是否指向一份界面描述（ui.json）；缺省与 logic.js 都不算。 */
     private fun isUiConfig(config: String?): Boolean =

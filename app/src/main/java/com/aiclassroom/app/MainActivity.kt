@@ -155,7 +155,10 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Constraints
@@ -223,6 +226,9 @@ import com.aiclassroom.feature.plugin.PluginClock
 import com.aiclassroom.feature.plugin.PluginEventNames
 import com.aiclassroom.feature.plugin.PluginLimits
 import com.aiclassroom.feature.plugin.PluginResult
+import com.aiclassroom.feature.plugin.PluginSetting
+import com.aiclassroom.feature.plugin.PluginSettingType
+import com.aiclassroom.feature.plugin.PluginSettingsCodec
 import com.aiclassroom.feature.plugin.event.PluginEvent
 import com.aiclassroom.feature.plugin.event.PluginEventBus
 import com.aiclassroom.feature.plugin.hook.PromptHookPipeline
@@ -783,7 +789,16 @@ private fun AIClassroomApp() {
             },
         )
     }
-    val pluginManager = remember { PluginManager(context, pluginHost, pluginStateStore) }
+    // 插件包的配置与总开关都落在 prefs：装载时读一次，设置页保存后 reload 重建 runtime。
+    val pluginManager = remember {
+        PluginManager(
+            context = context,
+            host = pluginHost,
+            stateStore = pluginStateStore,
+            pluginSettings = { id -> store.loadPluginSettings(id) },
+            pluginEnabled = { id -> store.loadPluginEnabled(id) },
+        )
+    }
     val promptHookPipeline = remember { PromptHookPipeline(logger = { line -> Log.i(PLUGIN_LOG_TAG, line) }) }
     // ---- 触发器（第二批）：timer / event ----
     // 分发永远在后台线程、永远被 runCatching 兜住：插件坏掉不能影响对话、考试、启动。
@@ -1281,6 +1296,8 @@ private fun AIClassroomApp() {
             }
         }
     }
+    // 设置页改插件配置时的防抖句柄：连着打字只重建一次 runtime。
+    var pendingPluginReload by remember { mutableStateOf<Job?>(null) }
     val pluginImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             scope.launch {
@@ -1704,6 +1721,30 @@ private fun AIClassroomApp() {
                                 val removed = withContext(Dispatchers.IO) { pluginManager.uninstall(pluginId) }
                                 pluginVersion++
                                 saveNotice = if (removed) "插件已卸载" else "插件未装载"
+                            }
+                        },
+                        onPluginEnabledChange = { pluginId, enabled ->
+                            store.savePluginEnabled(pluginId, enabled)
+                            // 开关只改快照过滤，不用重建 runtime：下一次快照就少/多这一项。
+                            pluginManager.invalidate()
+                            pluginVersion++
+                            Log.i(
+                                PLUGIN_LOG_TAG,
+                                "插件 " + pluginId + (if (enabled) " 已启用" else " 已停用（钩子/事件/定时器/界面全部短路）"),
+                            )
+                            saveNotice = if (enabled) "已启用插件 $pluginId" else "已停用插件 $pluginId"
+                        },
+                        onPluginSettingChange = { pluginId, key, value ->
+                            // 键值立刻落 prefs（关掉 app 也不丢）；runtime 重建推迟到停手之后，
+                            // 否则每敲一个字符就要重开一次 Rhino Scope。
+                            store.savePluginSetting(pluginId, key, value)
+                            pendingPluginReload?.cancel()
+                            pendingPluginReload = scope.launch {
+                                delay(600)
+                                val reloaded = withContext(Dispatchers.IO) { pluginManager.reload(pluginId) }
+                                pluginManager.invalidate()
+                                pluginVersion++
+                                saveNotice = if (reloaded) "插件配置已保存，下一次调用立即生效" else "配置已保存，重新装载失败"
                             }
                         },
                         onOpenManual = { showManualDialog = true },
@@ -3704,6 +3745,8 @@ private fun ModelScreen(
     pluginInfos: List<LoadedPluginInfo>,
     onImportPlugin: () -> Unit,
     onUninstallPlugin: (String) -> Unit,
+    onPluginEnabledChange: (String, Boolean) -> Unit,
+    onPluginSettingChange: (String, String, String) -> Unit,
     onOpenManual: () -> Unit,
     onFetchModels: () -> Unit
 ) {
@@ -3744,6 +3787,9 @@ private fun ModelScreen(
     var imageCfgScale by remember(imageConfig.cfgScale) { mutableStateOf(imageConfig.cfgScale.toString()) }
     var imageSaveStatus by remember { mutableStateOf("") }
     var imageDetailExpanded by remember { mutableStateOf(false) }
+    // 插件配置的展开状态挂在列表外层：放在行内部的话，LazyColumn 滚动回收该行时会被重置。
+    // 默认全部收起。
+    var expandedPluginConfigs by remember { mutableStateOf(emptySet<String>()) }
     var themeMode by remember(config.themeMode) { mutableStateOf(normalizeThemeMode(config.themeMode)) }
     var interfaceMode by remember(config.interfaceMode) { mutableStateOf(normalizeInterfaceMode(config.interfaceMode)) }
     var primaryColor by remember(config.primaryColor) { mutableStateOf(config.primaryColor) }
@@ -4133,15 +4179,14 @@ private fun ModelScreen(
                     color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
                 )
                 pluginInfos.forEach { info ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(info.name + " · v" + info.version, fontWeight = FontWeight.Bold)
-                            Text(info.summary, color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp)
-                        }
-                        TextButton(onClick = { onUninstallPlugin(info.id) }) {
-                            Text("卸载", color = MaterialTheme.colorScheme.error)
-                        }
-                    }
+                    PluginPackageRow(
+                        info = info,
+                        expanded = info.id in expandedPluginConfigs,
+                        onToggleExpanded = { expandedPluginConfigs = togglePluginConfig(expandedPluginConfigs, info.id) },
+                        onEnabledChange = { onPluginEnabledChange(info.id, it) },
+                        onSettingChange = { key, value -> onPluginSettingChange(info.id, key, value) },
+                        onUninstall = { onUninstallPlugin(info.id) },
+                    )
                 }
                 TextButton(onClick = onImportPlugin) {
                     Text("⊕ 导入插件文件（.zip / .aip）", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
@@ -4594,6 +4639,230 @@ private fun CustomToolEditorDialog(
     )
 }
 
+/**
+ * 「插件包」列表里的一项：三行结构 —— 标题行（名字 + 开关 + 卸载）、权限行、可折叠的配置行。
+ *
+ * 开关的语义与原生插件（考试/文件/网络/配置/生图）一致：关掉后该插件的一切能力
+ * （prompt 钩子、事件、定时器、界面插槽、工具）立即失效，状态存 prefs plugin_enabled_<id>。
+ * 插件没有声明 settings 时，「配置」这一行根本不渲染。
+ */
+@Composable
+private fun PluginPackageRow(
+    info: LoadedPluginInfo,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    onEnabledChange: (Boolean) -> Unit,
+    onSettingChange: (String, String) -> Unit,
+    onUninstall: () -> Unit,
+) {
+    val unfinished = info.unfinishedSettings
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = DesignTokens.Spacing.Xs)
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                info.name + " · v" + info.version,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f),
+            )
+            Switch(info.enabled, onEnabledChange)
+            TextButton(onClick = onUninstall) {
+                Text("卸载", color = MaterialTheme.colorScheme.error)
+            }
+        }
+        Text(info.summary, color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp)
+        if (info.settings.isEmpty()) return@Column
+        TextButton(
+            onClick = onToggleExpanded,
+            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+        ) {
+            Text(
+                (if (expanded) "▾ " else "▸ ") + "配置（" + info.settings.size + " 项" +
+                    (if (unfinished > 0) "，未完成 " + unfinished + " 项" else "") + "）",
+                color = if (unfinished > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                fontSize = DesignTokens.Type.Small,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        AnimatedVisibility(expanded) {
+            Column(Modifier.fillMaxWidth().padding(start = 4.dp)) {
+                info.settings.forEach { setting ->
+                    PluginSettingField(
+                        setting = setting,
+                        value = info.settingValues[setting.key].orEmpty(),
+                        locked = !info.enabled,
+                        onValueChange = { onSettingChange(setting.key, it) },
+                    )
+                }
+                Text(
+                    "改完立即生效，插件下一次被调用就能读到新值。",
+                    color = Muted,
+                    fontSize = DesignTokens.Type.Caption,
+                    lineHeight = 16.sp,
+                )
+            }
+        }
+    }
+}
+
+/** 折叠 / 展开某个插件的配置行（展开集合是不可变的，直接换一个新集合）。 */
+private fun togglePluginConfig(current: Set<String>, pluginId: String): Set<String> =
+    if (pluginId in current) current - pluginId else current + pluginId
+
+/** 一个配置字段：按 type 渲染控件，必填未填 / number 越界时整行标红并给出原因。 */
+@Composable
+private fun PluginSettingField(
+    setting: PluginSetting,
+    value: String,
+    locked: Boolean,
+    onValueChange: (String) -> Unit,
+) {
+    // 表单自己持有草稿：宿主快照要等防抖后的 reload 才刷新，直接绑快照会把用户刚敲的
+    // 每个字符立刻回滚掉。prefs 在每次改动时同步写入，所以草稿丢了也能从磁盘恢复。
+    var draft by remember(setting.key) { mutableStateOf(value) }
+    val update: (String) -> Unit = { next ->
+        draft = next
+        onValueChange(next)
+    }
+    val numberProblem = if (setting.type == PluginSettingType.NUMBER && draft.isNotBlank()) {
+        PluginSettingsCodec.numberProblem(setting, draft)
+    } else {
+        null
+    }
+    val blank = draft.isBlank()
+    val missing = setting.required && (blank || numberProblem != null)
+    val labelColor = if (missing) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                setting.label + (if (setting.required) " *" else ""),
+                color = labelColor,
+                fontWeight = FontWeight.Bold,
+                fontSize = DesignTokens.Type.Small,
+                modifier = Modifier.weight(1f),
+            )
+            if (setting.type == PluginSettingType.BOOLEAN) {
+                Switch(draft == "true", { update(if (it) "true" else "false") }, enabled = !locked)
+            }
+        }
+        when (setting.type) {
+            PluginSettingType.BOOLEAN -> Unit
+            PluginSettingType.SELECT -> PluginSelectField(setting, draft, locked, update)
+            PluginSettingType.SECRET -> PluginSecretField(setting, draft, locked, update)
+            else -> PluginTextField(setting, draft, locked, numberProblem != null, update)
+        }
+        // 说明与错误各占一行：填错时说明仍然看得见，用户才知道这一项该去哪儿拿。
+        val description = setting.description
+        if (!description.isNullOrBlank()) {
+            Text(
+                description,
+                color = Muted,
+                fontSize = DesignTokens.Type.Caption,
+                lineHeight = 16.sp,
+            )
+        }
+        val problem = when {
+            missing && blank -> "必填项未填"
+            numberProblem != null -> numberProblem
+            else -> null
+        }
+        if (problem != null) {
+            Text(
+                problem,
+                color = MaterialTheme.colorScheme.error,
+                fontSize = DesignTokens.Type.Caption,
+                lineHeight = 16.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PluginTextField(
+    setting: PluginSetting,
+    value: String,
+    locked: Boolean,
+    isError: Boolean,
+    onValueChange: (String) -> Unit,
+) {
+    val keyboard = if (setting.type == PluginSettingType.NUMBER) {
+        KeyboardOptions(keyboardType = KeyboardType.Number)
+    } else {
+        KeyboardOptions.Default
+    }
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = Modifier.fillMaxWidth(),
+        // 字段名已经在上面那行，这里只放 placeholder，避免同一个名字出现两次。
+        placeholder = setting.placeholder?.let { { Text(it) } },
+        singleLine = true,
+        enabled = !locked,
+        isError = isError,
+        keyboardOptions = keyboard,
+    )
+}
+
+/**
+ * secret：默认掩码；点「显示」明文显示 15 秒后自动回掩码，
+ * 免得用户把 token 举在屏幕上被摄像头或旁人看到。
+ */
+@Composable
+private fun PluginSecretField(
+    setting: PluginSetting,
+    value: String,
+    locked: Boolean,
+    onValueChange: (String) -> Unit,
+) {
+    var revealed by remember(setting.key) { mutableStateOf(false) }
+    LaunchedEffect(revealed, value) {
+        if (revealed) {
+            delay(15_000)
+            revealed = false
+        }
+    }
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = Modifier.fillMaxWidth(),
+        placeholder = setting.placeholder?.let { { Text(it) } },
+        singleLine = true,
+        enabled = !locked,
+        visualTransformation = if (revealed) VisualTransformation.None else PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        trailingIcon = {
+            TextButton(onClick = { revealed = !revealed }) {
+                Text(
+                    if (revealed) "隐藏" else "显示",
+                    fontSize = DesignTokens.Type.Caption,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        },
+    )
+}
+
+/** select：与设置页其它单选一致，用横向 chips（选项多时可横向滑动）。 */
+@Composable
+private fun PluginSelectField(
+    setting: PluginSetting,
+    value: String,
+    locked: Boolean,
+    onValueChange: (String) -> Unit,
+) {
+    Row(
+        Modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        setting.options.forEach { option ->
+            AppFilterChip(value == option, { if (!locked) onValueChange(option) }) { Text(option) }
+        }
+    }
+}
+
+
 /** 设置页里的一行插件：图标 + 名称 + 工具数 + 一句话说明 + 开关。 */
 @Composable
 private fun PluginRow(
@@ -4849,6 +5118,38 @@ private class ClassroomStore(context: Context) {
     }
 
     /** 生图插件总开关，默认开启；关闭后 generate_image 在本地直接拒绝，不发任何请求。 */
+    /** 插件包总开关：一次一个键 plugin_enabled_<id>，缺省为开。 */
+    fun loadPluginEnabled(pluginId: String): Boolean = prefs.getBoolean("plugin_enabled_$pluginId", true)
+
+    fun savePluginEnabled(pluginId: String, enabled: Boolean) {
+        prefs.edit().putBoolean("plugin_enabled_$pluginId", enabled).apply()
+    }
+
+    /**
+     * 插件配置：整张表以 JSON 存在 plugin_settings_<id>。解析失败按「没配过」处理，
+     * 插件写坏的配置不能连带把设置页打挂。
+     */
+    fun loadPluginSettings(pluginId: String): Map<String, String> {
+        val raw = prefs.getString("plugin_settings_$pluginId", null)
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val obj = JSONObject(raw)
+            val result = LinkedHashMap<String, String>()
+            for (key in obj.keys()) result[key] = obj.optString(key, "")
+            result
+        }.getOrElse { emptyMap() }
+    }
+
+    fun savePluginSetting(pluginId: String, key: String, value: String) {
+        savePluginSettings(pluginId, loadPluginSettings(pluginId) + (key to value))
+    }
+
+    fun savePluginSettings(pluginId: String, values: Map<String, String>) {
+        val obj = JSONObject()
+        values.forEach { (key, value) -> obj.put(key, value) }
+        prefs.edit().putString("plugin_settings_$pluginId", obj.toString()).apply()
+    }
+
     fun loadImageToolsEnabled(): Boolean = prefs.getBoolean("image_tools_enabled", true)
 
     fun saveImageToolsEnabled(enabled: Boolean) {

@@ -23,6 +23,7 @@ class ManifestValidationTest {
         minApiVersion: Int? = 1,
         permissions: List<String>? = listOf("image.generate", "tts.speak", "dialog.read", "dialog.insert", "storage"),
         extensions: String? = defaultHook,
+        settings: String? = null,
     ): String {
         val fields = mutableListOf<String>()
         id?.let { fields += "\"id\": \"$it\"" }
@@ -35,6 +36,7 @@ class ManifestValidationTest {
             fields += "\"permissions\": " + list.joinToString(",", "[", "]") { "\"$it\"" }
         }
         extensions?.let { fields += "\"extensions\": $it" }
+        settings?.let { fields += "\"settings\": $it" }
         return "{ " + fields.joinToString(", ") + " }"
     }
 

@@ -32,6 +32,8 @@ class PluginRuntime internal constructor(
     private val logger: PluginLogger,
     // 包内文件原始字节：宿主渲染界面（ui.json、图片素材）时从这里取，不再回磁盘读。
     private val files: Map<String, ByteArray> = emptyMap(),
+    // 用户当前生效的配置值（已按 manifest.settings 补齐 default），由宿主在装载时注入。
+    private val settingsJson: String = "{}",
 ) : Closeable {
 
     /**
@@ -50,6 +52,8 @@ class PluginRuntime internal constructor(
 
     /** 包内二进制文件（图片素材）；不存在返回 null。 */
     fun binaryFile(path: String): ByteArray? = files[path]
+
+
 
     /**
      * 把插件脚本里的顶层 `state` 序列化成 JSON，供宿主解析 `state.xxx` 取值表达式。
@@ -136,6 +140,7 @@ class PluginRuntime internal constructor(
                 "now" to nowFunction(),
                 "storage" to storageObject(cx, scope),
                 "log" to logFunction(),
+                "settings" to settingsObject(cx, scope),
             ),
         )
 
@@ -151,6 +156,7 @@ class PluginRuntime internal constructor(
                 "now" to nowFunction(),
                 "storage" to storageObject(cx, scope),
                 "log" to logFunction(),
+                "settings" to settingsObject(cx, scope),
             ),
         )
 
@@ -167,9 +173,18 @@ class PluginRuntime internal constructor(
                 "now" to nowFunction(),
                 "storage" to storageObject(cx, scope),
                 "log" to logFunction(),
+                "settings" to settingsObject(cx, scope),
             ),
         )
     }
+
+    /**
+     * ctx.settings：只读对象。值在装载时定死（宿主在设置页保存后会重建 runtime 再装载），
+     * 因此这里不需要每次调用回读宿主；插件改它也不会影响宿主存储。
+     * 未配置且无 default 的键不会出现在对象里，脚本读到 undefined。
+     */
+    private fun settingsObject(cx: Context, scope: Scriptable): Any =
+        jsPayload(cx, scope, settingsJson) ?: cx.newObject(scope)
 
     private fun nowFunction() = jsFunction("now") { _, _, _ -> clock.nowMillis().toDouble() }
 
@@ -221,10 +236,14 @@ class PluginRuntime internal constructor(
             logger: PluginLogger = {},
             scriptTimeoutMillis: Long = JsSandbox.DEFAULT_TIMEOUT_MILLIS,
             hostCallTimeoutMillis: Long = HostFacade.DEFAULT_HOST_CALL_TIMEOUT_MILLIS,
+            settingValues: Map<String, String> = emptyMap(),
         ): PluginRuntime {
             val validation = pkg.validate()
             val manifest = validation.manifest
             if (!validation.ok || manifest == null) throw PluginValidationException(validation.errors)
+            // 用户已存的值按 manifest 补齐 default；只认声明过的 key。
+            val resolved = PluginSettingsCodec.resolve(manifest.settings, settingValues)
+            val settingsJson = PluginSettingsCodec.toJson(manifest.settings, resolved)
 
             val engine = JsEngine(JsSandbox(scriptTimeoutMillis))
             val kv = PluginKvStorage(stateStore, manifest.id)
@@ -246,7 +265,7 @@ class PluginRuntime internal constructor(
                 engine.close()
                 throw t
             }
-            return PluginRuntime(manifest, engine, kv, clock, granted, logger, pkg.entries)
+            return PluginRuntime(manifest, engine, kv, clock, granted, logger, pkg.entries, settingsJson)
         }
     }
 }

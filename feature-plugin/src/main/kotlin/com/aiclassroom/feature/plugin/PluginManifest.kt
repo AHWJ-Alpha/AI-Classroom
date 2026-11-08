@@ -17,6 +17,74 @@ data class PluginExtension(
     val configFile: String get() = config ?: PluginPackage.LOGIC_FILE
 }
 
+/** settings[].default 的取值：只会是这三种之一，具体哪种由 type 决定。 */
+sealed class PluginSettingDefault {
+    data class Text(val value: String) : PluginSettingDefault()
+    data class Number(val value: Double) : PluginSettingDefault()
+    data class Flag(val value: Boolean) : PluginSettingDefault()
+
+    /** 存进宿主 key-value 表时的字符串形式（number 去尾，boolean 用 true/false）。 */
+    fun asStorageValue(): String = when (this) {
+        is Text -> value
+        is Number -> if (value == Math.floor(value) && !value.isInfinite()) {
+            value.toLong().toString()
+        } else {
+            value.toString()
+        }
+
+        is Flag -> if (value) "true" else "false"
+    }
+}
+
+/** settings[] 的一项：插件在 manifest 里声明的配置字段，宿主据此自动生成表单。 */
+data class PluginSetting(
+    val key: String,
+    val label: String,
+    val type: PluginSettingType,
+    val required: Boolean = false,
+    val description: String? = null,
+    val placeholder: String? = null,
+    val defaultValue: PluginSettingDefault? = null,
+    /** 仅 number 有效。 */
+    val min: Double? = null,
+    /** 仅 number 有效。 */
+    val max: Double? = null,
+    /** 仅 select 有效，非空。 */
+    val options: List<String> = emptyList(),
+) {
+    /**
+     * secret 的默认值不进任何字符串输出：manifest 会被日志、设置页与错误信息打印，
+     * 一旦 toString 带上明文，脱敏就形同虚设。宿主存储里 secret 仍是明文（本地 prefs）。
+     */
+    override fun toString(): String {
+        val defaultText = defaultValue
+            ?.let { if (type == PluginSettingType.SECRET) "<hidden>" else it.asStorageValue() }
+            ?: "null"
+        return "PluginSetting(key=" + key + ", label=" + label + ", type=" + type.wire +
+            ", required=" + required + ", description=" + description +
+            ", placeholder=" + placeholder + ", default=" + defaultText +
+            ", min=" + min + ", max=" + max + ", options=" + options + ")"
+    }
+}
+
+/** settings[].type 的取值。 */
+enum class PluginSettingType(val wire: String) {
+    TEXT("text"),
+    SECRET("secret"),
+    NUMBER("number"),
+    BOOLEAN("boolean"),
+    SELECT("select"),
+    ;
+
+    companion object {
+        private val byWire: Map<String, PluginSettingType> = entries.associateBy { it.wire }
+
+        fun fromWire(value: String?): PluginSettingType? = value?.let { byWire[it] }
+
+        val wireNames: List<String> get() = entries.map { it.wire }
+    }
+}
+
 /** 通过校验的 manifest。 */
 data class PluginManifest(
     val id: String,
@@ -27,6 +95,8 @@ data class PluginManifest(
     val minApiVersion: Int,
     val permissions: List<String>,
     val extensions: List<PluginExtension>,
+    /** settings 段（配置表单声明）；没有声明时为空列表。 */
+    val settings: List<PluginSetting> = emptyList(),
 ) {
     fun extensionsOf(type: PluginExtensionType): List<PluginExtension> = extensions.filter { it.type == type }
 

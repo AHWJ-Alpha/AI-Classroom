@@ -7,6 +7,8 @@ import com.aiclassroom.feature.plugin.PluginExtensionType
 import com.aiclassroom.feature.plugin.PluginHostApi
 import com.aiclassroom.feature.plugin.PluginPackage
 import com.aiclassroom.feature.plugin.PluginRuntime
+import com.aiclassroom.feature.plugin.PluginSetting
+import com.aiclassroom.feature.plugin.PluginSettingsCodec
 import com.aiclassroom.feature.plugin.PluginStateStore
 import com.aiclassroom.feature.plugin.ui.PluginUiParser
 import com.aiclassroom.feature.plugin.ui.UiNode
@@ -47,6 +49,12 @@ data class LoadedPluginInfo(
     val description: String,
     val permissions: List<String>,
     val promptHook: Boolean,
+    /** manifest.settings 声明的配置字段（设置页据此生成表单）；没声明时为空。 */
+    val settings: List<PluginSetting> = emptyList(),
+    /** 插件包总开关的当前状态（prefs: plugin_enabled_<id>，默认开）。 */
+    val enabled: Boolean = true,
+    /** 当前生效的配置值（已合并 default），设置页表单的初始值。 */
+    val settingValues: Map<String, String> = emptyMap(),
 ) {
     /** 一句话能力的摘要（设置页一行显示得下）。 */
     val summary: String
@@ -56,6 +64,10 @@ data class LoadedPluginInfo(
             if (permissions.isNotEmpty()) parts += "权限：" + permissions.joinToString(" / ")
             return parts.joinToString(" · ").ifBlank { "未声明权限与扩展点" }
         }
+
+    /** 必填但没填好的配置项数量（折叠标题里的「未完成 M 项」）。 */
+    val unfinishedSettings: Int
+        get() = PluginSettingsCodec.missingRequired(settings, settingValues).size
 }
 
 /**
@@ -102,6 +114,10 @@ class PluginManager(
     private val host: PluginHostApi,
     private val stateStore: PluginStateStore,
     private val logger: (String) -> Unit = { line -> Log.i(PLUGIN_LOG_TAG, line) },
+    /** 插件配置的当前值（已存的那部分，未经 default 合并）；主 app 用 prefs 实现。 */
+    private val pluginSettings: (String) -> Map<String, String> = { emptyMap() },
+    /** 插件包总开关；关闭的插件照常装载，但不出现在任何能力面上。 */
+    private val pluginEnabled: (String) -> Boolean = { true },
 ) {
     private val root = File(context.filesDir, "plugins")
     private val clock = PluginClock.SYSTEM
@@ -112,10 +128,43 @@ class PluginManager(
     @Volatile
     private var uiCache: List<PluginUiBinding>? = null
 
-    /** 当前装载的运行时快照（钩子按这个顺序串行执行）。 */
-    fun snapshot(): List<PluginRuntime> = synchronized(lock) { runtimes.values.toList() }
+    /**
+     * 当前**生效**的运行时快照（钩子按这个顺序串行执行）。
+     *
+     * 开关选择的是「照常装载、分发时短路」而不是「跳过装载」：关掉的插件必须继续出现在
+     * 设置页列表里，否则用户没有任何入口把它重新打开。所有能力面（prompt 钩子、事件、
+     * 定时器、界面插槽、界面回调）都从这一个快照取数，因此一处过滤就全部失效。
+     */
+    fun snapshot(): List<PluginRuntime> = synchronized(lock) {
+        runtimes.values.filter { pluginEnabled(it.manifest.id) }
+    }
 
-    fun infos(): List<LoadedPluginInfo> = snapshot().map { it.info() }
+    /** 所有已装载的运行时，**不过**开关过滤：设置页列表与卸载用它。 */
+    fun allRuntimes(): List<PluginRuntime> = synchronized(lock) { runtimes.values.toList() }
+
+    fun infos(): List<LoadedPluginInfo> = allRuntimes().map { runtime ->
+        val info = runtime.info()
+        val resolved = PluginSettingsCodec.resolve(info.settings, pluginSettings(info.id))
+        info.copy(enabled = pluginEnabled(info.id), settingValues = resolved)
+    }
+
+    /** 开关 / 配置变化后丢弃界面解析缓存，让下一次重组按新的生效集合重新解析。 */
+    fun invalidate() {
+        synchronized(lock) { uiCache = null }
+    }
+
+    /** 按当前 prefs 里的配置值重新装载一个插件（设置页保存后调用，新值立刻进 ctx.settings）。 */
+    fun reload(pluginId: String): Boolean {
+        val dir = File(root, pluginId)
+        if (!dir.isDirectory) return false
+        return try {
+            loadDirectory(dir)
+            true
+        } catch (t: Throwable) {
+            logger("插件 $pluginId 重新装载失败：" + (t.message ?: t.javaClass.simpleName))
+            false
+        }
+    }
 
     // ---------------------------------------------------------------- 界面插槽
 
@@ -214,7 +263,10 @@ class PluginManager(
         }
         if (entries.isEmpty()) throw IllegalStateException("目录里没有插件文件")
         val pkg = PluginPackage.of(entries)
-        val runtime = PluginRuntime.create(pkg, host, stateStore, clock, logger)
+        val runtime = PluginRuntime.create(
+            pkg, host, stateStore, clock, logger,
+            settingValues = pluginSettings(pkg.validate().manifest?.id ?: dir.name),
+        )
         synchronized(lock) {
             runtimes.remove(runtime.manifest.id)?.close()
             runtimes[runtime.manifest.id] = runtime
@@ -237,7 +289,10 @@ class PluginManager(
             return PluginImportResult.Failed("已存在同 id 的插件「${manifest.name}」（${manifest.id}）")
         }
         val runtime = try {
-            PluginRuntime.create(pkg, host, stateStore, clock, logger)
+            PluginRuntime.create(
+                pkg, host, stateStore, clock, logger,
+                settingValues = pluginSettings(manifest.id),
+            )
         } catch (t: Throwable) {
             return PluginImportResult.Failed("插件装载失败：" + (t.message ?: t.javaClass.simpleName))
         }
@@ -296,6 +351,7 @@ private fun PluginRuntime.info(): LoadedPluginInfo = LoadedPluginInfo(
     description = manifest.description,
     permissions = manifest.permissions,
     promptHook = promptHookEntry != null,
+    settings = manifest.settings,
 )
 
 /** 从 .aip / .zip 字节导入：解析 → 校验 → （同 id 时）要用户确认 → 落盘注册。 */

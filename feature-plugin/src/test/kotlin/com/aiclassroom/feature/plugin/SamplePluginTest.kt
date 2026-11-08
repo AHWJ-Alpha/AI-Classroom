@@ -1,8 +1,11 @@
 package com.aiclassroom.feature.plugin
 
+import com.aiclassroom.feature.plugin.hook.PromptMeta
 import com.aiclassroom.feature.plugin.ui.PluginUiParser
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -12,7 +15,11 @@ import org.junit.Test
  */
 class SamplePluginTest {
 
+    /** 有预打包 .aip 的三个示例（导入路径的回归样本）。 */
     private val sampleIds = listOf("pet_cat", "msg_badge", "top_quick")
+
+    /** 全部示例插件：只用源文件（manifest.json + logic.js 等）也必须通过校验。 */
+    private val allSampleIds = sampleIds + listOf("nightmare", "time_flow")
 
     private fun bytesOf(path: String): ByteArray =
         checkNotNull(SamplePluginTest::class.java.classLoader?.getResourceAsStream(path)) {
@@ -41,15 +48,15 @@ class SamplePluginTest {
     }
 
     @Test
-    fun `三个示例插件都通过 manifest 校验`() {
-        for (pluginId in sampleIds) {
+    fun `示例插件都通过 manifest 校验`() {
+        for (pluginId in allSampleIds) {
             val validation = packageOf(pluginId).validate()
             assertTrue(pluginId + " 校验失败：" + validation.errors.joinToString("；"), validation.ok)
         }
     }
 
     @Test
-    fun `三个示例插件的 ui文件都能解析`() {
+    fun `示例插件的 ui文件都能解析`() {
         val cases = mapOf(
             "pet_cat" to "pet.json",
             "msg_badge" to "badge.json",
@@ -76,6 +83,44 @@ class SamplePluginTest {
             listOf("TOP_BAR_ACTIONS"),
             packageOf("top_quick").validate().manifest!!.extensionsOf(PluginExtensionType.BAR_BUTTON).map { it.slot },
         )
+    }
+
+    @Test
+    fun `nightmare 示例覆盖了全部五种配置类型`() {
+        val manifest = packageOf("nightmare").validate().manifest!!
+        assertEquals(
+            listOf(
+                PluginSettingType.SECRET,
+                PluginSettingType.TEXT,
+                PluginSettingType.BOOLEAN,
+                PluginSettingType.NUMBER,
+                PluginSettingType.SELECT,
+            ),
+            manifest.settings.map { it.type },
+        )
+        assertEquals("必填的只有 token", listOf("token"), manifest.settings.filter { it.required }.map { it.key })
+        // 没填 token 时钩子什么都不做，填了才注入参数
+        val blank = PluginRuntime.create(packageOf("nightmare"), RecordingHostApi(), InMemoryStateStore())
+        try {
+            assertNull(
+                "必填项没填时插件应当安静地不做事",
+                blank.runBeforeSend("P", PromptMeta(1L, 0, "hi")),
+            )
+        } finally {
+            blank.close()
+        }
+        val filled = PluginRuntime.create(
+            packageOf("nightmare"), RecordingHostApi(), InMemoryStateStore(),
+            settingValues = mapOf("token" to "tk", "quality" to "high", "steps" to "60"),
+        )
+        try {
+            val out = filled.runBeforeSend("P", PromptMeta(1L, 0, "hi"))!!
+            assertTrue(out, out.contains("画质：high"))
+            assertTrue(out, out.contains("步数：60"))
+            assertFalse("token 不能被拼进 prompt", out.contains("tk"))
+        } finally {
+            filled.close()
+        }
     }
 
     @Test
