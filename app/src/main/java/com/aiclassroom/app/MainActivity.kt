@@ -183,8 +183,19 @@ import com.aiclassroom.feature.exam.tool.ToolRegistry
 import com.aiclassroom.feature.exam.tool.ToolResult
 import com.aiclassroom.feature.exam.tool.config.registerConfigTools
 import com.aiclassroom.feature.exam.tool.exam.registerExamTools
+import com.aiclassroom.feature.exam.tool.custom.CustomToolSpec
+import com.aiclassroom.feature.exam.tool.custom.previewCustomTool
+import com.aiclassroom.feature.exam.tool.custom.registerCustomTools
+import com.aiclassroom.feature.exam.tool.custom.validateCustomTool
+import com.aiclassroom.feature.exam.tool.custom.validateCustomToolExecution
 import com.aiclassroom.feature.exam.tool.image.ImageConfig
+import com.aiclassroom.feature.exam.tool.image.ImageSink
 import com.aiclassroom.feature.exam.tool.image.registerImageTools
+import com.aiclassroom.feature.exam.tool.universal.UniversalAsync
+import com.aiclassroom.feature.exam.tool.universal.UniversalAuth
+import com.aiclassroom.feature.exam.tool.universal.UniversalProfile
+import com.aiclassroom.feature.exam.tool.universal.UniversalRequest
+import com.aiclassroom.feature.exam.tool.universal.UniversalResponse
 import com.aiclassroom.feature.exam.tool.universal.registerUniversalTools
 import com.aiclassroom.feature.fs.FileTools
 import com.aiclassroom.feature.net.registerNetTools
@@ -428,8 +439,11 @@ private fun AIClassroomApp() {
     var examToolsEnabled by remember { mutableStateOf(store.loadExamToolsEnabled()) }
     var fsToolsEnabled by remember { mutableStateOf(store.loadFsToolsEnabled()) }
     var configToolsEnabled by remember { mutableStateOf(store.loadConfigToolsEnabled()) }
+    // 用户自定义插件（一个 = 一个工具 + 一条 HTTP 配置）：整库 JSON 存在 prefs，
+    // 做成 state 是为了「保存 → registry 重建 → AI 立刻能调」，不用重启 app。
+    var customToolsJson by remember { mutableStateOf(store.loadCustomTools()) }
     val imageSink = remember { ImageSinkImpl(context) }
-    val toolRegistry = remember {
+    val toolRegistry = remember(customToolsJson) {
         ToolRegistry().apply {
             // 考试工具：直接操作当前进行中的考试；update 给到的已是新实例，换回 Compose 快照列表以便作答重绘，
             // 同时写回课堂存档（dispatch 跑在 IO 线程，落盘借 scope 回到主线程，避免与组合快照竞争）。
@@ -465,6 +479,9 @@ private fun AIClassroomApp() {
             gateTools("fs_", { fsToolsEnabled }, "文件插件已在设置里关闭，本次没有读写任何文件；需要文件工具请到「设置 → 插件」打开开关。")
             gateTools("config_", { configToolsEnabled }, "配置插件已在设置里关闭，本次没有改动任何配置；需要配置工具请到「设置 → 插件」打开开关。")
             gateTools("generate_image", { imageToolsEnabled }, "生图插件已在设置里关闭，本次没有发起任何请求；需要生图请到「设置 → 插件 → 生图」打开开关。")
+            // 用户自定义插件放在闸门之后注册：spec 现读 state（保存后 json 变 → registry 重建），
+            // 每个 spec 生成一个 ToolHandler，工具参数名就是 bodyTemplate 里的占位符。
+            registerCustomTools(this, { CustomToolSpec.listFromJson(customToolsJson) }, imageSink)
         }
     }
     // 注册表非空即外发 tools；若将来把工具全部关闭，这里自然返回 null，请求体回到纯聊天形态。
@@ -1090,6 +1107,16 @@ private fun AIClassroomApp() {
                             imageConfig = updated
                             saveNotice = "生图配置已保存"
                         },
+                        customToolsJson = customToolsJson,
+                        onCustomToolsJson = { json ->
+                            // 写 prefs + 改 state：registry 依赖 customToolsJson，这一改就重建重注册，
+                            // 回到课堂下一次对话模型就能看见这个新工具。
+                            store.saveCustomTools(json)
+                            customToolsJson = json
+                            saveNotice = "自定义插件已保存，AI 下一次调用立即生效"
+                        },
+                        existingToolNames = { toolRegistry.all().map { it.name } },
+                        imageSink = imageSink,
                         onOpenManual = { showManualDialog = true },
                         onFetchModels = {
                             scope.launch {
@@ -3013,9 +3040,15 @@ private fun ModelScreen(
     onImageToolsEnabledChange: (Boolean) -> Unit,
     imageConfig: ImageConfig,
     onImageConfig: (ImageConfig) -> Unit,
+    customToolsJson: String,
+    onCustomToolsJson: (String) -> Unit,
+    existingToolNames: () -> List<String>,
+    imageSink: ImageSink,
     onOpenManual: () -> Unit,
     onFetchModels: () -> Unit
 ) {
+    // 自定义插件库：json 是唯一真相，改一次就序列化回上层（写 prefs + 触发 registry 重建）。
+    val customTools = remember(customToolsJson) { CustomToolSpec.listFromJson(customToolsJson) }
     val providers = listOf("OpenAI", "DeepSeek", "通义千问", "自定义")
     val ttsProviders = listOf("OpenAI", "通义千问", "自定义")
     var apiProvider by remember(config.provider) { mutableStateOf(config.provider) }
@@ -3426,6 +3459,12 @@ private fun ModelScreen(
                         Text(imageSaveStatus, color = MaterialTheme.colorScheme.primary, fontSize = DesignTokens.Type.Small)
                     }
                 }
+                CustomToolSection(
+                    specs = customTools,
+                    existingToolNames = existingToolNames,
+                    imageSink = imageSink,
+                    onSpecsChange = { onCustomToolsJson(CustomToolSpec.encodeList(it)) }
+                )
             }
         }
         item {
@@ -3481,6 +3520,397 @@ private fun ToolRegistry.gateTools(prefix: String, enabled: () -> Boolean, disab
     all().filter { it.name == prefix || it.name.startsWith(prefix) }.forEach { inner ->
         register(PluginGateHandler(inner, enabled, disabledMessage))
     }
+}
+
+
+/**
+ * 「插件」卡片最下面那块：已添加的自定义插件列表 + ⊕ 新增插件。
+ *
+ * 这里是自定义插件的唯一入口（新增 / 编辑 / 开关 / 删除），
+ * 所有改动都序列化回 prefs 并由上层重建 registry，所以「保存后立刻能调」不需要重启 app。
+ */
+@Composable
+private fun CustomToolSection(
+    specs: List<CustomToolSpec>,
+    existingToolNames: () -> List<String>,
+    imageSink: ImageSink,
+    onSpecsChange: (List<CustomToolSpec>) -> Unit
+) {
+    // null = 表单关闭；-1 = 新增；>=0 = 编辑第几条。用 specs 做 key：保存后列表变了，表单自动收起。
+    var editorIndex by remember(specs) { mutableStateOf<Int?>(null) }
+    Spacer(Modifier.height(DesignTokens.Spacing.Md))
+    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+    Spacer(Modifier.height(DesignTokens.Spacing.Md))
+    Text("自定义插件 · " + specs.size + " 个", fontWeight = FontWeight.Bold)
+    Text(
+        "一个自定义插件 = 一个 AI 能调用的工具 + 一条 HTTP 执行配置。保存后立刻注册给模型，课堂对话里它就能自己决定调用；关掉开关后，当次调用会被本地直接拒绝、不发任何请求。",
+        color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
+    )
+    specs.forEachIndexed { index, spec ->
+        Spacer(Modifier.height(DesignTokens.Spacing.Sm))
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(DesignTokens.Radius.Control),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+        ) {
+            Column(Modifier.padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Tune, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(spec.name, fontWeight = FontWeight.Bold, fontSize = DesignTokens.Type.Small)
+                        Text(
+                            spec.description.ifBlank { "（没有用途描述，AI 不会调用）" },
+                            color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 16.sp,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(onClick = { editorIndex = index }, modifier = Modifier.size(34.dp)) {
+                        Icon(Icons.Default.Edit, "编辑", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                    }
+                    IconButton(
+                        onClick = { onSpecsChange(specs.filterIndexed { i, _ -> i != index }) },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(Icons.Default.Delete, "删除", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
+                    }
+                    Switch(
+                        checked = spec.enabled,
+                        onCheckedChange = { enabled ->
+                            onSpecsChange(specs.mapIndexed { i, item -> if (i == index) item.copy(enabled = enabled) else item })
+                        }
+                    )
+                }
+                Text(
+                    if (spec.enabled) {
+                        spec.profile.request.method + " " + spec.profile.baseUrl.trimEnd('/') + "/" +
+                            spec.profile.request.path.trimStart('/') + " · " + responseModeLabel(spec.profile.response.type)
+                    } else {
+                        "已关闭：AI 调用这个工具会被直接拒绝"
+                    },
+                    color = if (spec.enabled) Muted else MaterialTheme.colorScheme.error,
+                    fontSize = DesignTokens.Type.Small
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(DesignTokens.Spacing.Sm))
+    Surface(
+        onClick = { editorIndex = -1 },
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(DesignTokens.Radius.Control),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Add, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("⊕ 新增插件", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+        }
+    }
+    val editing = editorIndex
+    if (editing != null) {
+        val initial = if (editing >= 0) specs.getOrNull(editing) else null
+        CustomToolEditorDialog(
+            initial = initial,
+            existingNames = existingToolNames().filter { name -> initial == null || name != initial.name },
+            imageSink = imageSink,
+            onSave = { saved ->
+                val updated = if (editing >= 0 && editing < specs.size) {
+                    specs.mapIndexed { i, item -> if (i == editing) saved else item }
+                } else {
+                    specs + saved
+                }
+                editorIndex = null
+                onSpecsChange(updated)
+            },
+            onDismiss = { editorIndex = null }
+        )
+    }
+}
+
+/** 响应形态的人话标签：data 是「数据回给 AI」，其余是「结果存成文件，路径回给 AI」。 */
+private fun responseModeLabel(type: String): String = when (type) {
+    UniversalResponse.TYPE_JSON -> "数据回给 AI"
+    UniversalResponse.TYPE_JSON_URL -> "文件（URL 下载）"
+    UniversalResponse.TYPE_JSON_BASE64 -> "文件（base64 解码）"
+    UniversalResponse.TYPE_BINARY -> "文件（原始二进制）"
+    else -> type
+}
+
+/**
+ * 新增 / 编辑表单。校验全部走 feature-exam 的 validateCustomTool + validateCustomToolExecution：
+ * 只要还有一条错误，[保存] 就是灰的——校验规则和工具实现同住一个模块，不会两边漂移。
+ */
+@Composable
+private fun CustomToolEditorDialog(
+    initial: CustomToolSpec?,
+    existingNames: List<String>,
+    imageSink: ImageSink,
+    onSave: (CustomToolSpec) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val profile = initial?.profile
+    var name by remember(initial) { mutableStateOf(initial?.name.orEmpty()) }
+    var description by remember(initial) { mutableStateOf(initial?.description.orEmpty()) }
+    var parametersJson by remember(initial) { mutableStateOf(initial?.parametersJson ?: CustomToolSpec.NO_PARAMETERS_JSON) }
+    var baseUrl by remember(initial) { mutableStateOf(profile?.baseUrl.orEmpty()) }
+    var method by remember(initial) { mutableStateOf(profile?.request?.method ?: "GET") }
+    var path by remember(initial) { mutableStateOf(profile?.request?.path.orEmpty()) }
+    var bodyTemplate by remember(initial) { mutableStateOf(profile?.request?.bodyTemplate.orEmpty()) }
+    var authType by remember(initial) { mutableStateOf(profile?.auth?.type ?: UniversalAuth.TYPE_NONE) }
+    var authHeader by remember(initial) { mutableStateOf(profile?.auth?.header.orEmpty()) }
+    var authToken by remember(initial) { mutableStateOf(profile?.auth?.token.orEmpty()) }
+    var dataMode by remember(initial) { mutableStateOf(profile == null || profile.response.type == UniversalResponse.TYPE_JSON) }
+    var fileType by remember(initial) {
+        mutableStateOf(
+            profile?.response?.type?.takeIf { it != UniversalResponse.TYPE_JSON } ?: UniversalResponse.TYPE_JSON_URL
+        )
+    }
+    var extract by remember(initial) { mutableStateOf(profile?.response?.extract.orEmpty()) }
+    var asyncEnabled by remember(initial) { mutableStateOf(profile?.async?.enabled ?: false) }
+    var pollPath by remember(initial) { mutableStateOf(profile?.async?.pollPath.orEmpty()) }
+    var doneField by remember(initial) { mutableStateOf(profile?.async?.doneField.orEmpty()) }
+    var testOutput by remember(initial) { mutableStateOf("") }
+    var testing by remember(initial) { mutableStateOf(false) }
+
+    fun draft(): CustomToolSpec = CustomToolSpec(
+        name = name.trim(),
+        description = description.trim(),
+        parametersJson = parametersJson.trim(),
+        profile = UniversalProfile(
+            name = name.trim(),
+            description = description.trim(),
+            baseUrl = baseUrl.trim(),
+            auth = UniversalAuth(type = authType, header = authHeader.trim(), token = authToken.trim()),
+            request = UniversalRequest(method = method, path = path.trim(), bodyTemplate = bodyTemplate.trim()),
+            response = UniversalResponse(
+                extract = extract.trim(),
+                type = if (dataMode) UniversalResponse.TYPE_JSON else fileType
+            ),
+            async = UniversalAsync(enabled = asyncEnabled, pollPath = pollPath.trim(), doneField = doneField.trim())
+        ),
+        enabled = initial?.enabled ?: true
+    )
+
+    val draftSpec = draft()
+    val errors = validateCustomTool(name, description, parametersJson, existingNames) +
+        validateCustomToolExecution(draftSpec.profile)
+
+    AppDialogBase(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                if (initial == null) "新增插件" else "编辑插件「" + initial.name + "」",
+                fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+        },
+        text = {
+            Column(
+                Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("工具名") },
+                    singleLine = true
+                )
+                Text(
+                    "小写字母 / 数字 / 下划线，2-32 位，不能与已注册的工具重名。示例：clash_version、weather_today。",
+                    color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp
+                )
+                errors.filter { it.contains("工具名") }.forEach {
+                    Text(it, color = MaterialTheme.colorScheme.error, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp)
+                }
+
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp),
+                    label = { Text("用途描述（AI 靠这句话决定要不要调用）") }
+                )
+                Text("好例子：「查询某城市当天的天气」——说清了什么时候该用。", color = MaterialTheme.colorScheme.primary, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp)
+                Text("坏例子：「天气插件」——只说了是什么，没说什么时候用，AI 无法判断。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp)
+                errors.filter { it.contains("用途描述") }.forEach {
+                    Text(it, color = MaterialTheme.colorScheme.error, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp)
+                }
+
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = parametersJson,
+                    onValueChange = { parametersJson = it },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp),
+                    label = { Text("参数定义（JSON Schema）") }
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { parametersJson = CustomToolSpec.NO_PARAMETERS_JSON }) {
+                        Text("无参数", fontSize = DesignTokens.Type.Small)
+                    }
+                    TextButton(onClick = {
+                        parametersJson = "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\",\"description\":\"城市名，例如武汉\"}},\"required\":[\"city\"]}"
+                    }) {
+                        Text("带参数模板", fontSize = DesignTokens.Type.Small)
+                    }
+                }
+                Text(
+                    "参数名就是请求体模板里的占位符：参数 city → {{city}}。无参工具点「无参数」即可。",
+                    color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp
+                )
+                errors.filter { it.contains("参数定义") || it.contains("properties") || it.contains("required") }.forEach {
+                    Text(it, color = MaterialTheme.colorScheme.error, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp)
+                }
+
+                Spacer(Modifier.height(4.dp))
+                Text("执行配置", fontWeight = FontWeight.Bold)
+                OutlinedTextField(
+                    value = baseUrl,
+                    onValueChange = { baseUrl = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Base URL（如 http://127.0.0.1:48597）") },
+                    singleLine = true
+                )
+                Text("请求方法", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, fontWeight = FontWeight.Bold)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("GET", "POST", "PUT", "PATCH", "DELETE").forEach { candidate ->
+                        AppFilterChip(method == candidate, { method = candidate }) { Text(candidate, fontSize = DesignTokens.Type.Small) }
+                    }
+                }
+                OutlinedTextField(
+                    value = path,
+                    onValueChange = { path = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("路径（如 /version）") },
+                    singleLine = true
+                )
+                Text("认证方式", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, fontWeight = FontWeight.Bold)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        UniversalAuth.TYPE_NONE to "无",
+                        UniversalAuth.TYPE_BEARER to "Bearer",
+                        UniversalAuth.TYPE_HEADER to "请求头",
+                        UniversalAuth.TYPE_BASIC to "Basic",
+                        UniversalAuth.TYPE_QUERY to "Query"
+                    ).forEach { (type, label) ->
+                        AppFilterChip(authType == type, { authType = type }) { Text(label, fontSize = DesignTokens.Type.Small) }
+                    }
+                }
+                if (authType == UniversalAuth.TYPE_HEADER || authType == UniversalAuth.TYPE_QUERY) {
+                    OutlinedTextField(
+                        value = authHeader,
+                        onValueChange = { authHeader = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(if (authType == UniversalAuth.TYPE_HEADER) "请求头名（如 X-Api-Key）" else "Query 参数名（如 token）") },
+                        singleLine = true
+                    )
+                }
+                if (authType != UniversalAuth.TYPE_NONE) {
+                    OutlinedTextField(
+                        value = authToken,
+                        onValueChange = { authToken = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("凭据（只保存在本机）") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true
+                    )
+                }
+                OutlinedTextField(
+                    value = bodyTemplate,
+                    onValueChange = { bodyTemplate = it },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp),
+                    label = { Text("请求体模板（GET 不需要；{{city}} 这种占位符用参数名）") }
+                )
+                Text("作用方式", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, fontWeight = FontWeight.Bold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AppFilterChip(dataMode, { dataMode = true }) { Text("数据回给 AI", fontSize = DesignTokens.Type.Small) }
+                    AppFilterChip(!dataMode, { dataMode = false }) { Text("结果存成文件", fontSize = DesignTokens.Type.Small) }
+                }
+                if (!dataMode) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(
+                            UniversalResponse.TYPE_JSON_URL to "URL 下载",
+                            UniversalResponse.TYPE_JSON_BASE64 to "base64 解码",
+                            UniversalResponse.TYPE_BINARY to "原始二进制"
+                        ).forEach { (type, label) ->
+                            AppFilterChip(fileType == type, { fileType = type }) { Text(label, fontSize = DesignTokens.Type.Small) }
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = extract,
+                    onValueChange = { extract = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(if (dataMode) "取值路径（可留空 = 整个响应）" else "取值路径（如 data[0].b64_json）") },
+                    singleLine = true
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("异步：先提交再从响应取结果地址", fontSize = DesignTokens.Type.Small, modifier = Modifier.weight(1f))
+                    Switch(asyncEnabled, { asyncEnabled = it })
+                }
+                if (asyncEnabled) {
+                    OutlinedTextField(
+                        value = pollPath,
+                        onValueChange = { pollPath = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("轮询路径（可留空 = 提交响应里直接带结果）") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = doneField,
+                        onValueChange = { doneField = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("完成标志字段（如 status）") },
+                        singleLine = true
+                    )
+                }
+                errors.filter {
+                    it.contains("Base URL") || it.contains("路径") || it.contains("响应类型")
+                }.forEach {
+                    Text(it, color = MaterialTheme.colorScheme.error, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp)
+                }
+                if (testOutput.isNotBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(DesignTokens.Radius.Control),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ) {
+                        Column(Modifier.padding(8.dp)) {
+                            Text("测试结果", fontWeight = FontWeight.Bold, fontSize = DesignTokens.Type.Small)
+                            Text(testOutput.take(1500), fontSize = DesignTokens.Type.Small, lineHeight = 16.sp)
+                        }
+                    }
+                }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(
+                    onClick = {
+                        testing = true
+                        testOutput = ""
+                        scope.launch {
+                            val spec = draftSpec
+                            testOutput = withContext(Dispatchers.IO) { previewCustomTool(spec, imageSink, "{}") }
+                            testing = false
+                        }
+                    },
+                    enabled = !testing
+                ) {
+                    Text(if (testing) "测试中…" else "测试")
+                }
+                Button(onClick = { onSave(draftSpec) }, enabled = errors.isEmpty()) { Text("保存") }
+            }
+        }
+    )
 }
 
 /** 设置页里的一行插件：图标 + 名称 + 工具数 + 一句话说明 + 开关。 */
@@ -3749,6 +4179,13 @@ private class ClassroomStore(context: Context) {
 
     fun saveUniversalProfiles(json: String) {
         prefs.edit().putString("universal_profiles", json).apply()
+    }
+
+    /** 用户自定义插件库（JSON 数组）；空串表示一个都没加。 */
+    fun loadCustomTools(): String = prefs.getString("custom_tools", "").orEmpty()
+
+    fun saveCustomTools(json: String) {
+        prefs.edit().putString("custom_tools", json).apply()
     }
 
     /** 生图配置逐项存在 prefs 里：apiKey 单独一条，读不到就用 [ImageConfig] 的默认构造。 */
