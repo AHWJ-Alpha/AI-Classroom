@@ -17,6 +17,15 @@ private const val MAX_RESPONSE_BYTES: Int = MAX_IMAGE_BYTES * 2
 internal const val DEFAULT_TIMEOUT_SECONDS: Int = 120
 internal const val MAX_TIMEOUT_SECONDS: Int = 300
 
+/** 探测时单个响应的读取上限：只要前 200 字符，别把整页 HTML 拉进内存。 */
+private const val MAX_PROBE_BYTES: Int = 64 * 1024
+
+/** 匿名 GET 的结果。探测链路约定不抛异常，失败也走数据。 */
+internal sealed class ProbeFetch {
+    data class Ok(val status: Int, val contentType: String, val body: String) : ProbeFetch()
+    data class Failed(val reason: String) : ProbeFetch()
+}
+
 /** 错误响应回填给模型的最大片段长度。 */
 private const val SNIPPET_LIMIT: Int = 400
 
@@ -74,6 +83,33 @@ internal object ImageHttp {
         }
     }
 
+    /**
+     * 匿名 GET：不带任何认证头，失败转成 [ProbeFetch.Failed] 而不抛异常。
+     * 只给 probe_endpoint 用——探测服务类型时绝不能把用户凭据带出去。
+     */
+    fun fetchAnonymously(url: String, timeoutMillis: Int): ProbeFetch {
+        val connection = try {
+            openFor(url, timeoutMillis)
+        } catch (failure: ImageFailure) {
+            return ProbeFetch.Failed(failure.message ?: "地址不合法：$url")
+        }
+        try {
+            connection.requestMethod = "GET"
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val text = stream?.let { String(readUpTo(it, MAX_PROBE_BYTES), Charsets.UTF_8) } ?: ""
+            return ProbeFetch.Ok(status, connection.contentType.orEmpty(), text)
+        } catch (timeout: SocketTimeoutException) {
+            return ProbeFetch.Failed("请求超时（" + timeoutMillis + " 毫秒）：" + shortUrl(url))
+        } catch (io: IOException) {
+            return ProbeFetch.Failed(describe(io))
+        } catch (failure: ImageFailure) {
+            return ProbeFetch.Failed(failure.message ?: "请求失败")
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun readText(url: String, connection: HttpURLConnection): String {
         val status = connection.responseCode
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
@@ -85,7 +121,9 @@ internal object ImageHttp {
         return text
     }
 
-    private fun open(url: String, timeoutSeconds: Int): HttpURLConnection {
+    private fun open(url: String, timeoutSeconds: Int): HttpURLConnection = openFor(url, timeoutSeconds * 1000)
+
+    private fun openFor(url: String, timeoutMillis: Int): HttpURLConnection {
         val parsed = try {
             URL(url)
         } catch (malformed: MalformedURLException) {
@@ -95,8 +133,8 @@ internal object ImageHttp {
             throw ImageFailure("只支持 http / https 地址，收到协议：${parsed.protocol}")
         }
         val connection = parsed.openConnection() as HttpURLConnection
-        connection.connectTimeout = timeoutSeconds * 1000
-        connection.readTimeout = timeoutSeconds * 1000
+        connection.connectTimeout = timeoutMillis
+        connection.readTimeout = timeoutMillis
         connection.instanceFollowRedirects = true
         connection.setRequestProperty("Accept", "application/json, image/*")
         connection.setRequestProperty("User-Agent", "aiclassroom-image-tool")
@@ -119,7 +157,23 @@ internal object ImageHttp {
         return out.toByteArray()
     }
 
+    /** 只读前 limit 字节，超出直接截断：探测要的是「能不能连 + 返回什么」，不是完整响应体。 */
+    private fun readUpTo(stream: InputStream, limit: Int): ByteArray {
+        val out = ByteArrayOutputStream(minOf(limit, 16 * 1024))
+        val buffer = ByteArray(8 * 1024)
+        stream.use { input ->
+            while (out.size() < limit) {
+                val read = input.read(buffer, 0, minOf(buffer.size, limit - out.size()))
+                if (read < 0) break
+                out.write(buffer, 0, read)
+            }
+        }
+        return out.toByteArray()
+    }
+
     private fun describe(io: IOException): String = io.message?.takeIf { it.isNotBlank() } ?: io::class.java.simpleName
+
+    private fun shortUrl(url: String): String = if (url.length <= 120) url else url.take(120) + "…"
 
     /** 压成一行并截断，避免把几十 KB 的 HTML 错误页塞回模型上下文。 */
     private fun snippet(text: String): String {

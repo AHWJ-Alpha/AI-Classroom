@@ -31,7 +31,7 @@ class ImageTools(
 ) {
 
     /** 按注册顺序暴露给模型的工具。 */
-    val handlers: List<ToolHandler> = listOf(GenerateImageTool())
+    val handlers: List<ToolHandler> = listOf(GenerateImageTool(), ProbeEndpointTool())
 
     /** 阶段集成：把生图工具注册进同一个 [ToolRegistry]。 */
     fun register(registry: ToolRegistry): ImageTools {
@@ -95,15 +95,45 @@ class ImageTools(
         }
     }
 
-    private fun parseArguments(argumentsJson: String): Map<String, JsonValue> {
+    /**
+     * 匿名探测：用户给一个地址，判断它是什么后端、要不要认证。
+     * 不读配置、不带凭据——探测结果只用来决定下一步填什么 provider / authType。
+     */
+    private inner class ProbeEndpointTool : ToolHandler {
+        override val name: String = "probe_endpoint"
+        override val description: String =
+            "匿名探测一个 HTTP 生图服务：依次请求 /、/docs、/openapi.json、/sdapi/v1/options、/v1/models、/health，" +
+                "返回每个路径的状态码、Content-Type 与响应体片段，并给出 sdCompatible / needsAuth / openapi 判断。" +
+                "不知道某个地址（常见于手机上的私有服务、刚 adb forward 出来的本地端口）是什么后端、要哪种认证时先用它；" +
+                "探测不带任何 token，参数错或连不上都返回结果而不是报错。最长约 30 秒。"
+
+        override val parametersJson: String = ImageToolSchemas.PROBE_ENDPOINT
+
+        override suspend fun execute(argumentsJson: String): ToolResult {
+            return try {
+                val arguments = parseArguments(argumentsJson, name)
+                val url = arguments.requiredText("url")
+                val extraPaths = arguments.stringList("extraPaths")
+                ToolResult.Ok(ImageProbe.probe(url, extraPaths))
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (failure: ImageFailure) {
+                ToolResult.Error(failure.message ?: "探测失败")
+            } catch (throwable: Throwable) {
+                ToolResult.Error("探测失败：" + (throwable.message ?: throwable::class.java.simpleName))
+            }
+        }
+    }
+
+    private fun parseArguments(argumentsJson: String, toolName: String = "generate_image"): Map<String, JsonValue> {
         val text = argumentsJson.trim()
-        if (text.isEmpty()) throw ImageFailure("generate_image 缺少参数")
+        if (text.isEmpty()) throw ImageFailure(toolName + " 缺少参数")
         val root = try {
             JsonValue.parse(text)
         } catch (failure: JsonFormatException) {
-            throw ImageFailure("generate_image 的参数不是合法 JSON：" + failure.message)
+            throw ImageFailure(toolName + " 的参数不是合法 JSON：" + failure.message)
         }
-        return root.asObjectOrNull() ?: throw ImageFailure("generate_image 的参数必须是 JSON 对象")
+        return root.asObjectOrNull() ?: throw ImageFailure(toolName + " 的参数必须是 JSON 对象")
     }
 
     private fun Map<String, JsonValue>.requiredPrompt(): String {
@@ -125,6 +155,23 @@ class ImageTools(
             throw ImageFailure(name + " 太长（" + trimmed.length + " 字符），上限 " + MAX_PROMPT_LENGTH)
         }
         return trimmed.ifEmpty { null }
+    }
+
+    private fun Map<String, JsonValue>.requiredText(name: String): String =
+        optionalText(name) ?: throw ImageFailure("probe_endpoint 需要非空的 " + name + " 参数")
+
+    /** 字符串数组参数：同时宽容接受单个字符串。 */
+    private fun Map<String, JsonValue>.stringList(name: String): List<String> {
+        val raw = this[name] ?: return emptyList()
+        if (raw === JsonValue.Null) return emptyList()
+        val items = when (raw) {
+            is JsonValue.Arr -> raw.items
+            is JsonValue.Str -> listOf(raw)
+            else -> throw ImageFailure(name + " 必须是字符串数组")
+        }
+        return items.map { item ->
+            item.asStringOrNull()?.trim() ?: throw ImageFailure(name + " 的元素必须是字符串")
+        }.filter { it.isNotEmpty() }
     }
 
     private fun Map<String, JsonValue>.int(name: String, min: Int, max: Int): Int? {

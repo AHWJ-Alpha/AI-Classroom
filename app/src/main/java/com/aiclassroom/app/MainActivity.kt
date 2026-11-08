@@ -185,6 +185,7 @@ import com.aiclassroom.feature.exam.tool.config.registerConfigTools
 import com.aiclassroom.feature.exam.tool.exam.registerExamTools
 import com.aiclassroom.feature.exam.tool.image.ImageConfig
 import com.aiclassroom.feature.exam.tool.image.registerImageTools
+import com.aiclassroom.feature.exam.tool.universal.registerUniversalTools
 import com.aiclassroom.feature.fs.FileTools
 import com.aiclassroom.feature.net.registerNetTools
 import android.util.Log
@@ -447,6 +448,9 @@ private fun AIClassroomApp() {
             // 生图插件：config 用 lambda 每次现读 prefs，设置页一保存就生效；
             // 保存能力由 app 侧 ImageSinkImpl 注入（feature-exam 是纯 JVM 模块，拿不到 Context）。
             registerImageTools(this, config = { store.loadImageConfig() }, sink = imageSink)
+            // 通用元工具：一个 universal_call 能表达任何 HTTP 服务（含 nightmare 这种非标准协议），
+            // 新增服务只需一份 profile JSON，不必再写 provider 类。library 每次现读，导入即生效。
+            registerUniversalTools(this, sink = imageSink, library = { store.loadUniversalProfiles() })
             // 配置工具：让 AI 能在对话里切换模型 / 改 BaseURL / 调温度；密钥只读且脱敏，无写入入口。
             registerConfigTools(this, ConfigAccessAdapter(
                 readConfig = { classes[classIndex.coerceIn(0, classes.lastIndex)].config },
@@ -3738,6 +3742,13 @@ private class ClassroomStore(context: Context) {
 
     fun saveImageToolsEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("image_tools_enabled", enabled).apply()
+    }
+
+    /** 用户导入/自定义的 universal profile 库（JSON）；空串表示只用内置的 nightmare / openai-images / sd-webui。 */
+    fun loadUniversalProfiles(): String = prefs.getString("universal_profiles", "").orEmpty()
+
+    fun saveUniversalProfiles(json: String) {
+        prefs.edit().putString("universal_profiles", json).apply()
     }
 
     /** 生图配置逐项存在 prefs 里：apiKey 单独一条，读不到就用 [ImageConfig] 的默认构造。 */

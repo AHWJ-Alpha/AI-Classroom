@@ -2,7 +2,6 @@ package com.aiclassroom.feature.exam.tool.image
 
 import com.aiclassroom.feature.exam.tool.exam.JsonValue
 import com.aiclassroom.feature.exam.tool.exam.jsonObject
-import java.util.Base64
 
 /** 一次生图请求：工具参数 + 配置合成后的中间形态。 */
 internal data class ImageRequest(
@@ -44,7 +43,7 @@ internal object OpenAiImagesProvider : ImageProvider {
     override val id: String = ImageConfig.PROVIDER_OPENAI
 
     override fun generate(config: ImageConfig, request: ImageRequest): ImagePayload {
-        val url = joinUrl(config.baseUrl, "/images/generations")
+        val url = appendQueryAuth(joinUrl(config.baseUrl, "/images/generations"), config)
         val body = JsonValue.write(
             jsonObject(
                 "model" to JsonValue.Str(config.model),
@@ -54,7 +53,7 @@ internal object OpenAiImagesProvider : ImageProvider {
                 "response_format" to JsonValue.Str("b64_json"),
             )
         )
-        val text = ImageHttp.postJson(url, body, request.timeoutSeconds, bearer(config.apiKey))
+        val text = ImageHttp.postJson(url, body, request.timeoutSeconds, buildAuth(config))
         return ImageResponse.resolve(text, request.timeoutSeconds, "OpenAI Images（$url）")
     }
 }
@@ -63,7 +62,7 @@ internal object SdWebUiProvider : ImageProvider {
     override val id: String = ImageConfig.PROVIDER_SDWEBUI
 
     override fun generate(config: ImageConfig, request: ImageRequest): ImagePayload {
-        val url = joinUrl(sdRoot(config.baseUrl), "/sdapi/v1/txt2img")
+        val url = appendQueryAuth(joinUrl(sdRoot(config.baseUrl), "/sdapi/v1/txt2img"), config)
         val fallback = parseSize(request.size ?: config.size)
         val width = request.width ?: fallback.first
         val height = request.height ?: fallback.second
@@ -77,7 +76,12 @@ internal object SdWebUiProvider : ImageProvider {
         fields.add("steps" to JsonValue.Num(steps.toDouble()))
         fields.add("cfg_scale" to JsonValue.Num(cfgScale))
         config.sampler.takeIf { it.isNotBlank() }?.let { fields.add("sampler_name" to JsonValue.Str(it)) }
-        val text = ImageHttp.postJson(url, JsonValue.write(jsonObject(*fields.toTypedArray())), request.timeoutSeconds, sdAuth(config.apiKey))
+        val text = ImageHttp.postJson(
+            url,
+            JsonValue.write(jsonObject(*fields.toTypedArray())),
+            request.timeoutSeconds,
+            buildAuth(config)
+        )
         return ImageResponse.resolve(text, request.timeoutSeconds, "SD WebUI（$url）")
     }
 
@@ -89,18 +93,6 @@ internal object SdWebUiProvider : ImageProvider {
         var root = baseUrl.trim().trimEnd('/')
         root = root.removeSuffix("/sdapi/v1/txt2img").removeSuffix("/sdapi/v1").removeSuffix("/v1")
         return root.trimEnd('/')
-    }
-
-    /** A1111 的 --api-auth 用 Basic（写成 user:pass），部分反代用 Bearer。 */
-    private fun sdAuth(apiKey: String): Map<String, String> {
-        val key = apiKey.trim()
-        return when {
-            key.isEmpty() -> emptyMap()
-            key.contains(":") -> mapOf(
-                "Authorization" to "Basic " + Base64.getEncoder().encodeToString(key.toByteArray(Charsets.UTF_8))
-            )
-            else -> bearer(key)
-        }
     }
 }
 
@@ -114,7 +106,7 @@ internal object CustomHttpProvider : ImageProvider {
     private const val DEFAULT_TEMPLATE: String = """{"prompt":"{{prompt}}"}"""
 
     override fun generate(config: ImageConfig, request: ImageRequest): ImagePayload {
-        val url = config.customUrl.trim().ifEmpty { config.baseUrl.trim() }
+        val url = appendQueryAuth(config.customUrl.trim().ifEmpty { config.baseUrl.trim() }, config)
         if (url.isEmpty()) throw ImageFailure("自定义 provider 需要配置 customUrl 或 baseUrl")
         val template = config.customBodyTemplate.trim().ifEmpty { DEFAULT_TEMPLATE }
         val fallback = parseSize(request.size ?: config.size)
@@ -132,14 +124,9 @@ internal object CustomHttpProvider : ImageProvider {
             .replace("{{size}}", escape(request.size ?: config.size))
             .replace("{{model}}", escape(config.model))
             .replace("{{apiKey}}", escape(config.apiKey))
-        val text = ImageHttp.postJson(url, body, request.timeoutSeconds, bearer(config.apiKey))
+        val text = ImageHttp.postJson(url, body, request.timeoutSeconds, buildAuth(config))
         return ImageResponse.resolve(text, request.timeoutSeconds, "自定义生图接口（$url）")
     }
-}
-
-internal fun bearer(apiKey: String): Map<String, String> {
-    val key = apiKey.trim()
-    return if (key.isEmpty()) emptyMap() else mapOf("Authorization" to "Bearer $key")
 }
 
 /** 拼 URL：baseUrl 已经写成完整端点时原样使用，避免拼出重复路径。 */

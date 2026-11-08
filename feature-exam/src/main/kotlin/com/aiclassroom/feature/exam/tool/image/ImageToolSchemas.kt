@@ -1,6 +1,6 @@
 package com.aiclassroom.feature.exam.tool.image
 
-/** generate_image 的 function calling 参数 Schema。 */
+/** 生图 / 探测工具的 function calling 参数 Schema。 */
 internal object ImageToolSchemas {
 
     val GENERATE_IMAGE: String = """
@@ -37,6 +37,25 @@ internal object ImageToolSchemas {
             }
           },
           "required": ["prompt"],
+          "additionalProperties": false
+        }
+    """.trimIndent()
+
+    val PROBE_ENDPOINT: String = """
+        {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "要探测的服务地址，例如 http://127.0.0.1:8820 或 http://10.0.2.2:7860。不写协议时按 http 处理。"
+            },
+            "extraPaths": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "可选：除了默认路径之外还要试的路径（最多 10 个），例如 /api/v1/models；也可以直接写完整 URL。"
+            }
+          },
+          "required": ["url"],
           "additionalProperties": false
         }
     """.trimIndent()
