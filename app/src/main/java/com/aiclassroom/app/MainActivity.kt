@@ -79,6 +79,7 @@ import androidx.compose.material.icons.filled.North
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.ColorLens
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Quiz
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
@@ -179,7 +180,10 @@ import com.aiclassroom.feature.exam.stripExamBlock
 import com.aiclassroom.feature.exam.tool.ToolHandler
 import com.aiclassroom.feature.exam.tool.ToolRegistry
 import com.aiclassroom.feature.exam.tool.ToolResult
+import com.aiclassroom.feature.exam.tool.config.registerConfigTools
 import com.aiclassroom.feature.exam.tool.exam.registerExamTools
+import com.aiclassroom.feature.exam.tool.image.ImageConfig
+import com.aiclassroom.feature.exam.tool.image.registerImageTools
 import com.aiclassroom.feature.fs.FileTools
 import com.aiclassroom.feature.net.registerNetTools
 import android.util.Log
@@ -276,7 +280,7 @@ private data class AppPalette(
     val secondary: Color = button,
     val accent: Color = button
 )
-private data class ClassroomConfig(
+internal data class ClassroomConfig(
     val provider: String = "OpenAI",
     val apiKey: String = "",
     val baseUrl: String = "https://api.openai.com/v1",
@@ -286,6 +290,8 @@ private data class ClassroomConfig(
     val deepThinkingEnabled: Boolean = false,
     val deepThinkingModel: String = "",
     val reasoningEffort: String = "medium",
+    // 采样温度：此前写死在 buildJson 里，配置工具改了也没处生效；现在随课堂保存并真正参与请求。
+    val temperature: Double = 0.35,
     val activeChatModel: String = "",
     val visionProvider: String = "OpenAI",
     val visionApiKey: String = "",
@@ -342,7 +348,9 @@ private data class Classroom(
     val memoryCards: MutableList<MemoryCard>,
     val chapters: MutableList<ConversationChapter>,
     val files: MutableList<KnowledgeFile>,
-    val config: ClassroomConfig
+    val config: ClassroomConfig,
+    /** 该课堂的考试存档（未提交 / 已提交都留在这里），随课堂一起持久化；旧存档没有该字段时为 null。 */
+    val exam: ExamSession? = null
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -374,17 +382,79 @@ private fun AIClassroomApp() {
     val hazeState = SharedHazeState
     val memoryJobs = remember { java.util.IdentityHashMap<Classroom, Job>() }
     val memoryWatermarks = remember { java.util.IdentityHashMap<Classroom, Int>() }
+    fun persist(message: String = "已保存到本机") {
+        store.save(classes, classIndex)
+        saveNotice = message
+    }
+
+    fun replaceCurrent(room: Classroom, message: String = "已保存到本机") {
+        classes[classIndex] = room
+        persist(message)
+    }
+    fun replaceClassroomAt(index: Int, room: Classroom, message: String = "已保存到本机") {
+        if (index in classes.indices) {
+            classes[index] = room
+            persist(message)
+        }
+    }
+
+    // 考试存档：exam 字段随课堂一起写进 ai_classroom_14_classes.json，退出考试 / 重建 Activity 都不丢。
+    // 作答与草稿是逐字输入的，走 300ms 防抖落盘；工具调用、标记不会、退出与提交属于结构性改动，立即写盘。
+    var examSaveJob by remember { mutableStateOf<Job?>(null) }
+    fun saveExam(session: ExamSession?, message: String = "考试已保存", immediate: Boolean = true) {
+        val index = classIndex
+        if (index in classes.indices) classes[index] = classes[index].copy(exam = session)
+        examSaveJob?.cancel()
+        if (immediate) {
+            examSaveJob = null
+            persist(message)
+        } else {
+            examSaveJob = scope.launch {
+                delay(300)
+                persist(message)
+            }
+        }
+    }
+
     // function calling 工具注册表：考试 / 文件 / 网络三条线共用同一个实例，
     // 按注册顺序生成请求里的 tools 数组。
-    var netToolsEnabled by remember { mutableStateOf(true) }
+    var netToolsEnabled by remember { mutableStateOf(store.loadNetToolsEnabled()) }
+    // 生图插件：开关与配置都落在 prefs；工具每次调用现读，设置页保存后立即生效。
+    var imageToolsEnabled by remember { mutableStateOf(store.loadImageToolsEnabled()) }
+    var imageConfig by remember { mutableStateOf(store.loadImageConfig()) }
+    val imageSink = remember { ImageSinkImpl(context) }
     val toolRegistry = remember {
         ToolRegistry().apply {
-            // 考试工具：直接操作当前进行中的考试；update 给到的已是新实例，换回 Compose 快照列表以便作答重绘。
-            registerExamTools(this, current = { examSession }, update = { examSession = it.withComposeState() })
+            // 考试工具：直接操作当前进行中的考试；update 给到的已是新实例，换回 Compose 快照列表以便作答重绘，
+            // 同时写回课堂存档（dispatch 跑在 IO 线程，落盘借 scope 回到主线程，避免与组合快照竞争）。
+            registerExamTools(this, current = { examSession }, update = { updated ->
+                val snapshot = updated.withComposeState()
+                examSession = snapshot
+                scope.launch { saveExam(snapshot, "考试已保存") }
+            })
             // 文件工具：边界＝应用私有目录（用户已确认）。外部目录暂未开放。
             runCatching { FileTools.registerFileTools(this, listOf(context.filesDir.absolutePath)) }
             // 网络工具：用户已授权任意 host:port；保留总开关与脱敏日志两道护栏。
             registerNetTools(this, enabled = { netToolsEnabled }, logger = { line -> Log.i("NetTool", line) })
+            // 生图 / 网络工具都要访问「本机或局域网里的 http 端口」：本地 SD WebUI、其它应用的 API 端口
+            // 只提供明文 http，而 targetSdk 35 默认拦截明文，所以 Manifest 里开了 usesCleartextTraffic。
+            // 影响面：只有 http 走不加密链路（建议只填本地 / 可信局域网地址），https 仍走系统信任链。
+            // 生图插件：config 用 lambda 每次现读 prefs，设置页一保存就生效；
+            // 保存能力由 app 侧 ImageSinkImpl 注入（feature-exam 是纯 JVM 模块，拿不到 Context）。
+            registerImageTools(this, config = { store.loadImageConfig() }, sink = imageSink)
+            // 总开关闸门：包在同名工具外面，关闭时在本地直接回错，连一次网络请求都不发起。
+            find("generate_image")?.let { inner ->
+                register(PluginGateHandler(inner, { imageToolsEnabled }, "生图插件已在设置里关闭，本次没有发起任何请求；需要生图请到「设置 → 插件 → 生图」打开开关。"))
+            }
+            // 配置工具：让 AI 能在对话里切换模型 / 改 BaseURL / 调温度；密钥只读且脱敏，无写入入口。
+            registerConfigTools(this, ConfigAccessAdapter(
+                readConfig = { classes[classIndex.coerceIn(0, classes.lastIndex)].config },
+                writeConfig = { updated ->
+                    val index = classIndex.coerceIn(0, classes.lastIndex)
+                    classes[index] = classes[index].copy(config = updated)
+                    persist("配置已更新")
+                }
+            ))
         }
     }
     // 注册表非空即外发 tools；若将来把工具全部关闭，这里自然返回 null，请求体回到纯聊天形态。
@@ -417,20 +487,10 @@ private fun AIClassroomApp() {
         }
     }
 
-    fun persist(message: String = "已保存到本机") {
-        store.save(classes, classIndex)
-        saveNotice = message
-    }
-
-    fun replaceCurrent(room: Classroom, message: String = "已保存到本机") {
-        classes[classIndex] = room
-        persist(message)
-    }
-    fun replaceClassroomAt(index: Int, room: Classroom, message: String = "已保存到本机") {
-        if (index in classes.indices) {
-            classes[index] = room
-            persist(message)
-        }
+    // 冷启动 / 切课堂时恢复该课堂的存档考试：未提交的自动打开接着做，已提交的只在课堂页留「继续上次考试」入口。
+    LaunchedEffect(classIndex) {
+        val saved = classes.getOrNull(classIndex)?.exam
+        examSession = if (saved != null && !saved.submitted) saved.withComposeState() else null
     }
 
     fun addClassroom(copyFrom: Classroom? = null) {
@@ -626,10 +686,16 @@ private fun AIClassroomApp() {
             } else {
                 runToolLoop(room, chatSystemPrompt, requestToolsJson, onDelta)
             }
-            val detectedExam = if (allowExamTrigger) detectExamSession(result, userRequestedExam = isExamRequest(text)) else null
+            // 文本格式的【考试】块只作兜底：本轮工具已经建好考试时不再采用，
+            // 否则会把工具写入的参考解析（referenceAnswer）覆盖掉。
+            val detectedExam = if (allowExamTrigger && examSession == null) detectExamSession(result, userRequestedExam = isExamRequest(text)) else null
             val visibleResult = stripExamBlock(result).ifBlank { if (detectedExam != null) "已为你准备好本次测试。" else result }
             room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(visibleResult, room.config.efficientMode))
-            detectedExam?.let { examSession = it.withComposeState() }
+            detectedExam?.let { detected ->
+                val snapshot = detected.withComposeState()
+                examSession = snapshot
+                saveExam(snapshot, "考试已保存", immediate = false)
+            }
             isLoading = false
             persist("回复已保存，记忆将在后台整理")
             if (room.config.ttsAutoRead && visibleResult.isNotBlank()) speakText(context, room.config, visibleResult)
@@ -936,7 +1002,10 @@ private fun AIClassroomApp() {
         ) {
             Box(Modifier.fillMaxSize()) {
                 when (tab) {
-                    Tab.Class -> ClassScreen(current, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, homeQuote, onDeepThinkingChange = { enabled ->
+                    Tab.Class -> ClassScreen(current, input, { input = it }, isLoading, palette, jumpToMessageIndex, { jumpToMessageIndex = null }, current.config.reverseConversation, homeQuote,
+                        savedExam = if (examSession == null) current.exam else null,
+                        onResumeExam = { classes.getOrNull(classIndex)?.exam?.let { examSession = it.withComposeState() } },
+                        onDeepThinkingChange = { enabled ->
                         replaceCurrent(current.copy(config = current.config.copy(deepThinkingEnabled = enabled)), if (enabled) "已启用深度思考" else "已关闭深度思考")
                     }, onModelChange = { model ->
                         replaceCurrent(current.copy(config = current.config.copy(activeChatModel = model)), "对话模型已切换")
@@ -975,6 +1044,24 @@ private fun AIClassroomApp() {
                         modelStatus = modelStatus,
                         saveNotice = saveNotice,
                         onConfig = { replaceCurrent(current.copy(config = it), "设置已保存") },
+                        netToolsEnabled = netToolsEnabled,
+                        onNetToolsEnabledChange = { enabled ->
+                            netToolsEnabled = enabled
+                            store.saveNetToolsEnabled(enabled)
+                            saveNotice = if (enabled) "已允许 AI 调用网络" else "已关闭 AI 网络调用"
+                        },
+                        imageToolsEnabled = imageToolsEnabled,
+                        onImageToolsEnabledChange = { enabled ->
+                            imageToolsEnabled = enabled
+                            store.saveImageToolsEnabled(enabled)
+                            saveNotice = if (enabled) "已启用生图插件" else "已关闭生图插件"
+                        },
+                        imageConfig = imageConfig,
+                        onImageConfig = { updated ->
+                            store.saveImageConfig(updated)
+                            imageConfig = updated
+                            saveNotice = "生图配置已保存"
+                        },
                         onOpenManual = { showManualDialog = true },
                         onFetchModels = {
                             scope.launch {
@@ -993,9 +1080,22 @@ private fun AIClassroomApp() {
                     )
                 }
                 examSession?.let { session ->
-                    ExamOverlay(session, current.messages, current.branches, palette, immersive = immersiveMode, onImmersiveChange = { immersiveMode = it }, onUpdate = { examSession = it }, onClose = { examSession = null; immersiveMode = false; persist("已退出考试模式") }, onSubmit = { packed ->
+                    ExamOverlay(session, current.messages, current.branches, palette, immersive = immersiveMode, onImmersiveChange = { immersiveMode = it }, onUpdate = { updated ->
+                        // 作答 / 草稿是逐字输入的：内存立即同步，落盘走 300ms 防抖，避免每次按键都重写整份存档。
+                        examSession = updated
+                        saveExam(updated, "考试已保存", immediate = false)
+                    }, onClose = {
+                        // 退出考试只收起界面：存档留在课堂里，下次进来能接着做。
+                        val kept = examSession
                         examSession = null
                         immersiveMode = false
+                        saveExam(kept, "考试已存档，可随时继续")
+                    }, onSubmit = { packed ->
+                        // 提交：存档标记 submitted 后保留，便于回看；界面收起并把作答交给 AI 批改。
+                        val submitted = examSession?.copy(submitted = true)
+                        examSession = null
+                        immersiveMode = false
+                        saveExam(submitted, "考试已提交并保存")
                         sendMessage(packed, allowExamTrigger = false)
                     }, onUnknown = { questionIndex, question ->
                         val branchText = "考试不会题：\n前提：${question.premise}\n问题：${question.question}\n请讲解这道题的思路。"
@@ -1306,6 +1406,51 @@ private fun EditClassroomSummaryDialog(initial: String, onClose: () -> Unit, onS
     )
 }
 
+/**
+ * 课堂页顶部的「继续上次考试」入口：考试存档跟着课堂走，退出考试界面后靠它再进来接着做。
+ * 统计口径与考试页一致——只有真正写了作答或标了「不会」的题才算已答。
+ */
+@Composable
+private fun ExamResumeBanner(session: ExamSession, palette: AppPalette, onResume: () -> Unit, modifier: Modifier = Modifier) {
+    val total = session.questions.size
+    val answered = session.questions.count { it.unknown || it.answer.isNotBlank() }
+    Surface(
+        modifier = modifier.fillMaxWidth().padding(horizontal = DesignTokens.Spacing.Md, vertical = DesignTokens.Spacing.Md),
+        shape = AppShapes.control,
+        color = palette.card,
+        contentColor = palette.ink,
+        border = BorderStroke(DesignTokens.Border.Hairline, palette.outline),
+        shadowElevation = 0.dp
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = DesignTokens.Spacing.Lg, vertical = DesignTokens.Spacing.Md),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Quiz, contentDescription = null, tint = palette.primary, modifier = Modifier.size(DesignTokens.Size.IconSm))
+            Spacer(Modifier.width(DesignTokens.Spacing.Md))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    session.title.ifBlank { "上次的考试" },
+                    fontWeight = DesignTokens.Weight.Bold,
+                    fontSize = DesignTokens.Type.Body,
+                    color = palette.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    if (session.submitted) "已提交 · 共 $total 题" else "已存档 · 已答 $answered 题 / 共 $total 题",
+                    fontSize = DesignTokens.Type.Small,
+                    color = palette.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.width(DesignTokens.Spacing.Sm))
+            AppPrimaryButton(onClick = onResume) { Text(if (session.submitted) "回看" else "继续") }
+        }
+    }
+}
+
 @Composable
 private fun ClassScreen(
     room: Classroom,
@@ -1317,6 +1462,8 @@ private fun ClassScreen(
     onJumpHandled: () -> Unit,
     reverseConversation: Boolean,
     homeQuote: String,
+    savedExam: ExamSession?,
+    onResumeExam: () -> Unit,
     onDeepThinkingChange: (Boolean) -> Unit,
     onModelChange: (String) -> Unit,
     onReasoningEffortChange: (String) -> Unit,
@@ -1330,22 +1477,28 @@ private fun ClassScreen(
     onBranch: (Int) -> Unit
 ) {
     if (room.messages.isEmpty()) {
-        EmptyClassroomHome(
-            room = room,
-            input = input,
-            onInput = onInput,
-            isLoading = isLoading,
-            palette = palette,
-            quote = homeQuote,
-            onDeepThinkingChange = onDeepThinkingChange,
-            onModelChange = onModelChange,
-            onReasoningEffortChange = onReasoningEffortChange,
-            immersiveMode = immersiveMode,
-            onImmersiveChange = onImmersiveChange,
-            onQuickThemeToggle = onQuickThemeToggle,
-            onSend = onSend,
-            onImage = onImage
-        )
+        // 空课堂也要能看到存档考试入口：存档可能在对话被清空之后仍然有效。
+        Box(Modifier.fillMaxSize()) {
+            EmptyClassroomHome(
+                room = room,
+                input = input,
+                onInput = onInput,
+                isLoading = isLoading,
+                palette = palette,
+                quote = homeQuote,
+                onDeepThinkingChange = onDeepThinkingChange,
+                onModelChange = onModelChange,
+                onReasoningEffortChange = onReasoningEffortChange,
+                immersiveMode = immersiveMode,
+                onImmersiveChange = onImmersiveChange,
+                onQuickThemeToggle = onQuickThemeToggle,
+                onSend = onSend,
+                onImage = onImage
+            )
+            savedExam?.let { archived ->
+                ExamResumeBanner(archived, palette, onResumeExam, Modifier.align(Alignment.TopCenter))
+            }
+        }
         return
     }
     val listState = rememberLazyListState()
@@ -1416,9 +1569,17 @@ private fun ClassScreen(
                 if (last?.role == "assistant" && looksLikeFailure(last.text)) last.text else null
             }
         }
+        // 顶部提示位：存档考试入口与请求失败提示共用一列，避免两者互相遮挡。
+        Column(
+            Modifier.align(Alignment.TopCenter).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Sm)
+        ) {
+        savedExam?.let { archived ->
+            ExamResumeBanner(archived, palette, onResumeExam)
+        }
         failureNotice?.let { notice ->
             Surface(
-                modifier = Modifier.align(Alignment.TopCenter).padding(start = DesignTokens.Spacing.Md, end = DesignTokens.Spacing.Md, top = DesignTokens.Spacing.Lg),
+                modifier = Modifier.padding(start = DesignTokens.Spacing.Md, end = DesignTokens.Spacing.Md, top = DesignTokens.Spacing.Lg),
                 shape = AppShapes.control,
                 color = palette.card,
                 border = BorderStroke(DesignTokens.Border.Hairline, DesignTokens.Danger),
@@ -1440,6 +1601,7 @@ private fun ClassScreen(
                     )
                 }
             }
+        }
         }
         FloatingIconAction(
             icon = if (isAtBottom) Icons.Default.North else Icons.Default.South,
@@ -2126,6 +2288,7 @@ private fun ExamQuestionList(
     onUnknown: (Int, ExamQuestion) -> Unit
 ) {
     val total = session.questions.size
+    // 已答口径：只有考生真写了作答、或标了「不会」的题才算；AI 给的参考解析（referenceAnswer）不计入。
     val answered = session.questions.count { it.unknown || it.answer.isNotBlank() }
     val answeredFraction = if (total == 0) 0f else answered.toFloat() / total.toFloat()
     // 横屏高度吃紧：卡片纵向内边距从 13dp 收到 8dp，两张卡就能省出约 55px 给题卡正文。
@@ -2272,9 +2435,20 @@ private fun ExamQuestionList(
                     }
                     Spacer(Modifier.height(DesignTokens.Spacing.Md))
                     OutlinedTextField(q.answer, {
+                        // 作答框只绑定 q.answer（考生作答）；参考解析永远不会流到这里。
                         session.questions[i] = q.copy(answer = it)
                         onUpdate(session.copy(questions = session.questions))
                     }, Modifier.fillMaxWidth(), enabled = !q.unknown, minLines = 3, placeholder = { Text(if (q.unknown) "已标记不会" else "在这里作答") })
+                    if (q.referenceAnswer.isNotBlank()) {
+                        // 解析单独折叠在作答框下方，默认收起，交卷前后都能看，不污染作答区。
+                        var showReference by remember(q.question, q.referenceAnswer) { mutableStateOf(false) }
+                        TextButton(onClick = { showReference = !showReference }, contentPadding = PaddingValues(0.dp)) {
+                            Text(if (showReference) "收起解析" else "查看解析", fontSize = DesignTokens.Type.Small)
+                        }
+                        if (showReference) {
+                            Text(q.referenceAnswer, color = palette.muted, fontSize = DesignTokens.Type.Body, lineHeight = DesignTokens.Type.LineBody)
+                        }
+                    }
                 }
             }
         }
@@ -2799,6 +2973,12 @@ private fun ModelScreen(
     modelStatus: String,
     saveNotice: String,
     onConfig: (ClassroomConfig) -> Unit,
+    netToolsEnabled: Boolean,
+    onNetToolsEnabledChange: (Boolean) -> Unit,
+    imageToolsEnabled: Boolean,
+    onImageToolsEnabledChange: (Boolean) -> Unit,
+    imageConfig: ImageConfig,
+    onImageConfig: (ImageConfig) -> Unit,
     onOpenManual: () -> Unit,
     onFetchModels: () -> Unit
 ) {
@@ -2828,6 +3008,14 @@ private fun ModelScreen(
     var worldBook by remember(config.worldBook) { mutableStateOf(config.worldBook) }
     var efficientMode by remember(config.efficientMode) { mutableStateOf(config.efficientMode) }
     var reverseConversation by remember(config.reverseConversation) { mutableStateOf(config.reverseConversation) }
+    var imageProvider by remember(imageConfig.provider) { mutableStateOf(imageConfig.provider) }
+    var imageBaseUrl by remember(imageConfig.baseUrl) { mutableStateOf(imageConfig.baseUrl) }
+    var imageApiKey by remember(imageConfig.apiKey) { mutableStateOf(imageConfig.apiKey) }
+    var imageModel by remember(imageConfig.model) { mutableStateOf(imageConfig.model) }
+    var imageSize by remember(imageConfig.size) { mutableStateOf(imageConfig.size) }
+    var imageSteps by remember(imageConfig.steps) { mutableStateOf(imageConfig.steps.toString()) }
+    var imageCfgScale by remember(imageConfig.cfgScale) { mutableStateOf(imageConfig.cfgScale.toString()) }
+    var imageSaveStatus by remember { mutableStateOf("") }
     var themeMode by remember(config.themeMode) { mutableStateOf(normalizeThemeMode(config.themeMode)) }
     var interfaceMode by remember(config.interfaceMode) { mutableStateOf(normalizeInterfaceMode(config.interfaceMode)) }
     var primaryColor by remember(config.primaryColor) { mutableStateOf(config.primaryColor) }
@@ -3114,6 +3302,103 @@ private fun ModelScreen(
             }
         }
         item {
+            SettingsCard("网络与工具", expandedModule == "tools", { expandedModule = if (expandedModule == "tools") null else "tools" }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Public, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("允许 AI 调用网络", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Switch(netToolsEnabled, onNetToolsEnabledChange)
+                }
+                Text("关闭后 net_request 会在本地直接拒绝并回一条错误给模型，不发起任何网络请求。该开关对所有课堂生效。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                Text("http:// 为明文传输，建议只填本地或可信局域网地址。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+            }
+        }
+        item {
+            SettingsCard("插件", expandedModule == "plugin", { expandedModule = if (expandedModule == "plugin") null else "plugin" }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Image, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("生图", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Switch(imageToolsEnabled, onImageToolsEnabledChange)
+                }
+                Text("开启后 AI 可以调用 generate_image 生图并自动存到本机「files/images」。关闭后工具在本地直接拒绝并回一条错误给模型，不发起任何生图请求。该开关对所有课堂生效。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                Spacer(Modifier.height(10.dp))
+                Text("运营商", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AppFilterChip(imageProvider == ImageConfig.PROVIDER_OPENAI, {
+                        imageProvider = ImageConfig.PROVIDER_OPENAI
+                        imageBaseUrl = "https://api.openai.com/v1"
+                        imageModel = imageModel.ifBlank { "dall-e-3" }
+                        imageSize = imageSize.ifBlank { "1024x1024" }
+                    }) { Text("OpenAI Images") }
+                    AppFilterChip(imageProvider == ImageConfig.PROVIDER_SDWEBUI, {
+                        imageProvider = ImageConfig.PROVIDER_SDWEBUI
+                        imageBaseUrl = "http://127.0.0.1:7860"
+                    }) { Text("SD WebUI") }
+                    AppFilterChip(imageProvider == ImageConfig.PROVIDER_CUSTOM, {
+                        imageProvider = ImageConfig.PROVIDER_CUSTOM
+                    }) { Text("自定义 HTTP") }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(imageBaseUrl, { imageBaseUrl = it }, Modifier.fillMaxWidth(), label = { Text("Base URL") }, singleLine = true)
+                Text(
+                    when (imageProvider) {
+                        ImageConfig.PROVIDER_SDWEBUI -> "本地软件示例：http://127.0.0.1:7860（会调用 /sdapi/v1/txt2img）"
+                        ImageConfig.PROVIDER_CUSTOM -> "填自己的生图接口地址，按默认模板 {\"prompt\":\"{{prompt}}\"} 提交"
+                        else -> "OpenAI 兼容服务示例：https://api.openai.com/v1"
+                    },
+                    color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
+                )
+                Text("http:// 为明文传输，建议只填本地或可信局域网地址。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(imageApiKey, { imageApiKey = it }, Modifier.fillMaxWidth(), label = { Text("API Key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                Text(
+                    if (imageProvider == ImageConfig.PROVIDER_SDWEBUI) "本地 SD WebUI 通常留空（开了 --api-auth 才需要填）。" else "密钥只保存在本机，不会显示明文。",
+                    color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
+                )
+                if (imageProvider == ImageConfig.PROVIDER_OPENAI) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(imageModel, { imageModel = it }, Modifier.fillMaxWidth(), label = { Text("模型名称（如 dall-e-3 / gpt-image-1）") }, singleLine = true)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(imageSize, { imageSize = it }, Modifier.fillMaxWidth(), label = { Text("尺寸（如 1024x1024 / 1792x1024）") }, singleLine = true)
+                }
+                if (imageProvider == ImageConfig.PROVIDER_SDWEBUI) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(imageSteps, { imageSteps = it }, Modifier.weight(1f), label = { Text("步数") }, singleLine = true)
+                        OutlinedTextField(imageCfgScale, { imageCfgScale = it }, Modifier.weight(1f), label = { Text("CFG") }, singleLine = true)
+                    }
+                    Text("采样器沿用默认值（" + imageConfig.sampler + "），宽高默认 1024x1024；模型调用时给了 width / height 就以它为准。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                }
+                Spacer(Modifier.height(10.dp))
+                Button(onClick = {
+                    val cleanSteps = imageSteps.trim().toIntOrNull()?.coerceIn(1, 150) ?: imageConfig.steps
+                    val cleanCfg = imageCfgScale.trim().toDoubleOrNull()?.coerceIn(0.0, 30.0) ?: imageConfig.cfgScale
+                    imageSteps = cleanSteps.toString()
+                    imageCfgScale = cleanCfg.toString()
+                    onImageConfig(imageConfig.copy(
+                        provider = imageProvider,
+                        baseUrl = imageBaseUrl.trim(),
+                        apiKey = imageApiKey.trim(),
+                        model = imageModel.trim().ifBlank { imageConfig.model },
+                        size = imageSize.trim().ifBlank { imageConfig.size },
+                        steps = cleanSteps,
+                        cfgScale = cleanCfg
+                    ))
+                    imageSaveStatus = "生图配置已保存，AI 下一次调用立即生效"
+                }) {
+                    Icon(Icons.Default.Check, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("保存生图配置")
+                }
+                if (imageSaveStatus.isNotBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(imageSaveStatus, color = MaterialTheme.colorScheme.primary, fontSize = DesignTokens.Type.Small)
+                }
+            }
+        }
+        item {
             InfoCard {
                 Text("使用手册", fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
@@ -3142,6 +3427,23 @@ private fun ColorSwatch(value: Long, selected: Boolean, onClick: () -> Unit) {
             }
         }
     }
+}
+
+/**
+ * 插件总开关的本地闸门：禁用时直接给模型一条错误结论，
+ * 不触发 delegate（因此不会有任何 HTTP 请求出去）。
+ */
+private class PluginGateHandler(
+    private val delegate: ToolHandler,
+    private val enabled: () -> Boolean,
+    private val disabledMessage: String
+) : ToolHandler {
+    override val name: String get() = delegate.name
+    override val description: String get() = delegate.description
+    override val parametersJson: String get() = delegate.parametersJson
+
+    override suspend fun execute(argumentsJson: String): ToolResult =
+        if (enabled()) delegate.execute(argumentsJson) else ToolResult.Error(disabledMessage)
 }
 
 @Composable
@@ -3351,6 +3653,53 @@ private class ClassroomStore(context: Context) {
 
     fun loadIndex(lastIndex: Int): Int = prefs.getInt("class_index", 0).coerceIn(0, lastIndex.coerceAtLeast(0))
 
+    /** AI 网络调用总开关，默认开启；关闭后 net_request 在本地直接拒绝，不发任何请求。 */
+    fun loadNetToolsEnabled(): Boolean = prefs.getBoolean("net_tools_enabled", true)
+
+    fun saveNetToolsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("net_tools_enabled", enabled).apply()
+    }
+
+    /** 生图插件总开关，默认开启；关闭后 generate_image 在本地直接拒绝，不发任何请求。 */
+    fun loadImageToolsEnabled(): Boolean = prefs.getBoolean("image_tools_enabled", true)
+
+    fun saveImageToolsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("image_tools_enabled", enabled).apply()
+    }
+
+    /** 生图配置逐项存在 prefs 里：apiKey 单独一条，读不到就用 [ImageConfig] 的默认构造。 */
+    fun loadImageConfig(): ImageConfig {
+        val defaults = ImageConfig()
+        return ImageConfig(
+            provider = prefs.getString("image_provider", null) ?: defaults.provider,
+            baseUrl = prefs.getString("image_base_url", null) ?: defaults.baseUrl,
+            apiKey = prefs.getString("image_api_key", null) ?: defaults.apiKey,
+            model = prefs.getString("image_model", null) ?: defaults.model,
+            size = prefs.getString("image_size", null) ?: defaults.size,
+            steps = prefs.getInt("image_steps", defaults.steps),
+            // prefs 没有 putDouble：cfgScale 存成字符串，避免 float 截断。
+            cfgScale = prefs.getString("image_cfg_scale", null)?.toDoubleOrNull() ?: defaults.cfgScale,
+            sampler = prefs.getString("image_sampler", null) ?: defaults.sampler,
+            customUrl = prefs.getString("image_custom_url", null) ?: defaults.customUrl,
+            customBodyTemplate = prefs.getString("image_custom_body_template", null) ?: defaults.customBodyTemplate
+        )
+    }
+
+    fun saveImageConfig(config: ImageConfig) {
+        prefs.edit()
+            .putString("image_provider", config.provider)
+            .putString("image_base_url", config.baseUrl)
+            .putString("image_api_key", config.apiKey)
+            .putString("image_model", config.model)
+            .putString("image_size", config.size)
+            .putInt("image_steps", config.steps)
+            .putString("image_cfg_scale", config.cfgScale.toString())
+            .putString("image_sampler", config.sampler)
+            .putString("image_custom_url", config.customUrl)
+            .putString("image_custom_body_template", config.customBodyTemplate)
+            .apply()
+    }
+
     fun hasSeenReleaseNotes(version: String): Boolean = prefs.getBoolean("seen_release_notes_$version", false)
 
     fun markReleaseNotesSeen(version: String) {
@@ -3428,7 +3777,9 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
             interfaceMode = normalizeInterfaceMode(configJson.optString("interfaceMode", legacyInterfaceMode(configJson.optString("themeMode", "ocean")))),
             primaryColor = configJson.optLong("primaryColor", 0xFF667085),
             secondaryColor = configJson.optLong("secondaryColor", 0xFF667085)
-        )
+        ),
+        // 向后兼容：旧存档没有 exam 字段 → 读成 null；单份考试解析失败也只丢考试，不影响整份课堂。
+        exam = runCatching { this.optJSONObject("exam")?.toExamSession() }.getOrNull()
     )
 }
 
@@ -3447,7 +3798,45 @@ private fun Classroom.toJson() = JSONObject().apply {
     put("memoryCards", JSONArray(memoryCards.map { JSONObject().put("title", it.title).put("summary", it.summary).put("keywords", JSONArray(it.keywords)).put("type", it.type).put("priority", it.priority).put("startIndex", it.startIndex).put("endIndex", it.endIndex).put("visibility", it.visibility).put("knownBy", JSONArray(it.knownBy)).put("unknownBy", JSONArray(it.unknownBy)).put("evidence", it.evidence) }))
     put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("summary", it.summary).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
     put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview).put("content", it.content).put("kind", it.kind) }))
+    exam?.let { put("exam", it.toExamJson()) }
     put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("reasoningEffort", config.reasoningEffort).put("activeChatModel", config.activeChatModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("ttsAutoRead", config.ttsAutoRead).put("mentorName", config.mentorName).put("userAlias", config.userAlias).put("mentorPrompt", config.mentorPrompt).put("worldBook", config.worldBook).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("interfaceMode", config.interfaceMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
+}
+
+/** 考试存档的写入格式：answer = 考生作答，referenceAnswer = 参考解析，两者独立字段。 */
+private fun ExamSession.toExamJson(): JSONObject = JSONObject().apply {
+    put("title", title)
+    put("draft", draft)
+    put("submitted", submitted)
+    put("questions", JSONArray(questions.map { question ->
+        JSONObject()
+            .put("premise", question.premise)
+            .put("question", question.question)
+            .put("answer", question.answer)
+            .put("unknown", question.unknown)
+            .put("referenceAnswer", question.referenceAnswer)
+    }))
+}
+
+/** 旧存档没有 exam 字段 → null（不报错、不丢其它数据）；字段缺失一律走默认值。 */
+private fun JSONObject.toExamSession(): ExamSession? {
+    val items = optJSONArray("questions") ?: return null
+    val questions = List(items.length()) { index ->
+        val item = items.optJSONObject(index) ?: JSONObject()
+        ExamQuestion(
+            premise = item.optString("premise", ""),
+            question = item.optString("question", ""),
+            answer = item.optString("answer", ""),
+            unknown = item.optBoolean("unknown", false),
+            referenceAnswer = item.optString("referenceAnswer", "")
+        )
+    }
+    if (questions.isEmpty()) return null
+    return ExamSession(
+        title = optString("title", "AI 随堂考试"),
+        questions = questions.toMutableStateList(),
+        draft = optString("draft", ""),
+        submitted = optBoolean("submitted", false)
+    )
 }
 
 private fun JSONArray?.toMessages(): List<ChatMessage> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ChatMessage(item.optString("role"), item.optString("text")) } }
@@ -3573,7 +3962,7 @@ private fun localStudyQuote(): String {
     return quotes[LocalDate.now().dayOfYear % quotes.size]
 }
 
-private suspend fun callChat(baseUrl: String, apiKey: String, model: String, system: String, messages: List<ChatMessage>, deepThinkingEnabled: Boolean = false, reasoningEffort: String = "medium"): String = withContext(Dispatchers.IO) {
+private suspend fun callChat(baseUrl: String, apiKey: String, model: String, system: String, messages: List<ChatMessage>, deepThinkingEnabled: Boolean = false, reasoningEffort: String = "medium", temperature: Double = 0.35): String = withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) return@withContext "请先填写 API Key。"
     if (model.isBlank()) return@withContext "请先选择或填写模型名。"
     runCatching {
@@ -3584,7 +3973,7 @@ private suspend fun callChat(baseUrl: String, apiKey: String, model: String, sys
         connection.setRequestProperty("Content-Type", "application/json")
         connection.connectTimeout = 20000
         connection.readTimeout = 60000
-        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages, deepThinkingEnabled = deepThinkingEnabled, reasoningEffort = reasoningEffort)) }
+        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages, deepThinkingEnabled = deepThinkingEnabled, reasoningEffort = reasoningEffort, temperature = temperature)) }
         Regex("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").find(readBody(connection))?.groupValues?.get(1)?.unescapeJson() ?: NO_CONTENT_REPLY
     }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
 }
@@ -3599,7 +3988,8 @@ private suspend fun callChatStream(
     deepThinkingEnabled: Boolean = false,
     reasoningEffort: String = "medium",
     toolsJson: String? = null,
-    toolSink: ToolCallSink? = null
+    toolSink: ToolCallSink? = null,
+    temperature: Double = 0.35
 ): String = withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) return@withContext "请先填写 API Key。"
     if (model.isBlank()) return@withContext "请先选择或填写模型名。"
@@ -3612,7 +4002,7 @@ private suspend fun callChatStream(
         connection.setRequestProperty("Accept", "text/event-stream")
         connection.connectTimeout = 20000
         connection.readTimeout = 120000
-        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages, stream = true, deepThinkingEnabled = deepThinkingEnabled, reasoningEffort = reasoningEffort, toolsJson = toolsJson)) }
+        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildJson(model, system, messages, stream = true, deepThinkingEnabled = deepThinkingEnabled, reasoningEffort = reasoningEffort, toolsJson = toolsJson, temperature = temperature)) }
         if (connection.responseCode !in 200..299) return@runCatching readBody(connection).ifBlank { "调用失败：HTTP ${connection.responseCode}" }
         val builder = StringBuilder()
         // 只有开了工具的请求才做整包 JSON 兜底：纯聊天路径保持"读不到 data: 行就是没有内容"的老行为。
@@ -3653,7 +4043,7 @@ private suspend fun callChatWithFallback(config: ClassroomConfig, models: List<S
     val candidates = models.ifEmpty { config.orderedModels() }
     var last = "请先选择或填写模型名。"
     candidates.forEach { model ->
-        val result = callChat(config.baseUrl, config.apiKey, model, system, messages, config.deepThinkingEnabled, config.reasoningEffort)
+        val result = callChat(config.baseUrl, config.apiKey, model, system, messages, config.deepThinkingEnabled, config.reasoningEffort, config.temperature)
         if (!isApiFailure(result)) return result
         last = result
     }
@@ -3727,7 +4117,7 @@ private suspend fun callChatStreamWithFallback(
     candidates.forEach { model ->
         // 换模型重试时清空上一轮累积的 tool_calls，避免把两个模型的调用拼在一起。
         toolSink?.reset()
-        val result = callChatStream(config.baseUrl, config.apiKey, model, system, messages, onDelta, config.deepThinkingEnabled, config.reasoningEffort, toolsJson, toolSink)
+        val result = callChatStream(config.baseUrl, config.apiKey, model, system, messages, onDelta, config.deepThinkingEnabled, config.reasoningEffort, toolsJson, toolSink, config.temperature)
         if (!isApiFailure(result)) return result
         last = result
     }
@@ -4207,7 +4597,7 @@ private fun readBody(connection: HttpURLConnection): String {
     return BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
 }
 
-private fun buildJson(model: String, system: String, messages: List<ChatMessage>, stream: Boolean = false, deepThinkingEnabled: Boolean = false, reasoningEffort: String = "medium", toolsJson: String? = null): String {
+private fun buildJson(model: String, system: String, messages: List<ChatMessage>, stream: Boolean = false, deepThinkingEnabled: Boolean = false, reasoningEffort: String = "medium", toolsJson: String? = null, temperature: Double = 0.35): String {
     val all = listOf(ChatMessage("system", system)) + messages
     val jsonMessages = all.joinToString(",") { messageJson(it) }
     val normalizedEffort = reasoningEffort.lowercase()
@@ -4218,7 +4608,8 @@ private fun buildJson(model: String, system: String, messages: List<ChatMessage>
     val reasoning = if (deepThinkingEnabled) ",\"reasoning_effort\":\"$safeEffort\"" else ""
     // toolsJson 为空时这个片段是空串，请求体与改造前逐字节一致。
     val tools = toolsJson?.takeIf { it.isNotBlank() }?.let { ",\"tools\":[$it],\"tool_choice\":\"auto\"" }.orEmpty()
-    return "{\"model\":\"${model.escapeJson()}\",\"messages\":[$jsonMessages],\"temperature\":0.35,\"stream\":$stream$reasoning$tools}"
+    val safeTemperature = temperature.coerceIn(0.0, 2.0)
+    return "{\"model\":\"${model.escapeJson()}\",\"messages\":[$jsonMessages],\"temperature\":$safeTemperature,\"stream\":$stream$reasoning$tools}"
 }
 
 /** 单条消息的 JSON：没有工具字段时就是老的 {"role":..,"content":..}。 */

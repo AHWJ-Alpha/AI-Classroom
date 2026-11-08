@@ -5,7 +5,10 @@
     <!-- Used by Android's system haptic feedback for key knowledge-base actions. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- 本地生图（SD WebUI / 自定义）与局域网服务只提供 http，targetSdk 35 默认拦明文，
+         所以全局放开；https 仍走系统信任链校验。 -->
     <application
+        android:usesCleartextTraffic="true"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="AI Classroom"

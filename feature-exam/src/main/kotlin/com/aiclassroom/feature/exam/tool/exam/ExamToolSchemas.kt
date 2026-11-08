@@ -28,9 +28,9 @@ internal object ExamToolSchemas {
             "type": "string",
             "description": "具体问题。"
           },
-          "answer": {
+          "referenceAnswer": {
             "type": "string",
-            "description": "标准答案或参考解析，可省略（省略即空字符串）。考生自己的作答由考生填写，不要写在这里。"
+            "description": "参考解析 / 标准答案（可选，省略即空字符串）。只会显示在题卡的「查看解析」区域，不会填入考生作答框；考生作答由考生自己填写。"
           }
         },
         "required": ["premise", "question"],
@@ -67,9 +67,9 @@ internal object ExamToolSchemas {
       "type": "string",
       "description": "具体问题。"
     },
-    "answer": {
+    "referenceAnswer": {
       "type": "string",
-      "description": "标准答案或参考解析，可省略。"
+      "description": "参考解析 / 标准答案（可选）。只会显示在题卡的「查看解析」区域，不会填入考生作答框；考生作答由考生自己填写。"
     }
   },
   "required": ["premise", "question"],
@@ -93,9 +93,9 @@ internal object ExamToolSchemas {
       "type": "string",
       "description": "新的问题；不传则保持原值。"
     },
-    "answer": {
+    "referenceAnswer": {
       "type": "string",
-      "description": "新的标准答案；不传则保持原值，传空字符串表示清空答案。"
+      "description": "新的参考解析 / 标准答案；不传则保持原值，传空字符串表示清空解析。只影响解析区，不会改动考生作答框里的内容。"
     }
   },
   "required": ["index"],

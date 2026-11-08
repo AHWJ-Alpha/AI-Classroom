@@ -63,8 +63,9 @@ fun packExamAnswers(session: ExamSession): String = buildString {
         appendLine("题目 ${index + 1}")
         appendLine("前提：${q.premise}")
         appendLine("问题：${q.question}")
-        appendLine("状态：${if (q.unknown) "不会" else "已作答"}")
-        appendLine("答案：${q.answer}")
+        appendLine("状态：${if (q.unknown) "不会" else if (q.answer.isBlank()) "未作答" else "已作答"}")
+        appendLine("考生作答：${q.answer.ifBlank { "（空）" }}")
+        if (q.referenceAnswer.isNotBlank()) appendLine("参考解析：${q.referenceAnswer}")
     }
     if (session.draft.isNotBlank()) appendLine("草稿：${session.draft}")
 }

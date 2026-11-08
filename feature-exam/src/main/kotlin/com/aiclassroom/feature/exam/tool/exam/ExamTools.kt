@@ -43,7 +43,7 @@ class ExamTools(
     private inner class CreateTool : ToolHandler {
         override val name: String = "exam_create"
         override val description: String =
-            "创建或整体替换当前考试：一次给出完整题目列表，原有题目、草稿和提交状态都会被丢弃。题目按数组顺序编号为第 1 题起。"
+            "创建或整体替换当前考试：一次给出完整题目列表，原有题目、草稿和提交状态都会被丢弃。题目按数组顺序编号为第 1 题起。每题的 referenceAnswer 是给考生看的参考解析，不会填进考生作答框。"
         override val parametersJson: String = ExamToolSchemas.CREATE
 
         override suspend fun execute(argumentsJson: String): ToolResult = guarded {
@@ -61,7 +61,7 @@ class ExamTools(
     private inner class GetTool : ToolHandler {
         override val name: String = "exam_get"
         override val description: String =
-            "读回当前考试的完整内容：标题、每题（第几题 / 前提 / 问题 / 答案 / 是否标记不会）以及草稿与提交状态。修改题目前后都可以用它确认。"
+            "读回当前考试的完整内容：标题、每题（第几题 / 前提 / 问题 / 考生作答 / 参考解析 / 是否标记不会）以及草稿与提交状态。考生作答是 answer，参考解析是 referenceAnswer，两者互不影响。"
         override val parametersJson: String = ExamToolSchemas.GET
 
         override suspend fun execute(argumentsJson: String): ToolResult = guarded {
@@ -74,7 +74,7 @@ class ExamTools(
     private inner class AddQuestionTool : ToolHandler {
         override val name: String = "exam_add_question"
         override val description: String =
-            "在当前考试中追加或插入一道题。index 从 1 开始：1 = 插到最前面并成为第 1 题，当前题数 + 1 = 追加到末尾；省略 index 即追加到末尾。"
+            "在当前考试中追加或插入一道题。index 从 1 开始：1 = 插到最前面并成为第 1 题，当前题数 + 1 = 追加到末尾；省略 index 即追加到末尾。referenceAnswer 是参考解析，不会填入考生作答框。"
         override val parametersJson: String = ExamToolSchemas.ADD_QUESTION
 
         override suspend fun execute(argumentsJson: String): ToolResult = guarded {
@@ -82,14 +82,14 @@ class ExamTools(
             val session = currentOrFail()
             val premise = requiredText(arguments, "premise")
             val question = requiredText(arguments, "question")
-            val answer = arguments.string("answer")?.trim().orEmpty()
+            val referenceAnswer = arguments.referenceAnswerOrEmpty()
             val size = session.questions.size
             val position = arguments.indexOrNull("index") ?: (size + 1)
             if (position < 1 || position > size + 1) {
                 throw ToolFailure("index 越界：当前共 $size 题，可用范围 1..${size + 1}")
             }
             val questions = session.questions.toMutableList()
-            questions.add(position - 1, ExamQuestion(premise = premise, question = question, answer = answer))
+            questions.add(position - 1, ExamQuestion(premise = premise, question = question, referenceAnswer = referenceAnswer))
             val updated = session.copy(questions = questions)
             update(updated)
             val action = if (position == size + 1) "已追加第 $position 题" else "已插入第 $position 题，原第 $position 题起顺延"
@@ -100,7 +100,7 @@ class ExamTools(
     private inner class EditQuestionTool : ToolHandler {
         override val name: String = "exam_edit_question"
         override val description: String =
-            "修改当前考试中指定题目的前提 / 问题 / 答案。index 是题号，从 1 开始（第 1 题 = 1）。只传要改的字段，未传的字段保持原值；答案传空字符串表示清空。"
+            "修改当前考试中指定题目的前提 / 问题 / 参考解析。index 是题号，从 1 开始（第 1 题 = 1）。只传要改的字段，未传的字段保持原值；referenceAnswer 传空字符串表示清空解析。注意：本工具不会改写考生已经写下的作答（answer）。"
         override val parametersJson: String = ExamToolSchemas.EDIT_QUESTION
 
         override suspend fun execute(argumentsJson: String): ToolResult = guarded {
@@ -111,13 +111,24 @@ class ExamTools(
             if (index < 1 || index > size) {
                 throw ToolFailure("index 越界，当前共 $size 题（可用范围 1..$size）")
             }
-            val changed = listOf("premise", "question", "answer").filter { arguments.provided(it) }
-            if (changed.isEmpty()) throw ToolFailure("至少提供 premise / question / answer 中的一项")
+            // 参考解析：新参数名 referenceAnswer 优先，旧参数名 answer 兼容映射到同一个字段——
+            // 绝不写入考生作答（answer），否则又会出现「AI 出题即算已答」的老问题。
+            val referenceAnswerKey = when {
+                arguments.provided("referenceAnswer") -> "referenceAnswer"
+                arguments.provided("answer") -> "answer"
+                else -> null
+            }
+            val changed = buildList {
+                if (arguments.provided("premise")) add("premise")
+                if (arguments.provided("question")) add("question")
+                if (referenceAnswerKey != null) add("referenceAnswer")
+            }
+            if (changed.isEmpty()) throw ToolFailure("至少提供 premise / question / referenceAnswer 中的一项")
             val original = session.questions[index - 1]
             val question = original.copy(
                 premise = if (arguments.provided("premise")) requiredText(arguments, "premise") else original.premise,
                 question = if (arguments.provided("question")) requiredText(arguments, "question") else original.question,
-                answer = if (arguments.provided("answer")) arguments.string("answer")?.trim().orEmpty() else original.answer,
+                referenceAnswer = if (referenceAnswerKey != null) arguments.string(referenceAnswerKey)?.trim().orEmpty() else original.referenceAnswer,
             )
             val questions = session.questions.toMutableList()
             questions[index - 1] = question
@@ -213,6 +224,10 @@ class ExamTools(
         return this[key]?.asStringOrNull() ?: throw ToolFailure("参数 $key 必须是字符串")
     }
 
+    /** referenceAnswer 优先，兼容旧的 answer 参数名；两者都只表示参考解析。 */
+    private fun Map<String, JsonValue>.referenceAnswerOrEmpty(): String =
+        string("referenceAnswer")?.trim().orEmpty().ifBlank { string("answer")?.trim().orEmpty() }
+
     private fun Map<String, JsonValue>.requiredArray(key: String): List<JsonValue> {
         val value = this[key] ?: throw ToolFailure("缺少参数 $key")
         return (value as? JsonValue.Arr)?.items ?: throw ToolFailure("参数 $key 必须是数组")
@@ -236,7 +251,8 @@ class ExamTools(
         return ExamQuestion(
             premise = premise,
             question = question,
-            answer = fields.string("answer")?.trim().orEmpty(),
+            // 模型给的标准答案只进 referenceAnswer；answer 始终留给考生自己写。
+            referenceAnswer = fields.referenceAnswerOrEmpty(),
         )
     }
 
@@ -266,6 +282,7 @@ class ExamTools(
                     "premise" to JsonValue.Str(question.premise),
                     "question" to JsonValue.Str(question.question),
                     "answer" to JsonValue.Str(question.answer),
+                    "referenceAnswer" to JsonValue.Str(question.referenceAnswer),
                     "unknown" to JsonValue.Bool(question.unknown),
                 )
             }
