@@ -6,6 +6,9 @@ package com.aiclassroom.feature.plugin
  * 挂起函数在 JS 侧以同步外观暴露（内部阻塞等待），因此实现方必须保证：
  * - 不会阻塞在等待主线程的调度上（详见 BlockingSuspend 的限制说明）；
  * - 失败时返回 PluginResult.Failure 而不是抛异常，异常也会被兜住并转成 host_error。
+ *
+ * 第二批能力（classroom / exam / memory / knowledge / dialogs）返回的文本必须是紧凑 JSON，
+ * 且由实现方按 [PluginLimits.MAX_RESULT_BYTES] 自行限量；HostFacade 还会再兜一层截断。
  */
 interface PluginHostApi {
 
@@ -31,4 +34,28 @@ interface PluginHostApi {
 
     /** 插件要求刷新界面时调用。 */
     fun requestUiRefresh(pluginId: String)
+
+    /** 课堂列表与元信息（名称、消息数等），不含对话全文。 */
+    suspend fun listClassrooms(): PluginResult
+
+    /** 修改课堂：改标题 / 切换当前课堂。patchJson 形如 {"rename":{"index":0,"name":"…"}} 或 {"select":{"index":1}}。 */
+    suspend fun writeClassroom(patchJson: String): PluginResult
+
+    /** 当前课堂的考试（题目、作答、参考解析）。 */
+    suspend fun readExam(): PluginResult
+
+    /** 写入考试：改题 / 标记不会。patchJson 形如 {"questions":[{"index":0,"answer":"…","unknown":true}]}。 */
+    suspend fun writeExam(patchJson: String): PluginResult
+
+    /** 长期记忆与世界书。 */
+    suspend fun readMemory(): PluginResult
+
+    /** 追加一条长期记忆。 */
+    suspend fun writeMemory(text: String): PluginResult
+
+    /** 知识库条目。 */
+    suspend fun readKnowledge(): PluginResult
+
+    /** 跨课堂读对话；classroomId 为空表示全部课堂，limitPerClassroom 由宿主再夹一次上限。 */
+    suspend fun readAllDialogs(classroomId: String?, limitPerClassroom: Int): PluginResult
 }

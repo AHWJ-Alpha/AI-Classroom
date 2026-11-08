@@ -7,6 +7,7 @@ import com.aiclassroom.feature.plugin.js.JsEngine
 import com.aiclassroom.feature.plugin.js.JsSandbox
 import com.aiclassroom.feature.plugin.js.jsFunction
 import com.aiclassroom.feature.plugin.js.jsObject
+import com.aiclassroom.feature.plugin.js.jsPayload
 import com.aiclassroom.feature.plugin.js.jsString
 import org.mozilla.javascript.Context
 import org.mozilla.javascript.Scriptable
@@ -20,7 +21,7 @@ class PluginValidationException(val errors: List<String>) :
 /**
  * 一个已装载、可调用的插件实例：manifest + 独立 JS Scope + 权限 + 存储 + 时间源。
  *
- * 一个实例只服务一个插件，非线程安全：宿主应串行使用（prompt 钩子本来就是串行的）。
+ * 一个实例只服务一个插件，非线程安全：宿主应串行使用（prompt 钩子与事件分发都在单线程内串行）。
  */
 class PluginRuntime internal constructor(
     val manifest: PluginManifest,
@@ -31,13 +32,19 @@ class PluginRuntime internal constructor(
     private val logger: PluginLogger,
 ) : Closeable {
 
+    /**
+     * 同一个插件实例的 JS 引擎非线程安全（Rhino Scope 不可并发）。
+     * prompt 钩子、事件分发、定时器回调来自不同线程，全部经这把锁串行化。
+     */
+    private val invocationLock = Any()
+
     /** 该插件在 before_send 阶段注册的钩子入口函数名，没有则 null。 */
     val promptHookEntry: String? get() = manifest.promptHookEntry()
 
-    fun hasFunction(name: String): Boolean = engine.hasFunction(name)
+    fun hasFunction(name: String): Boolean = synchronized(invocationLock) { engine.hasFunction(name) }
 
     /** 执行任意表达式，主要给宿主自检与测试用。 */
-    fun evalValue(expression: String): Any? = engine.evalValue(expression)
+    fun evalValue(expression: String): Any? = synchronized(invocationLock) { engine.evalValue(expression) }
 
     /**
      * 执行 before_send 钩子：JS 侧 onBeforePrompt(ctx) 返回字符串即替换，返回 null/undefined 表示不改。
@@ -45,7 +52,9 @@ class PluginRuntime internal constructor(
      */
     fun runBeforeSend(currentPrompt: String, meta: PromptMeta): String? {
         val entry = promptHookEntry ?: return null
-        val raw = engine.callFunction(entry) { cx, scope -> listOf(buildHookContext(cx, scope, currentPrompt, meta)) }
+        val raw = synchronized(invocationLock) {
+            engine.callFunction(entry) { cx, scope -> listOf(buildHookContext(cx, scope, currentPrompt, meta)) }
+        }
         return when {
             raw == null || raw is Undefined -> null
             raw is String -> raw
@@ -54,14 +63,27 @@ class PluginRuntime internal constructor(
         }
     }
 
+    /**
+     * 执行一个事件 / 定时器回调：entry(ctx)，ctx = {name, payload, payloadJson, now(), storage, log}。
+     *
+     * 脚本抛异常或超时都会向上抛出（由 PluginEventBus 记入 DispatchReport.skipped），
+     * 因此这里不做 runCatching —— 隔离责任在分发器，一个插件坏掉不能悄悄变成静默失败。
+     */
+    fun runEvent(entry: String, eventName: String, payloadJson: String) {
+        synchronized(invocationLock) {
+            engine.callFunction(entry) { cx, scope ->
+                listOf(buildEventContext(cx, scope, eventName, payloadJson))
+            }
+        }
+    }
+
     override fun close() {
         engine.close()
     }
 
     /** ctx：{prompt, meta, now(), storage.get/set, log}。 */
-    private fun buildHookContext(cx: Context, scope: Scriptable, prompt: String, meta: PromptMeta): Scriptable {
-        val storagePermitted = PluginPermissions.STORAGE in permissions
-        return jsObject(
+    private fun buildHookContext(cx: Context, scope: Scriptable, prompt: String, meta: PromptMeta): Scriptable =
+        jsObject(
             cx,
             scope,
             mapOf(
@@ -75,31 +97,54 @@ class PluginRuntime internal constructor(
                         "userInput" to meta.userInput,
                     ),
                 ),
-                "now" to jsFunction("now") { _, _, _ -> clock.nowMillis().toDouble() },
-                "storage" to jsObject(
-                    cx,
-                    scope,
-                    mapOf(
-                        "get" to jsFunction("get") { _, _, args ->
-                            if (!storagePermitted) {
-                                logger("[plugin:${manifest.id}] 未声明 storage 权限，ctx.storage.get 被忽略")
-                                null
-                            } else {
-                                kv.get(jsString(args.getOrNull(0)) ?: "")
-                            }
-                        },
-                        "set" to jsFunction("set") { _, _, args ->
-                            if (!storagePermitted) {
-                                logger("[plugin:${manifest.id}] 未声明 storage 权限，ctx.storage.set 被忽略")
-                            } else {
-                                kv.set(jsString(args.getOrNull(0)) ?: "", jsString(args.getOrNull(1)) ?: "")
-                            }
-                            Undefined.instance
-                        },
-                    ),
-                ),
-                "log" to jsFunction("log") { _, _, args ->
-                    logger("[plugin:${manifest.id}] " + args.joinToString(" ") { Context.toString(it) })
+                "now" to nowFunction(),
+                "storage" to storageObject(cx, scope),
+                "log" to logFunction(),
+            ),
+        )
+
+    /** ctx：{name, payload, payloadJson, now(), storage.get/set, log}。 */
+    private fun buildEventContext(cx: Context, scope: Scriptable, eventName: String, payloadJson: String): Scriptable =
+        jsObject(
+            cx,
+            scope,
+            mapOf(
+                "name" to eventName,
+                "payload" to jsPayload(cx, scope, payloadJson),
+                "payloadJson" to payloadJson,
+                "now" to nowFunction(),
+                "storage" to storageObject(cx, scope),
+                "log" to logFunction(),
+            ),
+        )
+
+    private fun nowFunction() = jsFunction("now") { _, _, _ -> clock.nowMillis().toDouble() }
+
+    private fun logFunction(): Any = jsFunction("log") { _, _, args ->
+        logger("[plugin:" + manifest.id + "] " + args.joinToString(" ") { Context.toString(it) })
+        Undefined.instance
+    }
+
+    private fun storageObject(cx: Context, scope: Scriptable): Scriptable {
+        val storagePermitted = PluginPermissions.STORAGE in permissions
+        return jsObject(
+            cx,
+            scope,
+            mapOf(
+                "get" to jsFunction("get") { _, _, args ->
+                    if (!storagePermitted) {
+                        logger("[plugin:" + manifest.id + "] 未声明 storage 权限，ctx.storage.get 被忽略")
+                        null
+                    } else {
+                        kv.get(jsString(args.getOrNull(0)) ?: "")
+                    }
+                },
+                "set" to jsFunction("set") { _, _, args ->
+                    if (!storagePermitted) {
+                        logger("[plugin:" + manifest.id + "] 未声明 storage 权限，ctx.storage.set 被忽略")
+                    } else {
+                        kv.set(jsString(args.getOrNull(0)) ?: "", jsString(args.getOrNull(1)) ?: "")
+                    }
                     Undefined.instance
                 },
             ),
@@ -136,7 +181,7 @@ class PluginRuntime internal constructor(
                     val entry = extension.entry ?: continue
                     if (!engine.hasFunction(entry)) {
                         throw PluginScriptException(
-                            "${extension.type.wire} 的 entry 函数 '$entry' 在 ${PluginPackage.LOGIC_FILE} 中未定义",
+                            extension.type.wire + " 的 entry 函数 '" + entry + "' 在 " + PluginPackage.LOGIC_FILE + " 中未定义",
                         )
                     }
                 }

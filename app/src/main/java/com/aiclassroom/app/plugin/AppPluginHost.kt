@@ -8,13 +8,17 @@ import com.aiclassroom.feature.plugin.host.PluginKvStorage
 /**
  * :app 侧的 [PluginHostApi] 实现。
  *
- * 具体能力（生图 / TTS / 网络 / 对话）都由主 app 用 lambda 注入，这里只做三件事：
+ * 具体能力（生图 / TTS / 网络 / 对话 / 课堂 / 考试 / 记忆 / 知识库）都由主 app 用 lambda 注入，
+ * 这里只做三件事：
  * 1. 统一兜异常：任何实现抛出来都转成 PluginResult.Failure，绝不让脚本看到 Kotlin 异常；
  * 2. storageGet / storagePut 直接建在 PluginStateStore 上（与 ctx.storage 共用同一份 key-value）；
  * 3. requestUiRefresh 转给主 app 的重组回调。
  *
  * 说明：按插件的权限校验发生在 feature-plugin 的 HostFacade（那里才知道 pluginId）；
  * 宿主这一层再按「功能总开关」兜一层（网络关闭时任何插件都拿不到网络能力）。
+ *
+ * 第二批能力默认实现为 not_available：没有注入实现的宿主（例如单测）不会静默返回空数据，
+ * 而是让插件看到一个明确的错误码。
  */
 class AppPluginHost(
     private val stateStore: PluginStateStore,
@@ -25,6 +29,15 @@ class AppPluginHost(
     private val insertDialogImpl: suspend (role: String, text: String) -> PluginResult,
     private val uiRefreshImpl: (String) -> Unit = {},
     private val logger: (String) -> Unit = { line -> android.util.Log.i(PLUGIN_LOG_TAG, line) },
+    private val listClassroomsImpl: suspend () -> PluginResult = { notAvailable("classroom.read") },
+    private val writeClassroomImpl: suspend (String) -> PluginResult = { notAvailable("classroom.write") },
+    private val readExamImpl: suspend () -> PluginResult = { notAvailable("exam.read") },
+    private val writeExamImpl: suspend (String) -> PluginResult = { notAvailable("exam.write") },
+    private val readMemoryImpl: suspend () -> PluginResult = { notAvailable("memory.read") },
+    private val writeMemoryImpl: suspend (String) -> PluginResult = { notAvailable("memory.write") },
+    private val readKnowledgeImpl: suspend () -> PluginResult = { notAvailable("knowledge.read") },
+    private val readAllDialogsImpl: suspend (String?, Int) -> PluginResult =
+        { _, _ -> notAvailable("dialogs.readAll") },
 ) : PluginHostApi {
 
     override suspend fun generateImage(prompt: String, width: Int?, height: Int?): PluginResult =
@@ -40,10 +53,28 @@ class AppPluginHost(
     override suspend fun insertDialog(role: String, text: String): PluginResult =
         guard("dialog.insert") { insertDialogImpl(role, text) }
 
+    override suspend fun listClassrooms(): PluginResult = guard("classroom.read") { listClassroomsImpl() }
+
+    override suspend fun writeClassroom(patchJson: String): PluginResult =
+        guard("classroom.write") { writeClassroomImpl(patchJson) }
+
+    override suspend fun readExam(): PluginResult = guard("exam.read") { readExamImpl() }
+
+    override suspend fun writeExam(patchJson: String): PluginResult = guard("exam.write") { writeExamImpl(patchJson) }
+
+    override suspend fun readMemory(): PluginResult = guard("memory.read") { readMemoryImpl() }
+
+    override suspend fun writeMemory(text: String): PluginResult = guard("memory.write") { writeMemoryImpl(text) }
+
+    override suspend fun readKnowledge(): PluginResult = guard("knowledge.read") { readKnowledgeImpl() }
+
+    override suspend fun readAllDialogs(classroomId: String?, limitPerClassroom: Int): PluginResult =
+        guard("dialogs.readAll") { readAllDialogsImpl(classroomId, limitPerClassroom) }
+
     override fun storageGet(pluginId: String, key: String): String? = try {
         PluginKvStorage(stateStore, pluginId).get(key)
     } catch (t: Throwable) {
-        logger("storageGet 失败（$pluginId/$key）：" + (t.message ?: t.javaClass.simpleName))
+        logger("storageGet 失败（" + pluginId + "/" + key + "）：" + (t.message ?: t.javaClass.simpleName))
         null
     }
 
@@ -51,7 +82,7 @@ class AppPluginHost(
         try {
             PluginKvStorage(stateStore, pluginId).set(key, value)
         } catch (t: Throwable) {
-            logger("storagePut 失败（$pluginId/$key）：" + (t.message ?: t.javaClass.simpleName))
+            logger("storagePut 失败（" + pluginId + "/" + key + "）：" + (t.message ?: t.javaClass.simpleName))
         }
     }
 
@@ -59,7 +90,7 @@ class AppPluginHost(
         try {
             uiRefreshImpl(pluginId)
         } catch (t: Throwable) {
-            logger("requestUiRefresh 失败（$pluginId）：" + (t.message ?: t.javaClass.simpleName))
+            logger("requestUiRefresh 失败（" + pluginId + "）：" + (t.message ?: t.javaClass.simpleName))
         }
     }
 
@@ -68,7 +99,12 @@ class AppPluginHost(
     } catch (cancellation: kotlinx.coroutines.CancellationException) {
         throw cancellation
     } catch (t: Throwable) {
-        logger("宿主能力 $capability 失败：" + (t.message ?: t.javaClass.simpleName))
+        logger("宿主能力 " + capability + " 失败：" + (t.message ?: t.javaClass.simpleName))
         PluginResult.Failure("host_error", t.message ?: t.javaClass.simpleName)
+    }
+
+    private companion object {
+        fun notAvailable(capability: String): PluginResult =
+            PluginResult.Failure("not_available", "宿主未提供 " + capability + " 的实现")
     }
 }

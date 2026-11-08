@@ -17,9 +17,11 @@ data class ManifestValidation(val manifest: PluginManifest?, val errors: List<St
  * 5. description / author：可选字符串，长度上限 512 / 64；
  * 6. minApiVersion：必需整数，1..PluginApiVersion.CURRENT；
  * 7. permissions：可选数组，元素必须在白名单内，且不重复；
- * 8. extensions：可选数组（<= 32），type 必须是五类之一，按类型校验 slot / label / stage / entry / config；
+ * 8. extensions：可选数组（<= 32），type 必须是七类之一，按类型校验 slot / label / stage / entry / config；
  * 9. extensions[].config 必须指向包内真实文件（省略时默认 logic.js），路径不得穿越；
- * 10. extensions[].entry 必须是合法函数名，且能在 logic.js 里静态找到声明。
+ * 10. extensions[].entry 必须是合法函数名，且能在 logic.js 里静态找到声明；
+ * 11. timer：intervalSeconds 必须是 60..86400 的整数，同一插件最多 1 个；
+ * 12. event：event 必须在事件白名单内，同一插件最多 8 个。
  */
 object ManifestValidator {
 
@@ -73,7 +75,7 @@ object ManifestValidator {
             }
         }
         val permissions = parsePermissions(obj, errors)
-        val extensions = parseExtensions(obj, logicSource, fileNames, errors)
+        val extensions = parseExtensions(obj, permissions, logicSource, fileNames, errors)
 
         if (errors.isNotEmpty() || id == null || name == null || version == null || minApiVersion == null) {
             return ManifestValidation(null, errors.ifEmpty { listOf("manifest 校验失败") })
@@ -111,6 +113,7 @@ object ManifestValidator {
 
     private fun parseExtensions(
         obj: JsonNode.Obj,
+        permissions: List<String>,
         logicSource: String?,
         fileNames: Set<String>,
         errors: MutableList<String>,
@@ -124,6 +127,8 @@ object ManifestValidator {
         }
         if (array.items.size > MAX_EXTENSIONS) errors += "extensions 最多 $MAX_EXTENSIONS 项"
         val result = mutableListOf<PluginExtension>()
+        var timerCount = 0
+        var eventCount = 0
         for ((index, item) in array.items.withIndex()) {
             val extension = item.asObjectOrNull
             if (extension == null) {
@@ -131,8 +136,29 @@ object ManifestValidator {
                 continue
             }
             val errorsBefore = errors.size
-            val parsed = parseExtension(index, extension, logicSource, fileNames, errors)
+            val parsed = parseExtension(index, extension, permissions, logicSource, fileNames, errors)
             if (parsed != null && errors.size == errorsBefore) result += parsed
+            // 数量上限按「声明了几项」计数：即使该项自身还有别的错误也要算，
+            // 否则第二个 timer 会因为第一个的报错被提前 return 而漏报。
+            when (PluginExtensionType.fromWire(extension.fields["type"]?.asStringOrNull.orEmpty())) {
+                PluginExtensionType.TIMER -> {
+                    timerCount++
+                    if (timerCount > PluginLimits.MAX_TIMER_EXTENSIONS) {
+                        errors += "extensions[" + index + "] 同一插件最多 " +
+                            PluginLimits.MAX_TIMER_EXTENSIONS + " 个 timer，这是第 " + timerCount + " 个"
+                    }
+                }
+
+                PluginExtensionType.EVENT -> {
+                    eventCount++
+                    if (eventCount > PluginLimits.MAX_EVENT_EXTENSIONS) {
+                        errors += "extensions[" + index + "] 同一插件最多 " +
+                            PluginLimits.MAX_EVENT_EXTENSIONS + " 个 event，这是第 " + eventCount + " 个"
+                    }
+                }
+
+                else -> Unit
+            }
         }
         return result
     }
@@ -140,6 +166,7 @@ object ManifestValidator {
     private fun parseExtension(
         index: Int,
         extension: JsonNode.Obj,
+        permissions: List<String>,
         logicSource: String?,
         fileNames: Set<String>,
         errors: MutableList<String>,
@@ -161,6 +188,8 @@ object ManifestValidator {
         val stage = extension.fields["stage"]?.asStringOrNull
         val config = extension.fields["config"]?.asStringOrNull
         val entry = extension.fields["entry"]?.asStringOrNull
+        val event = extension.fields["event"]?.asStringOrNull
+        val intervalSeconds = parseIntervalSeconds(extension, prefix, errors)
 
         when (type) {
             PluginExtensionType.UI_OVERLAY -> {
@@ -201,6 +230,23 @@ object ManifestValidator {
                 }
                 if (entry == null) errors += "$prefix (prompt_hook) 缺少 entry"
             }
+
+            PluginExtensionType.TIMER -> {
+                if (entry == null) errors += "$prefix (timer) 缺少 entry"
+                if (intervalSeconds == null) errors += "$prefix (timer) 缺少合法整数 intervalSeconds"
+                if (PluginPermissions.TIMER !in permissions) {
+                    errors += "$prefix (timer) 声明定时器必须同时申请 ${PluginPermissions.TIMER} 权限"
+                }
+            }
+
+            PluginExtensionType.EVENT -> {
+                if (event == null) {
+                    errors += "$prefix (event) 缺少 event"
+                } else if (event !in PluginEventNames.ALL) {
+                    errors += "$prefix (event) 未知事件 '$event'（允许：${PluginEventNames.ALL.joinToString(", ")}）"
+                }
+                if (entry == null) errors += "$prefix (event) 缺少 entry"
+            }
         }
 
         val configFile = config ?: PluginPackage.LOGIC_FILE
@@ -230,7 +276,30 @@ object ManifestValidator {
             config = config,
             entry = entry,
             stage = stage,
+            intervalSeconds = intervalSeconds.takeIf { type == PluginExtensionType.TIMER },
+            event = event.takeIf { type == PluginExtensionType.EVENT },
         )
+    }
+
+    /** intervalSeconds：字段缺省时返回 null（是否算错由调用方按类型决定），非整数 / 越界记错误并返回 null。 */
+    private fun parseIntervalSeconds(
+        extension: JsonNode.Obj,
+        prefix: String,
+        errors: MutableList<String>,
+    ): Int? {
+        val node = extension.fields["intervalSeconds"] ?: return null
+        val value = node.asIntOrNull
+        if (value == null) {
+            errors += "$prefix.intervalSeconds 必须是整数"
+            return null
+        }
+        val min = PluginLimits.MIN_TIMER_INTERVAL_SECONDS
+        val max = PluginLimits.MAX_TIMER_INTERVAL_SECONDS
+        if (value < min || value > max) {
+            errors += "$prefix.intervalSeconds 越界：" + value + "（必须是 " + min + ".." + max + " 秒之间的整数）"
+            return null
+        }
+        return value
     }
 
     /** 静态扫描 logic.js 里是否声明了该函数（运行时还会再兜底检查一次）。 */

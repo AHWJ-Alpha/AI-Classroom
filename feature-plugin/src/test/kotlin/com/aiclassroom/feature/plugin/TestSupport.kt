@@ -54,6 +54,55 @@ class RecordingHostApi : PluginHostApi {
         return insertResult
     }
 
+    var classroomsResult: PluginResult = PluginResult.Success("[]")
+    var examResult: PluginResult = PluginResult.Success("{}")
+    var writeExamResult: PluginResult = PluginResult.Success("ok")
+    var writeClassroomResult: PluginResult = PluginResult.Success("ok")
+    var memoryResult: PluginResult = PluginResult.Success("{}")
+    var writeMemoryResult: PluginResult = PluginResult.Success("ok")
+    var knowledgeResult: PluginResult = PluginResult.Success("[]")
+    var allDialogsResult: PluginResult = PluginResult.Success("[]")
+
+    override suspend fun listClassrooms(): PluginResult {
+        calls += "listClassrooms"
+        return classroomsResult
+    }
+
+    override suspend fun writeClassroom(patchJson: String): PluginResult {
+        calls += "writeClassroom:$patchJson"
+        return writeClassroomResult
+    }
+
+    override suspend fun readExam(): PluginResult {
+        calls += "readExam"
+        return examResult
+    }
+
+    override suspend fun writeExam(patchJson: String): PluginResult {
+        calls += "writeExam:$patchJson"
+        return writeExamResult
+    }
+
+    override suspend fun readMemory(): PluginResult {
+        calls += "readMemory"
+        return memoryResult
+    }
+
+    override suspend fun writeMemory(text: String): PluginResult {
+        calls += "writeMemory:$text"
+        return writeMemoryResult
+    }
+
+    override suspend fun readKnowledge(): PluginResult {
+        calls += "readKnowledge"
+        return knowledgeResult
+    }
+
+    override suspend fun readAllDialogs(classroomId: String?, limitPerClassroom: Int): PluginResult {
+        calls += "readAllDialogs:$classroomId:$limitPerClassroom"
+        return allDialogsResult
+    }
+
     override fun storageGet(pluginId: String, key: String): String? = pluginStorage["$pluginId/$key"]
 
     override fun storagePut(pluginId: String, key: String, value: String) {

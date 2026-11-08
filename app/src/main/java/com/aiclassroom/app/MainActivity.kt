@@ -123,6 +123,10 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -209,7 +213,13 @@ import com.aiclassroom.app.plugin.PluginInstallTool
 import com.aiclassroom.app.plugin.PluginManager
 import com.aiclassroom.app.plugin.PrefsPluginStateStore
 import com.aiclassroom.app.plugin.importPluginArchive
+import com.aiclassroom.app.plugin.cappedJson
+import com.aiclassroom.feature.plugin.PluginClock
+import com.aiclassroom.feature.plugin.PluginEventNames
+import com.aiclassroom.feature.plugin.PluginLimits
 import com.aiclassroom.feature.plugin.PluginResult
+import com.aiclassroom.feature.plugin.event.PluginEvent
+import com.aiclassroom.feature.plugin.event.PluginEventBus
 import com.aiclassroom.feature.plugin.hook.PromptHookPipeline
 import com.aiclassroom.feature.plugin.hook.PromptMeta
 import android.os.Handler
@@ -560,6 +570,208 @@ private fun AIClassroomApp() {
                     PluginResult.Success("已插入一条 " + cleanRole + " 消息")
                 }
             },
+            // ---- 第二批能力：课堂 / 考试 / 记忆 / 知识库 / 跨课堂对话 ----
+            // 全部只读复用现有内存数据（classes + config），不另建存储；写操作一律 post 到主线程排队，
+            // 与 insertDialog 同一套路：脚本线程阻塞等待，所以不能在这里切主线程再等回来。
+            listClassroomsImpl = {
+                val items = classes.mapIndexed { index, room ->
+                    JSONObject()
+                        .put("id", index.toString())
+                        .put("name", room.name)
+                        .put("topic", room.topic)
+                        .put("messageCount", room.messages.size)
+                        .put("branchCount", room.branches.size)
+                        .put("knowledgeCount", room.files.size)
+                        .put("current", index == classIndex)
+                        .put("exam", room.exam?.let { if (it.submitted) "submitted" else "in_progress" } ?: "none")
+                        // 课堂数据模型里既没有创建时间、消息也不带时间戳，这里如实给 null 而不是编一个。
+                        .put("createdAt", JSONObject.NULL)
+                }
+                PluginResult.Success(
+                    cappedJson("classrooms", items, mapOf("currentClassroomId" to classIndex.toString())),
+                )
+            },
+            writeClassroomImpl = { patchJson ->
+                val patch = runCatching { JSONObject(patchJson) }.getOrNull()
+                val select = patch?.optJSONObject("select")
+                val rename = patch?.optJSONObject("rename")
+                val targetIndex = (select ?: rename)?.optInt("index", -1) ?: -1
+                when {
+                    patch == null -> PluginResult.Failure("invalid_argument", "patch 不是合法 JSON")
+                    select == null && rename == null ->
+                        PluginResult.Failure("invalid_argument", "patch 里需要有 select 或 rename")
+                    targetIndex !in classes.indices ->
+                        PluginResult.Failure("invalid_argument", "课堂下标越界：" + targetIndex)
+                    else -> {
+                        val newName = rename?.optString("name").orEmpty().trim().take(64)
+                        mainHandler.post {
+                            if (select != null) classIndex = targetIndex
+                            if (newName.isNotBlank()) {
+                                classes[targetIndex] = classes[targetIndex].copy(name = newName)
+                            }
+                            persist("插件修改了课堂")
+                        }
+                        PluginResult.Success(
+                            """{"classroomId":""" + targetIndex + ""","switched":""" + (select != null) + "}",
+                        )
+                    }
+                }
+            },
+            readExamImpl = {
+                val session = examSession ?: classes.getOrNull(classIndex)?.exam
+                if (session == null) {
+                    PluginResult.Success("""{"exam":null}""")
+                } else {
+                    val questions = session.questions.mapIndexed { index, question ->
+                        JSONObject()
+                            .put("index", index)
+                            .put("premise", question.premise.take(800))
+                            .put("question", question.question.take(800))
+                            .put("answer", question.answer.take(800))
+                            .put("unknown", question.unknown)
+                            .put("referenceAnswer", question.referenceAnswer.take(1200))
+                    }
+                    PluginResult.Success(
+                        cappedJson(
+                            "questions",
+                            questions,
+                            mapOf(
+                                "title" to session.title,
+                                "submitted" to session.submitted,
+                                "questionCount" to session.questions.size,
+                            ),
+                        ),
+                    )
+                }
+            },
+            writeExamImpl = { patchJson ->
+                val patch = runCatching { JSONObject(patchJson) }.getOrNull()
+                val base = examSession ?: classes.getOrNull(classIndex)?.exam
+                when {
+                    patch == null -> PluginResult.Failure("invalid_argument", "patch 不是合法 JSON")
+                    base == null -> PluginResult.Failure("no_exam", "当前课堂没有考试")
+                    else -> {
+                        val questions = base.questions.toMutableList()
+                        var applied = 0
+                        val patches = patch.optJSONArray("questions")
+                        if (patches != null) {
+                            for (position in 0 until patches.length()) {
+                                val item = patches.optJSONObject(position) ?: continue
+                                val index = item.optInt("index", -1)
+                                if (index !in questions.indices) continue
+                                val question = questions[index]
+                                questions[index] = question.copy(
+                                    answer = if (item.has("answer")) item.optString("answer").take(4000) else question.answer,
+                                    unknown = if (item.has("unknown")) item.optBoolean("unknown", question.unknown) else question.unknown,
+                                    referenceAnswer = if (item.has("referenceAnswer")) {
+                                        item.optString("referenceAnswer").take(4000)
+                                    } else {
+                                        question.referenceAnswer
+                                    },
+                                )
+                                applied++
+                            }
+                        }
+                        val updated = base.copy(
+                            questions = questions,
+                            submitted = if (patch.has("submitted")) patch.optBoolean("submitted", base.submitted) else base.submitted,
+                            draft = if (patch.has("draft")) patch.optString("draft").take(4000) else base.draft,
+                        )
+                        mainHandler.post {
+                            examSession = if (updated.submitted) null else updated.withComposeState()
+                            saveExam(updated, "插件改写了考试")
+                        }
+                        PluginResult.Success("""{"applied":""" + applied + ""","questionCount":""" + questions.size + "}")
+                    }
+                }
+            },
+            readMemoryImpl = {
+                val room = classes.getOrNull(classIndex)
+                if (room == null) {
+                    PluginResult.Failure("no_classroom", "当前没有课堂")
+                } else {
+                    val memories = room.memories.map { JSONObject().put("text", it.take(500)) }
+                    PluginResult.Success(
+                        cappedJson(
+                            "memories",
+                            memories,
+                            mapOf(
+                                "worldBook" to room.config.worldBook.take(8000),
+                                "corePremises" to JSONArray(room.corePremises.map { it.take(300) }),
+                                "memoryCardCount" to room.memoryCards.size,
+                            ),
+                        ),
+                    )
+                }
+            },
+            writeMemoryImpl = { text ->
+                val clean = text.trim().take(2000)
+                if (clean.isBlank()) {
+                    PluginResult.Failure("invalid_argument", "text 不能为空")
+                } else {
+                    mainHandler.post {
+                        val index = classIndex.coerceIn(0, classes.lastIndex)
+                        classes[index].memories.add(clean)
+                        persist("插件写入了一条记忆")
+                    }
+                    PluginResult.Success("已追加一条长期记忆")
+                }
+            },
+            readKnowledgeImpl = {
+                val items = classes.getOrNull(classIndex)?.files?.map { file ->
+                    JSONObject()
+                        .put("name", file.name)
+                        .put("type", file.type)
+                        .put("kind", file.kind)
+                        .put("chars", file.chars)
+                        .put("content", file.content.take(2000))
+                } ?: emptyList()
+                PluginResult.Success(cappedJson("files", items))
+            },
+            readAllDialogsImpl = { classroomId, limitPerClassroom ->
+                val perRoom = limitPerClassroom.coerceIn(1, PluginLimits.MAX_DIALOGS_PER_CLASSROOM)
+                val indices = if (classroomId.isNullOrBlank()) {
+                    classes.indices.toList()
+                } else {
+                    val byIndex = classroomId.trim().toIntOrNull()
+                    val resolved = when {
+                        byIndex != null && byIndex in classes.indices -> byIndex
+                        else -> classes.indexOfFirst { it.name == classroomId }
+                    }
+                    if (resolved in classes.indices) listOf(resolved) else emptyList()
+                }
+                val rooms = indices.map { index ->
+                    val room = classes[index]
+                    fun linesOf(messages: List<ChatMessage>): JSONArray {
+                        val array = JSONArray()
+                        messages.takeLast(perRoom).forEach { message ->
+                            array.put(
+                                JSONObject()
+                                    .put("role", message.role)
+                                    .put("text", message.text.replace("\n", " ").take(PluginLimits.MAX_DIALOG_CHARS)),
+                            )
+                        }
+                        return array
+                    }
+                    val branches = JSONArray()
+                    room.branches.forEach { branch ->
+                        branches.put(
+                            JSONObject()
+                                .put("title", branch.title)
+                                .put("messages", linesOf(branch.messages)),
+                        )
+                    }
+                    JSONObject()
+                        .put("id", index.toString())
+                        .put("name", room.name)
+                        .put("messages", linesOf(room.messages))
+                        .put("branches", branches)
+                        .put("truncated", room.messages.size > perRoom)
+                }
+                PluginResult.Success(
+                    cappedJson("classrooms", rooms, mapOf("limitPerClassroom" to perRoom)),
+                )
+            },
             uiRefreshImpl = { pluginId ->
                 Log.d(PLUGIN_LOG_TAG, "插件 " + pluginId + " 请求刷新界面")
                 mainHandler.post { pluginVersion++ }
@@ -568,10 +780,60 @@ private fun AIClassroomApp() {
     }
     val pluginManager = remember { PluginManager(context, pluginHost, pluginStateStore) }
     val promptHookPipeline = remember { PromptHookPipeline(logger = { line -> Log.i(PLUGIN_LOG_TAG, line) }) }
+    // ---- 触发器（第二批）：timer / event ----
+    // 分发永远在后台线程、永远被 runCatching 兜住：插件坏掉不能影响对话、考试、启动。
+    val pluginEventBus = remember { PluginEventBus({ line -> Log.i(PLUGIN_LOG_TAG, line) }) }
+    fun dispatchPluginEvent(event: String, payload: Map<String, String> = emptyMap()) {
+        runCatching {
+            val plugins = pluginManager.snapshot()
+            if (plugins.isEmpty()) return@runCatching
+            scope.launch(Dispatchers.IO) {
+                runCatching { pluginEventBus.dispatch(plugins, PluginEvent(event, payload)) }
+                    .onFailure { Log.w(PLUGIN_LOG_TAG, "插件事件 " + event + " 分发失败", it) }
+            }
+        }.onFailure { Log.w(PLUGIN_LOG_TAG, "插件事件 " + event + " 派发失败", it) }
+    }
+    // 定时器跟着「插件装载结果」与「前后台状态」走：插件装了 / 卸载了要重算，
+    // 切后台必须停（否则白耗电），回前台再起。
+    val pluginLifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(pluginLifecycleOwner, pluginVersion) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> runCatching {
+                    val plugins = pluginManager.snapshot()
+                    // 已经在跑就别重启：startTimers 会先 stop 再起，白重置一轮倒计时。
+                    if (plugins.isNotEmpty() && pluginEventBus.timerCount == 0) {
+                        pluginEventBus.startTimers(plugins, scope, PluginClock.SYSTEM)
+                    }
+                }.onFailure { Log.w(PLUGIN_LOG_TAG, "启动插件定时器失败", it) }
+
+                Lifecycle.Event.ON_STOP -> runCatching { pluginEventBus.stopTimers() }
+                    .onFailure { Log.w(PLUGIN_LOG_TAG, "停止插件定时器失败", it) }
+
+                else -> Unit
+            }
+        }
+        pluginLifecycleOwner.lifecycle.addObserver(observer)
+        runCatching {
+            val plugins = pluginManager.snapshot()
+            if (plugins.isNotEmpty() &&
+                pluginEventBus.timerCount == 0 &&
+                pluginLifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+            ) {
+                pluginEventBus.startTimers(plugins, scope, PluginClock.SYSTEM)
+            }
+        }.onFailure { Log.w(PLUGIN_LOG_TAG, "启动插件定时器失败", it) }
+        onDispose {
+            pluginLifecycleOwner.lifecycle.removeObserver(observer)
+            runCatching { pluginEventBus.stopTimers() }
+        }
+    }
     LaunchedEffect(Unit) {
         val loaded = withContext(Dispatchers.IO) { pluginManager.loadAll() }
         pluginVersion++
         Log.i(PLUGIN_LOG_TAG, "启动时装载插件 " + loaded + " 个")
+        // app_started：扫描装载完成之后才分发，插件此刻已经能读到自己的 storage。
+        dispatchPluginEvent(PluginEventNames.APP_STARTED, mapOf("loaded" to loaded.toString()))
     }
     val pluginInfos = remember(pluginVersion) { pluginManager.infos() }
 
@@ -834,6 +1096,16 @@ private fun AIClassroomApp() {
         input = ""
         room.messages.add(ChatMessage("user", filterNsfw(text, room.config.efficientMode)))
         persist("对话已保存")
+        // message_sent：用户消息落进课堂之后立刻分发（钩子只改 prompt，这里给插件一个「刚发生」的时机）。
+        dispatchPluginEvent(
+            PluginEventNames.MESSAGE_SENT,
+            mapOf(
+                "classroomId" to roomIndex.toString(),
+                "classroomName" to room.name,
+                "userText" to text.take(200),
+                "messageCount" to room.messages.size.toString(),
+            ),
+        )
         isLoading = true
         scope.launch {
             val assistantIndex = room.messages.size
@@ -890,9 +1162,28 @@ private fun AIClassroomApp() {
                 val snapshot = detected.withComposeState()
                 examSession = snapshot
                 saveExam(snapshot, "考试已保存", immediate = false)
+                dispatchPluginEvent(
+                    PluginEventNames.EXAM_STARTED,
+                    mapOf(
+                        "classroomId" to roomIndex.toString(),
+                        "title" to snapshot.title,
+                        "questionCount" to snapshot.questions.size.toString(),
+                    ),
+                )
             }
             isLoading = false
             persist("回复已保存，记忆将在后台整理")
+            // assistant_replied：AI 回复已经写回消息并落盘，此刻才分发，插件读到的是最终文本。
+            dispatchPluginEvent(
+                PluginEventNames.ASSISTANT_REPLIED,
+                mapOf(
+                    "classroomId" to roomIndex.toString(),
+                    "classroomName" to room.name,
+                    "chars" to visibleResult.length.toString(),
+                    "truncatedText" to visibleResult.take(200),
+                    "messageCount" to room.messages.size.toString(),
+                ),
+            )
             if (room.config.ttsAutoRead && visibleResult.isNotBlank()) speakText(context, room.config, visibleResult)
             scheduleMemoryBuild(room, activeModel)
             if (isFirstConversation && room.name.matches(Regex("课堂 \\d+")) && room.messages.size >= 2) {
@@ -1401,6 +1692,16 @@ private fun AIClassroomApp() {
                         examSession = null
                         immersiveMode = false
                         saveExam(submitted, "考试已提交并保存")
+                        // exam_submitted：先落盘再分发，插件读到的考试已经是 submitted 状态。
+                        dispatchPluginEvent(
+                            PluginEventNames.EXAM_SUBMITTED,
+                            mapOf(
+                                "classroomId" to classIndex.toString(),
+                                "title" to (submitted?.title ?: ""),
+                                "questionCount" to (submitted?.questions?.size ?: 0).toString(),
+                                "unknownCount" to (submitted?.questions?.count { it.unknown } ?: 0).toString(),
+                            ),
+                        )
                         sendMessage(packed, allowExamTrigger = false)
                     }, onUnknown = { questionIndex, question ->
                         val branchText = "考试不会题：\n前提：${question.premise}\n问题：${question.question}\n请讲解这道题的思路。"
@@ -1436,9 +1737,21 @@ private fun AIClassroomApp() {
         exit = slideOutHorizontally(animationSpec = tween(DesignTokens.Motion.DrawerExitMs)) { -it } + fadeOut(tween(DesignTokens.Motion.FastMs))
     ) {
         ClassroomMenu(classes, classIndex, saveNotice, palette, onHorizontalDragEnd = { total -> if (tab == Tab.Class && classMenuOpen && total < -80f) classMenuOpen = false }, onDismiss = { classMenuOpen = false }, onSelect = {
+            val previousIndex = classIndex
             classIndex = it
             classMenuOpen = false
             persist("已切换课堂")
+            // class_switched：只在真的换了课堂时分发。
+            if (previousIndex != it) {
+                dispatchPluginEvent(
+                    PluginEventNames.CLASS_SWITCHED,
+                    mapOf(
+                        "fromClassroomId" to previousIndex.toString(),
+                        "toClassroomId" to it.toString(),
+                        "toClassroomName" to (classes.getOrNull(it)?.name ?: ""),
+                    ),
+                )
+            }
         }, onRename = { index, name ->
             if (index in classes.indices) {
                 replaceClassroomAt(index, classes[index].copy(name = name), "课堂名已保存")
