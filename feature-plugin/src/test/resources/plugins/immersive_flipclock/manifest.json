@@ -1,0 +1,40 @@
+{
+  "id": "immersive_flipclock",
+  "name": "翻页时钟",
+  "version": "1.0.0",
+  "description": "复古翻页时钟，自动翻页并随时间压暗背景",
+  "author": "",
+  "minApiVersion": 1,
+  "permissions": [
+    "ui.fullscreen",
+    "storage"
+  ],
+  "settings": [
+    {
+      "key": "autoDim",
+      "label": "自动压暗",
+      "type": "boolean",
+      "default": true,
+      "description": "深夜自动降低整体亮度"
+    },
+    {
+      "key": "showSeconds",
+      "label": "显示秒",
+      "type": "boolean",
+      "default": true
+    }
+  ],
+  "extensions": [
+    {
+      "type": "ui_overlay",
+      "slot": "FULLSCREEN",
+      "config": "clock.json",
+      "provider": "provideState"
+    },
+    {
+      "type": "ui_ticker",
+      "intervalMs": 1000,
+      "entry": "onTick"
+    }
+  ]
+}

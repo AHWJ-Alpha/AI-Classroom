@@ -247,9 +247,17 @@ class PluginRuntime internal constructor(
             ),
         )
 
-    /** ctx：{state, event, value, now(), storage.get/set, log}，valueJson 为 null 表示无值。 */
+    /**
+     * ctx：{state, event, value, now(), storage.get/set, log, settings, host}。
+     * valueJson 为 null 表示无值。
+     *
+     * [host] 是脚本全局作用域里由 HostFacade 装好的那张能力表——UI 交互同样需要能调用宿主
+     * （进入/退出全屏、播放声音、读数据）。权限校验在 HostFacade 内部完成，
+     * 未在 manifest 声明的能力会返回 permission_denied，所以这里直接透传是安全的。
+     */
     private fun buildUiContext(cx: Context, scope: Scriptable, eventName: String, valueJson: String?): Scriptable {
         val state = scope.get("state", scope).let { if (it == Scriptable.NOT_FOUND) null else it }
+        val host = scope.get("host", scope).let { if (it == Scriptable.NOT_FOUND) null else it }
         return jsObject(
             cx,
             scope,
@@ -261,6 +269,7 @@ class PluginRuntime internal constructor(
                 "storage" to storageObject(cx, scope),
                 "log" to logFunction(),
                 "settings" to settingsObject(cx, scope),
+                "host" to host,
             ),
         )
     }

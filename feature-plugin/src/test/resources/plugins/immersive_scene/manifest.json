@@ -1,0 +1,58 @@
+{
+  "id": "immersive_scene",
+  "name": "沉浸风景",
+  "version": "1.0.0",
+  "description": "全屏风景照片，带时钟，长按退出",
+  "author": "",
+  "minApiVersion": 1,
+  "permissions": [
+    "ui.fullscreen",
+    "storage.readImage",
+    "storage"
+  ],
+  "settings": [
+    {
+      "key": "bgImage",
+      "label": "背景照片",
+      "type": "image",
+      "required": false,
+      "description": "留空则使用默认渐变背景"
+    },
+    {
+      "key": "showClock",
+      "label": "显示时钟",
+      "type": "boolean",
+      "default": true
+    },
+    {
+      "key": "clockSize",
+      "label": "时钟字号",
+      "type": "select",
+      "options": [
+        "normal",
+        "large",
+        "huge"
+      ],
+      "default": "large"
+    }
+  ],
+  "extensions": [
+    {
+      "type": "bar_button",
+      "slot": "TOP_BAR_ACTIONS",
+      "label": "沉浸",
+      "config": "btn.json"
+    },
+    {
+      "type": "ui_overlay",
+      "slot": "FULLSCREEN",
+      "config": "scene.json",
+      "provider": "provideState"
+    },
+    {
+      "type": "ui_ticker",
+      "intervalMs": 1000,
+      "entry": "onTick"
+    }
+  ]
+}
