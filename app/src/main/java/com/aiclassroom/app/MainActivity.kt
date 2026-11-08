@@ -211,6 +211,11 @@ import com.aiclassroom.app.plugin.PLUGIN_LOG_TAG
 import com.aiclassroom.app.plugin.PluginImportResult
 import com.aiclassroom.app.plugin.PluginInstallTool
 import com.aiclassroom.app.plugin.PluginManager
+import com.aiclassroom.app.plugin.PluginUiBinding
+import com.aiclassroom.app.plugin.ui.PluginUiEvent
+import com.aiclassroom.app.plugin.ui.PluginUiMessageTail
+import com.aiclassroom.app.plugin.ui.PluginUiOverlay
+import com.aiclassroom.app.plugin.ui.PluginUiTopBarActions
 import com.aiclassroom.app.plugin.PrefsPluginStateStore
 import com.aiclassroom.app.plugin.importPluginArchive
 import com.aiclassroom.app.plugin.cappedJson
@@ -305,7 +310,7 @@ private data class LearningMemoryPack(val corePremises: List<String>, val cards:
 private data class UpdateInfo(val version: String, val name: String, val url: String, val notes: String)
 private data class DrawStroke(val points: List<Offset>)
 private data class ThemePreset(val mode: String, val title: String, val subtitle: String, val primary: Long, val secondary: Long)
-private data class AppPalette(
+internal data class AppPalette(
     val page: Color,
     val surface: Color,
     val card: Color,
@@ -836,6 +841,28 @@ private fun AIClassroomApp() {
         dispatchPluginEvent(PluginEventNames.APP_STARTED, mapOf("loaded" to loaded.toString()))
     }
     val pluginInfos = remember(pluginVersion) { pluginManager.infos() }
+
+    // ---- 界面插槽（第一批：GLOBAL_OVERLAY / MESSAGE_BODY_TAIL / TOP_BAR_ACTIONS）----
+    // 没有插件声明插槽时这三个列表都是空的，渲染点第一行就 return，组合开销为零。
+    val uiOverlayBindings = remember(pluginVersion) { pluginManager.uiBindings("GLOBAL_OVERLAY") }
+    val uiMessageTailBindings = remember(pluginVersion) { pluginManager.uiBindings("MESSAGE_BODY_TAIL") }
+    val uiTopBarBindings = remember(pluginVersion) { pluginManager.uiBindings("TOP_BAR_ACTIONS") }
+    val uiStateSnapshot: Map<String, JSONObject?> = remember(pluginVersion) {
+        if (uiOverlayBindings.isEmpty() && uiMessageTailBindings.isEmpty() && uiTopBarBindings.isEmpty()) {
+            emptyMap()
+        } else {
+            pluginManager.uiStates()
+        }
+    }
+    // 界面回调：渲染器只递事件，真正调用插件函数在 IO 线程，跑完再刷新一次界面（读新的 state）。
+    val onPluginUiEvent: (PluginUiEvent) -> Unit = remember(pluginManager) {
+        { event ->
+            scope.launch(Dispatchers.IO) {
+                pluginManager.invokeUiEntry(event.pluginId, event.entry, event.event, event.value)
+                mainHandler.post { pluginVersion++ }
+            }
+        }
+    }
 
     val toolRegistry = remember(customToolsJson) {
         ToolRegistry().apply {
@@ -1399,6 +1426,13 @@ private fun AIClassroomApp() {
                                 modifier = Modifier.width(92.dp)
                             )
                         }
+                        // TOP_BAR_ACTIONS：插件按钮插在现有图标那一排的左侧（无插件时这里什么都不渲染）。
+                        PluginUiTopBarActions(
+                            bindings = uiTopBarBindings,
+                            states = uiStateSnapshot,
+                            palette = palette,
+                            onEvent = onPluginUiEvent,
+                        )
                         IconButton(
                             onClick = { classMenuOpen = !classMenuOpen },
                             modifier = Modifier.size(DesignTokens.Size.IconButton),
@@ -1581,7 +1615,8 @@ private fun AIClassroomApp() {
                         }
                     }, onSpeak = { text ->
                         speakText(context, current.config, text)
-                    }) { index ->
+                    }, pluginOverlay = uiOverlayBindings, pluginMessageTail = uiMessageTailBindings,
+                        pluginStates = uiStateSnapshot, onPluginUiEvent = onPluginUiEvent) { index ->
                         val selected = current.messages.take(index + 1)
                         val branchMessages = mutableStateListOf<ChatMessage>()
                         val title = selected.firstOrNull()?.text?.take(18)?.ifBlank { "分支课堂" } ?: "分支课堂"
@@ -1650,7 +1685,20 @@ private fun AIClassroomApp() {
                         existingToolNames = { toolRegistry.all().map { it.name } },
                         imageSink = imageSink,
                         pluginInfos = pluginInfos,
-                        onImportPlugin = { pluginImportLauncher.launch(arrayOf("*/*")) },
+                        onImportPlugin = {
+                            // 显式列出可能的 MIME：部分系统的文件选择器在 */* 下只展示"最近"的图片，
+                            // 导致用户根本选不到 .aip 文件。这里把 zip 类的常见 MIME 都列上。
+                            // 插件包本质是 ZIP。自定义后缀 .aip 在多数系统的文件选择器里会被隐藏
+                            // （媒体库不认识该类型），所以 .zip 是首选格式，两种后缀都接受。
+                            pluginImportLauncher.launch(
+                                arrayOf(
+                                    "application/zip",
+                                    "application/x-zip-compressed",
+                                    "application/octet-stream",
+                                    "*/*",
+                                )
+                            )
+                        },
                         onUninstallPlugin = { pluginId ->
                             scope.launch {
                                 val removed = withContext(Dispatchers.IO) { pluginManager.uninstall(pluginId) }
@@ -2092,6 +2140,13 @@ private fun ClassScreen(
     onImage: () -> Unit,
     onDeleteAfter: (Int) -> Unit,
     onSpeak: (String) -> Unit,
+    /** GLOBAL_OVERLAY 上的插件悬浮层（空列表 = 一个插件都没声明，渲染点直接不组合）。 */
+    pluginOverlay: List<PluginUiBinding> = emptyList(),
+    /** MESSAGE_BODY_TAIL 上的插件装饰（画在每条 AI 消息正文下方）。 */
+    pluginMessageTail: List<PluginUiBinding> = emptyList(),
+    /** 各插件 state 的 JSON 快照，供 `state.xxx` 取值。 */
+    pluginStates: Map<String, JSONObject?> = emptyMap(),
+    onPluginUiEvent: (PluginUiEvent) -> Unit = {},
     onBranch: (Int) -> Unit
 ) {
     if (room.messages.isEmpty()) {
@@ -2116,6 +2171,12 @@ private fun ClassScreen(
             savedExam?.let { archived ->
                 ExamResumeBanner(archived, palette, onResumeExam, Modifier.align(Alignment.TopCenter))
             }
+            PluginUiOverlay(
+                bindings = pluginOverlay,
+                states = pluginStates,
+                palette = palette,
+                onEvent = onPluginUiEvent,
+            )
         }
         return
     }
@@ -2161,7 +2222,12 @@ private fun ClassScreen(
     }
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = reverseConversation, contentPadding = PaddingValues(top = 10.dp, bottom = (if (compactInput) 76.dp else 142.dp) + LocalBottomBarLift.current, start = 2.dp, end = 2.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(room.messages.size) { i -> MessageCard(i, room.messages[i], palette, room.config.mentorName, onBranch, onDeleteAfter, onSpeak) }
+            items(room.messages.size) { i ->
+                MessageCard(
+                    i, room.messages[i], palette, room.config.mentorName, onBranch, onDeleteAfter, onSpeak,
+                    pluginMessageTail, pluginStates, onPluginUiEvent,
+                )
+            }
             if (isLoading) item { AiThinkingRow(palette, room.config.mentorName) }
         }
         ChatInputBar(
@@ -2227,6 +2293,13 @@ private fun ClassScreen(
             palette = palette,
             onClick = { scope.launch { if (isAtBottom) listState.animateScrollToItem(topIndex) else listState.animateScrollToItem(bottomIndex) } },
             modifier = Modifier.align(Alignment.BottomEnd).padding(end = DesignTokens.Spacing.Md, bottom = (if (compactInput) 122.dp else 188.dp) + LocalBottomBarLift.current),
+        )
+        // GLOBAL_OVERLAY：课堂页最外层 Box 的顶层，锚点定位、可覆盖在内容之上（宠物就在这里）。
+        PluginUiOverlay(
+            bindings = pluginOverlay,
+            states = pluginStates,
+            palette = palette,
+            onEvent = onPluginUiEvent,
         )
     }
 }
@@ -2542,7 +2615,10 @@ private fun MessageCard(
     mentorName: String,
     onBranch: (Int) -> Unit,
     onDeleteAfter: (Int) -> Unit,
-    onSpeak: (String) -> Unit
+    onSpeak: (String) -> Unit,
+    pluginMessageTail: List<PluginUiBinding> = emptyList(),
+    pluginStates: Map<String, JSONObject?> = emptyMap(),
+    onPluginUiEvent: (PluginUiEvent) -> Unit = {},
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val bubbleUser = if (palette.page == DesignTokens.Dark.Page) DesignTokens.Dark.BubbleUser else DesignTokens.Light.BubbleUser
@@ -2580,7 +2656,25 @@ private fun MessageCard(
                         .background(palette.surface, RoundedCornerShape(DesignTokens.Radius.Card))
                         .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Card))
                         .padding(horizontal = DesignTokens.Spacing.CardHorizontal, vertical = DesignTokens.Spacing.CardVertical)
-                ) { MarkdownText(message.text) }
+                ) {
+                    MarkdownText(message.text)
+                    // MESSAGE_BODY_TAIL：每条 AI 消息正文下方的插件装饰（无插件时不组合、不建对象）。
+                    if (pluginMessageTail.isNotEmpty()) {
+                        val messageContext = remember(message.text, index) {
+                            JSONObject()
+                                .put("chars", message.text.length)
+                                .put("index", index)
+                                .put("role", message.role)
+                        }
+                        PluginUiMessageTail(
+                            bindings = pluginMessageTail,
+                            states = pluginStates,
+                            message = messageContext,
+                            palette = palette,
+                            onEvent = onPluginUiEvent,
+                        )
+                    }
+                }
                 TextButton(onClick = { onBranch(index) }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) { Text("↳ 从这里开分支", color = palette.secondary, fontSize = DesignTokens.Type.Small) }
             }
         }
@@ -4032,10 +4126,10 @@ private fun ModelScreen(
                     onSpecsChange = { onCustomToolsJson(CustomToolSpec.encodeList(it)) }
                 )
                 Spacer(Modifier.height(DesignTokens.Spacing.Md))
-                Text("插件包（.aip） · " + pluginInfos.size + " 个已装载", fontWeight = FontWeight.Bold)
+                Text("插件包（.zip / .aip） · " + pluginInfos.size + " 个已装载", fontWeight = FontWeight.Bold)
                 Text(
-                    "插件包里是 manifest.json（权限与扩展点）加 logic.js（脚本）。导入后按 manifest 声明的能力工作；" +
-                        "本版本接入了 prompt 钩子（发送前改写提示词），界面类扩展点暂不渲染。",
+                    "插件包是一个 ZIP，里面是 manifest.json（权限与扩展点）加 logic.js（脚本）。支持 .zip 与 .aip 两种后缀 —— 自定义的 .aip 在部分系统的文件选择器里会被隐藏，通常直接用 .zip 更方便。" +
+                        "导入后按 manifest 声明的能力工作。",
                     color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
                 )
                 pluginInfos.forEach { info ->
@@ -4050,7 +4144,7 @@ private fun ModelScreen(
                     }
                 }
                 TextButton(onClick = onImportPlugin) {
-                    Text("⊕ 导入插件文件（.aip）", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    Text("⊕ 导入插件文件（.zip / .aip）", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -5312,7 +5406,7 @@ private fun displayNameOf(context: Context, uri: Uri): String = runCatching {
     }
 }.getOrNull()?.takeIf { it.isNotBlank() }
     ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
-    ?: "plugin.aip"
+    ?: "plugin.zip"
 
 private fun isApiFailure(result: String): Boolean {
     val text = result.lowercase()

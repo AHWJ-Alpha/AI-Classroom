@@ -96,10 +96,23 @@ enum class PluginExtensionType(val wire: String) {
     }
 }
 
-/** 各扩展点允许的 slot / stage 取值。 */
+/**
+ * 各扩展点允许的 slot / stage 取值。
+ *
+ * 第一批 UI 插槽（GLOBAL_OVERLAY / MESSAGE_BODY_TAIL / TOP_BAR_ACTIONS）是纯新增，
+ * 旧的 chat_top / chat_bottom / chat_float / top_bar / bottom_bar 原样保留：
+ * 已经装好的老插件不受影响，新插件才有新的挂载点。
+ */
 object PluginSlots {
-    val UI_OVERLAY: Set<String> = linkedSetOf("chat_top", "chat_bottom", "chat_float")
-    val BAR_BUTTON: Set<String> = linkedSetOf("top_bar", "bottom_bar")
+    /** 悬浮层：GLOBAL_OVERLAY 覆盖在课堂页最上层，chat_* 为旧值（保留兼容）。 */
+    val UI_OVERLAY: Set<String> = linkedSetOf("GLOBAL_OVERLAY", "chat_top", "chat_bottom", "chat_float")
+
+    /** 按钮位：TOP_BAR_ACTIONS 在顶栏右侧动作区，top_bar / bottom_bar 为旧值。 */
+    val BAR_BUTTON: Set<String> = linkedSetOf("TOP_BAR_ACTIONS", "top_bar", "bottom_bar")
+
+    /** 消息装饰位：MESSAGE_BODY_TAIL 在每条 AI 消息正文下方。 */
+    val MESSAGE_DECORATOR: Set<String> = linkedSetOf("MESSAGE_BODY_TAIL")
+
     val PROMPT_HOOK_STAGE: Set<String> = linkedSetOf("before_send")
 }
 

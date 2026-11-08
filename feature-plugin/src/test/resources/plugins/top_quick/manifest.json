@@ -1,0 +1,12 @@
+{
+  "id": "top_quick",
+  "name": "顶栏速取",
+  "version": "1.0.0",
+  "description": "顶栏一个按钮：点击把当前课堂的考试信息插进对话（exam.read + dialog.insert）",
+  "author": "AI Classroom",
+  "minApiVersion": 1,
+  "permissions": ["exam.read", "dialog.insert"],
+  "extensions": [
+    { "type": "bar_button", "slot": "TOP_BAR_ACTIONS", "label": "考试", "config": "btn.json" }
+  ]
+}

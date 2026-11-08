@@ -37,6 +37,9 @@ data class PluginManifest(
     /** 定时器声明（同一插件最多一个）。 */
     val timerExtension: PluginExtension? get() = extensions.firstOrNull { it.type == PluginExtensionType.TIMER }
 
+    /** 声明在指定 slot 上的扩展点（按声明顺序）。 */
+    fun extensionsInSlot(slot: String): List<PluginExtension> = extensions.filter { it.slot == slot }
+
     /** 该插件在指定事件上注册的入口函数名，没有则返回 null。 */
     fun eventEntry(event: String): String? =
         extensions.firstOrNull { it.type == PluginExtensionType.EVENT && it.event == event }?.entry

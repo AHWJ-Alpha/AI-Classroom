@@ -27,6 +27,12 @@ object PluginLimits {
     /** 同一插件最多几个 event 扩展点。 */
     const val MAX_EVENT_EXTENSIONS = 8
 
+    /** ui.json 的最大嵌套深度（根节点算第 1 层）。 */
+    const val MAX_UI_DEPTH = 8
+
+    /** 单份 ui.json 的最大节点数。 */
+    const val MAX_UI_NODES = 200
+
     /** 按 UTF-8 字节截断，不切断半个字符；返回截断后的文本与被截断的标记。 */
     fun truncate(text: String, maxBytes: Int = MAX_RESULT_BYTES): TruncatedText {
         val bytes = text.toByteArray(Charsets.UTF_8)

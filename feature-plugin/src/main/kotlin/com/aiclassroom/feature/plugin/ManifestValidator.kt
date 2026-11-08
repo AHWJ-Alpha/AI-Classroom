@@ -209,7 +209,10 @@ object ManifestValidator {
                 }
                 if (label == null) errors += "$prefix (bar_button) 缺少 label"
                 else if (label.length > MAX_LABEL) errors += "$prefix (bar_button) label 过长（最多 $MAX_LABEL 字符）"
-                if (entry == null) errors += "$prefix (bar_button) 缺少 entry"
+                // 按钮的行为可以来自两处：logic.js 的 entry，或者 ui.json 里节点自己的 onTap。
+                if (entry == null && !isUiConfig(config)) {
+                    errors += "$prefix (bar_button) 缺少 entry（或声明 config 指向 ui.json，用节点 onTap 响应点击）"
+                }
             }
 
             PluginExtensionType.PAGE -> {
@@ -219,7 +222,13 @@ object ManifestValidator {
             }
 
             PluginExtensionType.MESSAGE_DECORATOR -> {
-                if (entry == null) errors += "$prefix (message_decorator) 缺少 entry"
+                // 旧写法：entry 返回装饰内容；新写法：config 指向 ui.json，由渲染器画在消息正文下方。
+                if (slot != null && slot !in PluginSlots.MESSAGE_DECORATOR) {
+                    errors += "$prefix (message_decorator) 未知 slot '$slot'（允许：${PluginSlots.MESSAGE_DECORATOR.joinToString(", ")}）"
+                }
+                if (entry == null && !isUiConfig(config)) {
+                    errors += "$prefix (message_decorator) 缺少 entry（或声明 config 指向 ui.json）"
+                }
             }
 
             PluginExtensionType.PROMPT_HOOK -> {
@@ -256,6 +265,12 @@ object ManifestValidator {
             errors += "$prefix.config 引用的文件不存在：'$configFile'"
         } else if (type == PluginExtensionType.UI_OVERLAY && !configFile.endsWith(".json")) {
             errors += "$prefix (ui_overlay) config 必须是 .json 文件，实际 '$configFile'"
+        } else if (type != PluginExtensionType.UI_OVERLAY &&
+            configFile != PluginPackage.LOGIC_FILE &&
+            !configFile.endsWith(".json")
+        ) {
+            // 非 ui_overlay 的扩展点只在「换成界面描述」时才有第二个 config，其它后缀没有意义。
+            errors += "$prefix.config 指向 '$configFile'，但除了 ui.json 之外只允许默认的 ${PluginPackage.LOGIC_FILE}"
         }
 
         if (entry != null) {
@@ -280,6 +295,10 @@ object ManifestValidator {
             event = event.takeIf { type == PluginExtensionType.EVENT },
         )
     }
+
+    /** config 是否指向一份界面描述（ui.json）；缺省与 logic.js 都不算。 */
+    private fun isUiConfig(config: String?): Boolean =
+        config != null && config.endsWith(".json") && config != PluginPackage.LOGIC_FILE
 
     /** intervalSeconds：字段缺省时返回 null（是否算错由调用方按类型决定），非整数 / 越界记错误并返回 null。 */
     private fun parseIntervalSeconds(
