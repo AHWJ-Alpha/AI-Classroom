@@ -1,6 +1,6 @@
 {
   "type": "box",
-  "background": "surface",
+  "background": "screen",
   "width": "fill",
   "height": "fill",
   "children": [
@@ -74,14 +74,14 @@
           "width": 40,
           "height": 40,
           "radius": "full",
-          "background": "surfaceVariant",
+          "background": "transparent",
           "onTap": "onSwitch",
           "children": [
             {
               "type": "icon",
               "name": "public",
               "size": 20,
-              "color": "muted",
+              "color": "onSurface",
               "anchor": "center"
             }
           ]
