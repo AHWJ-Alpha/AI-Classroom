@@ -52,6 +52,18 @@ object PluginPermissions {
     /** 读取用户在设置里选中的图片（settings 里 type=image 的字段）。 */
     const val STORAGE_READ_IMAGE = "storage.readImage"
 
+    /**
+     * 读取系统「正在播放」（歌名 / 歌手 / 进度 / 封面路径）。
+     *
+     * 这一项**单独一个开关**，不挂在网络工具或生图下面：
+     * 它读的是别的 App 的播放状态（需要通知使用权），敏感级别与「能发 http 请求」完全不同，
+     * 用户想听歌看封面但不许插件联网时，必须能只关一头。
+     */
+    const val MEDIA_READ = "media.read"
+
+    /** 控制外部播放器（播放 / 暂停 / 上一首 / 下一首 / 拖动进度）。比 media.read 更要紧，单独授权。 */
+    const val MEDIA_CONTROL = "media.control"
+
     val ALL: Set<String> = linkedSetOf(
         IMAGE_GENERATE,
         TTS_SPEAK,
@@ -70,6 +82,8 @@ object PluginPermissions {
         TIMER,
         UI_FULLSCREEN,
         STORAGE_READ_IMAGE,
+        MEDIA_READ,
+        MEDIA_CONTROL,
     )
 }
 

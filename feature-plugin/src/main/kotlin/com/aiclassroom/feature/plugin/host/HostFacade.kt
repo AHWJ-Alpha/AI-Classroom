@@ -94,6 +94,17 @@ internal class HostFacade(
                 "pickImage" to jsFunction("pickImage") { c, s, _ ->
                     guarded(c, s, PluginPermissions.STORAGE_READ_IMAGE) { api.pickImage(pluginId) }
                 },
+                "mediaCurrent" to jsFunction("mediaCurrent") { c, s, _ ->
+                    guarded(c, s, PluginPermissions.MEDIA_READ) { api.mediaCurrent() }
+                },
+                "mediaControl" to jsFunction("mediaControl") { c, s, args ->
+                    guarded(c, s, PluginPermissions.MEDIA_CONTROL) {
+                        api.mediaControl(jsString(jsProperty(args.getOrNull(0), "action")) ?: jsString(args.getOrNull(0)) ?: "")
+                    }
+                },
+                "mediaArtwork" to jsFunction("mediaArtwork") { c, s, _ ->
+                    guarded(c, s, PluginPermissions.MEDIA_READ) { api.mediaArtwork() }
+                },
                 "now" to jsFunction("now") { _, _, _ -> clock.nowMillis().toDouble() },
             ),
         )

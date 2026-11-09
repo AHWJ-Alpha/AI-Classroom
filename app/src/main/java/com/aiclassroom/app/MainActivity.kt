@@ -2,6 +2,16 @@ package com.aiclassroom.app
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.util.LruCache
+import com.aiclassroom.app.media.NowPlaying
+import com.aiclassroom.app.web.WebCaptureEngine
+import com.aiclassroom.app.web.WebConsentBroker
+import com.aiclassroom.app.web.WebConsentDialog
+import com.aiclassroom.app.web.WebDomainStore
+import com.aiclassroom.app.web.WebDomains
+import com.aiclassroom.app.web.WebToolDeps
+import com.aiclassroom.app.web.WebSelfTest
+import com.aiclassroom.app.web.registerWebTools
 import android.content.res.Configuration
 import android.content.SharedPreferences
 import android.net.Uri
@@ -37,6 +47,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -73,6 +84,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Search
@@ -154,6 +166,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -217,6 +231,7 @@ import com.aiclassroom.feature.net.NetRequestTool
 import com.aiclassroom.feature.net.registerNetTools
 import com.aiclassroom.app.plugin.AppPluginHost
 import com.aiclassroom.app.plugin.LoadedPluginInfo
+import com.aiclassroom.app.plugin.MediaArtworkCache
 import com.aiclassroom.app.plugin.PLUGIN_LOG_TAG
 import com.aiclassroom.app.plugin.PluginImportResult
 import com.aiclassroom.app.plugin.PluginInstallTool
@@ -273,7 +288,10 @@ import kotlin.math.sin
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 音乐插件读播放信息前先拿到 application context；服务常驻时这条是空操作。
+        NowPlaying.init(applicationContext)
         setContent { AIClassroomTheme { AIClassroomApp() } }
+
     }
 }
 
@@ -293,12 +311,17 @@ private val LocalBottomBarLift = compositionLocalOf { 0.dp }
  * [toolCallsJson] / [toolCallId] 只服务于 function calling 的临时消息列表：
  * 默认 null，旧存档（只写 role/text）读回来就是这两个默认值，
  * 序列化端也不写这两个字段，因此纯聊天链路的数据格式完全不变。
+ *
+ * [images] 是这条消息附带的本地图片（AI 用 send_image 发的、用户自己发的各走一条路进来），
+ * 每个元素是 [imageEntry] 拼出来的「绝对路径 + [IMAGE_CAPTION_SEPARATOR] + caption」。
+ * 默认空列表：旧存档没有这个字段就读成空列表，序列化端也只在不为空时才写。
  */
 private data class ChatMessage(
     val role: String,
     val text: String,
     val toolCallsJson: String? = null,
-    val toolCallId: String? = null
+    val toolCallId: String? = null,
+    val images: List<String> = emptyList()
 )
 private data class BranchClass(val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String, val context: MutableList<ChatMessage> = mutableStateListOf())
 private data class KnowledgeFile(
@@ -479,8 +502,16 @@ private fun AIClassroomApp() {
     // function calling 工具注册表：考试 / 文件 / 网络三条线共用同一个实例，
     // 按注册顺序生成请求里的 tools 数组。
     var netToolsEnabled by remember { mutableStateOf(store.loadNetToolsEnabled()) }
+    // 网页工具：截图 / 搜索跟随「网络工具」总开关；web_act 另有一道域名白名单。
+    var webActDomains by remember { mutableStateOf(store.loadWebActDomains()) }
+    val webConsent = remember { WebConsentBroker() }
+    val webEngine = remember { WebCaptureEngine(context) }
     // 生图插件：开关与配置都落在 prefs；工具每次调用现读，设置页保存后立即生效。
     var imageToolsEnabled by remember { mutableStateOf(store.loadImageToolsEnabled()) }
+    // 音乐（正在播放 + 播放控制）：独立开关，不挂在网络 / 生图下面。
+    // 它读的是别的 App 的播放状态（需要通知使用权），与「能发 http」是两回事：
+    // 用户可能想听歌看封面却不想让任何插件联网，所以必须能只关一头。
+    var mediaToolsEnabled by remember { mutableStateOf(store.loadMediaToolsEnabled()) }
     var imageConfig by remember { mutableStateOf(store.loadImageConfig()) }
     // 考试 / 文件 / 配置三组插件也由「设置 → 插件」统一开关，默认开启，状态落在 prefs。
     var examToolsEnabled by remember { mutableStateOf(store.loadExamToolsEnabled()) }
@@ -490,6 +521,9 @@ private fun AIClassroomApp() {
     // 做成 state 是为了「保存 → registry 重建 → AI 立刻能调」，不用重启 app。
     var customToolsJson by remember { mutableStateOf(store.loadCustomTools()) }
     val imageSink = remember { ImageSinkImpl(context) }
+    // AI 本轮要附加到回复上的图片：send_image 往里写，回复落定后 drain 出来挂到那条 assistant 消息。
+    // 只活在内存里，不进存档；同一时刻只有一轮回复在跑（isLoading 闸门），所以一个实例就够。
+    val turnImages = remember { TurnImageBuffer() }
 
     // ---- 插件运行时（:feature-plugin 接入）----
     // 插件包落在 filesDir/plugins/<id>/，启动时扫描装载；导入 / 卸载后 pluginVersion 自增触发重组与刷新。
@@ -521,6 +555,10 @@ private fun AIClassroomApp() {
     // 生图 / 网络能力直接复用已有工具实现，插件侧与 AI 侧走的是同一条链路。
     val pluginImageTools = remember { ImageTools(config = { store.loadImageConfig() }, sink = imageSink) }
     val pluginNetTool = remember { NetRequestTool({ line -> Log.i("NetTool", line) }) }
+    // 封面落盘缓存：只有换歌才重新编码 PNG，插件每秒轮询也不会变成每秒写一次文件。
+    val mediaArtworkCache = remember {
+        MediaArtworkCache(File(context.filesDir, "images")) { line -> Log.i(PLUGIN_LOG_TAG, line) }
+    }
     val pluginHost = remember {
         AppPluginHost(
             stateStore = pluginStateStore,
@@ -857,6 +895,77 @@ private fun AIClassroomApp() {
                     }
                 }
             },
+            // ---- 正在播放 / 播放控制（权限 media.read / media.control）----
+            // 三条共同的前提：用户开了「音乐」开关，且系统通知使用权已授权。
+            // 没授权时给的是 media_permission_required + 一句「去哪儿开」的提示，
+            // 而不是一个空曲目 —— 静默失败会让插件作者以为自己的代码写错了。
+            mediaCurrentImpl = {
+                val track = NowPlaying.current()
+                when {
+                    !mediaToolsEnabled ->
+                        PluginResult.Failure("media_disabled", MEDIA_DISABLED_HINT)
+                    track == null -> PluginResult.Success(mediaJson(context, null, mediaArtworkCache))
+                    else -> PluginResult.Success(mediaJson(context, track, mediaArtworkCache))
+                }
+            },
+            mediaControlImpl = { action ->
+                val normalized = action.trim().lowercase(Locale.US)
+                val track = NowPlaying.current()
+                when {
+                    !mediaToolsEnabled -> PluginResult.Failure("media_disabled", MEDIA_DISABLED_HINT)
+                    track == null -> PluginResult.Failure("media_no_session", MEDIA_NO_SESSION_HINT)
+                    normalized == "play" || normalized == "pause" ||
+                        normalized == "next" || normalized == "prev" -> {
+                        val done = when (normalized) {
+                            "play" -> NowPlaying.play()
+                            "pause" -> NowPlaying.pause()
+                            "next" -> NowPlaying.next()
+                            else -> NowPlaying.previous()
+                        }
+                        if (done) {
+                            PluginResult.Success(normalized)
+                        } else {
+                            PluginResult.Failure("media_control_failed", "播放器没有接受这次 " + normalized + " 操作")
+                        }
+                    }
+
+                    normalized.startsWith("seek:") -> {
+                        val ms = normalized.removePrefix("seek:").trim().toLongOrNull()
+                        if (ms == null || ms < 0) {
+                            PluginResult.Failure("invalid_argument", "seek 的写法是 seek:<毫秒非负整数>，实际 '" + action + "'")
+                        } else if (NowPlaying.seekTo(ms)) {
+                            PluginResult.Success("seek:" + ms)
+                        } else {
+                            PluginResult.Failure("media_control_failed", "播放器没有接受这次拖动")
+                        }
+                    }
+
+                    else -> PluginResult.Failure(
+                        "invalid_argument",
+                        "action 只能是 play|pause|next|prev|seek:<毫秒>，实际 '" + action + "'",
+                    )
+                }
+            },
+            mediaArtworkImpl = {
+                val track = NowPlaying.current()
+                val bitmap = track?.artwork
+                when {
+                    !mediaToolsEnabled -> PluginResult.Failure("media_disabled", MEDIA_DISABLED_HINT)
+                    track == null -> PluginResult.Failure("media_no_session", MEDIA_NO_SESSION_HINT)
+                    bitmap == null -> PluginResult.Failure("media_no_artwork", "当前这首歌没有内嵌封面")
+                    else -> withContext(Dispatchers.IO) {
+                        runCatching {
+                            val path = mediaArtworkCache.store(
+                                MediaArtworkCache.keyOf(track.packageName, track.title, track.album),
+                                bitmap,
+                            )
+                            PluginResult.Success(path, path)
+                        }.getOrElse {
+                            PluginResult.Failure("media_artwork_failed", it.message ?: it.javaClass.simpleName)
+                        }
+                    }
+                }
+            },
         )
     }
     // 插件包的配置与总开关都落在 prefs：装载时读一次，设置页保存后 reload 重建 runtime。
@@ -1091,6 +1200,17 @@ private fun AIClassroomApp() {
         }
     }
 
+    // 白名单读写走 prefs；每次现读，设置页删掉一个域名后下一次调用立刻生效。
+    val webDomainStore = remember(store) {
+        object : WebDomainStore {
+            override fun loadAllowed(): List<String> = store.loadWebActDomains()
+            override fun saveAllowed(domains: List<String>) {
+                store.saveWebActDomains(domains)
+                mainHandler.post { webActDomains = store.loadWebActDomains() }
+            }
+        }
+    }
+
     val toolRegistry = remember(customToolsJson) {
         ToolRegistry().apply {
             // 考试工具：直接操作当前进行中的考试；update 给到的已是新实例，换回 Compose 快照列表以便作答重绘，
@@ -1104,6 +1224,20 @@ private fun AIClassroomApp() {
             runCatching { FileTools.registerFileTools(this, listOf(context.filesDir.absolutePath)) }
             // 网络工具：用户已授权任意 host:port；保留总开关与脱敏日志两道护栏。
             registerNetTools(this, enabled = { netToolsEnabled }, logger = { line -> Log.i("NetTool", line) })
+            // 网页工具：截图 / 搜索 / 受控点击。三个都受「网络工具」总开关约束（下面统一加闸门）；
+            // web_act 额外要求域名在白名单里，未授权域名当场弹框问用户。
+            registerWebTools(this, WebToolDeps(
+                engine = webEngine,
+                domains = webDomainStore,
+                consent = webConsent,
+                saveScreenshot = { bytes, name -> imageSink.save(bytes, name, "image/png") },
+                analyze = { system, prompt, dataUrl ->
+                    val room = classes.getOrNull(classIndex.coerceIn(0, classes.lastIndex))
+                    if (room == null) "当前没有可用课堂配置，无法调用视觉模型。" else
+                        callVisionWithFallback(room.config, room.config.visionModels(), system, prompt, dataUrl)
+                },
+                log = { line -> Log.i("WebTool", line) },
+            ))
             // 生图 / 网络工具都要访问「本机或局域网里的 http 端口」：本地 SD WebUI、其它应用的 API 端口
             // 只提供明文 http，而 targetSdk 35 默认拦截明文，所以 Manifest 里开了 usesCleartextTraffic。
             // 影响面：只有 http 走不加密链路（建议只填本地 / 可信局域网地址），https 仍走系统信任链。
@@ -1127,6 +1261,9 @@ private fun AIClassroomApp() {
             gateTools("fs_", { fsToolsEnabled }, "文件插件已在设置里关闭，本次没有读写任何文件；需要文件工具请到「设置 → 插件」打开开关。")
             gateTools("config_", { configToolsEnabled }, "配置插件已在设置里关闭，本次没有改动任何配置；需要配置工具请到「设置 → 插件」打开开关。")
             gateTools("generate_image", { imageToolsEnabled }, "生图插件已在设置里关闭，本次没有发起任何请求；需要生图请到「设置 → 插件 → 生图」打开开关。")
+            // 网页工具与网络工具同属「上网」这一件事：总开关关掉时三个工具一起拒绝，
+            // 免得用户以为关了网络 AI 还能悄悄开网页。
+            gateTools("web_", { netToolsEnabled }, "网络工具已在设置里关闭，本次没有打开任何网页；需要网页工具请到「设置 → 插件 → 网络工具」打开开关。")
             // 插件元工具：AI 可以在对话里现场造一个 .aip 插件（manifest + logic.js）并立刻生效。
             register(PluginInstallTool(pluginManager) { info ->
                 mainHandler.post { pluginVersion++ }
@@ -1135,11 +1272,33 @@ private fun AIClassroomApp() {
             // 用户自定义插件放在闸门之后注册：spec 现读 state（保存后 json 变 → registry 重建），
             // 每个 spec 生成一个 ToolHandler，工具参数名就是 bodyTemplate 里的占位符。
             registerCustomTools(this, { CustomToolSpec.listFromJson(customToolsJson) }, imageSink)
+            // 主动发图放在自定义插件之后注册：同名的自定义工具顶不掉它，也就绕不过下面那道生图总开关。
+            register(SendImageTool(turnImages, filesDir = { context.filesDir }))
+            gateTools("send_image", { imageToolsEnabled }, "生图插件已在设置里关闭，本次没有发送任何图片；需要发图请到「设置 → 插件 → 生图」打开开关。")
         }
     }
     // 注册表非空即外发 tools；若将来把工具全部关闭，这里自然返回 null，请求体回到纯聊天形态。
     val requestToolsJson = remember(toolRegistry) {
         if (toolRegistry.all().isEmpty()) null else toolsJsonOf(toolRegistry)
+    }
+
+    // 验收用的一次性自查：adb 带 --ez web_selftest true 启动才会跑，正常使用走不到这里。
+    // 走 toolRegistry.dispatch 这条与线上完全相同的路径，所以能证明「注册 → 闸门 → 引擎」整条链接通。
+    LaunchedEffect(Unit) {
+        if ((context as? android.app.Activity)?.intent?.getBooleanExtra("web_selftest", false) != true) return@LaunchedEffect
+        scope.launch(Dispatchers.IO) {
+            WebSelfTest.run(
+                dispatch = { toolName, toolArgs ->
+                    when (val outcome = toolRegistry.dispatch(toolName, toolArgs)) {
+                        is ToolResult.Ok -> outcome.contentJson
+                        is ToolResult.Error -> "{\"error\":\"" + outcome.message.escapeJson() + "\"}"
+                    }
+                },
+                seedWhitelist = { domains -> store.saveWebActDomains(domains) },
+                log = { line -> Log.i("WebSelfTest", line) },
+                output = File(context.filesDir, "web_selftest_result.txt"),
+            )
+        }
     }
 
     if (classIndex > classes.lastIndex) classIndex = classes.lastIndex.coerceAtLeast(0)
@@ -1361,6 +1520,8 @@ private fun AIClassroomApp() {
             ),
         )
         isLoading = true
+        // 新一轮开始：清掉上一轮可能残留的待附加图片，本轮 send_image 会重新往里写。
+        turnImages.clear()
         scope.launch {
             val assistantIndex = room.messages.size
             room.messages.add(ChatMessage("assistant", ""))
@@ -1411,7 +1572,14 @@ private fun AIClassroomApp() {
             // 否则会把工具写入的参考解析（referenceAnswer）覆盖掉。
             val detectedExam = if (allowExamTrigger && examSession == null) detectExamSession(result, userRequestedExam = isExamRequest(text)) else null
             val visibleResult = stripExamBlock(result).ifBlank { if (detectedExam != null) "已为你准备好本次测试。" else result }
-            room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(visibleResult, room.config.efficientMode))
+            // 本轮 send_image 攒下的图片跟着这条回复一起落定；只发图不打字时正文可能为空，这是合法的。
+            val attachedImages = turnImages.drain(room.messages[assistantIndex].images)
+            val finalText = if (attachedImages.isNotEmpty() && (visibleResult == NO_CONTENT_REPLY || visibleResult.isBlank())) "" else visibleResult
+            room.messages[assistantIndex] = ChatMessage(
+                "assistant",
+                filterNsfw(finalText, room.config.efficientMode),
+                images = attachedImages
+            )
             detectedExam?.let { detected ->
                 val snapshot = detected.withComposeState()
                 examSession = snapshot
@@ -1453,28 +1621,46 @@ private fun AIClassroomApp() {
     }
 
 
+    /**
+     * 用户发图：先把选中的 uri 复制进 filesDir/images/（SAF 授权重启后会失效，不能只存 uri），
+     * 再把这张图作为真正的图片附件挂进用户消息，最后走识图链路拿回复。
+     * 用户额外打的字（input）作为问题一起发；没打字就用默认的看图请求。
+     */
     fun sendImageMessage(uri: Uri) {
         if (isLoading) return
         val room = current
-        val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
-        val name = uri.lastPathSegment?.substringAfterLast('/') ?: "课堂图片"
-        room.messages.add(ChatMessage("user", "[图片] $name\n请分析这张图片，并结合当前课堂内容解答。"))
-        persist("图片问题已保存")
+        val typed = input.trim()
+        input = ""
+        val question = typed.ifBlank { "请分析这张图片，并结合当前课堂内容解答。" }
         isLoading = true
         scope.launch {
-            val dataUrl = withContext(Dispatchers.IO) {
-                runCatching {
-                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
-                    if (bytes.isEmpty()) "" else "data:$mime;base64,${Base64.getEncoder().encodeToString(bytes)}"
-                }.getOrDefault("")
+            val saved = withContext(Dispatchers.IO) { saveUserImage(context, uri) }
+            if (saved == null) {
+                isLoading = false
+                saveNotice = "图片读取失败，请重新选择照片"
+                return@launch
             }
+            room.messages.add(
+                ChatMessage(
+                    "user",
+                    filterNsfw(question, room.config.efficientMode),
+                    images = listOf(imageEntry(saved.absolutePath, ""))
+                )
+            )
+            persist("图片问题已保存")
             val assistantIndex = room.messages.size
             room.messages.add(ChatMessage("assistant", ""))
-            val result = if (dataUrl.isBlank()) {
-                "图片读取失败，请重新选择照片。"
-            } else {
-                callVisionWithFallback(room.config, room.config.visionModels(), systemPrompt(room), "请分析这张图片，并结合当前课堂内容解答。", dataUrl)
-            }
+            val system = systemPrompt(room) + "\n" + EXAM_TOOL_PROMPT + "\n" + EXAM_TOOL_PROMPT_V2
+            // 带上下文：这一轮之前的对话一并给识图模型，图片本身走 vision 的 content 数组。
+            val history = promptMessagesForRoom(room, room.messages.dropLast(2).toList())
+            val result = callVisionWithFallback(
+                room.config,
+                room.config.visionModels(),
+                system,
+                question,
+                listOf(saved.absolutePath),
+                history
+            )
             room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(result, room.config.efficientMode))
             isLoading = false
             persist("图片分析已保存")
@@ -1586,6 +1772,8 @@ private fun AIClassroomApp() {
             confirmButton = { TextButton(onClick = { pluginImportError = null }) { Text("知道了") } }
         )
     }
+    // 网页工具的当面确认：域名白名单、敏感操作都由这个弹框接住用户的取舍。
+    WebConsentDialog(webConsent)
 
     fun sendBranchMessage(branchIndex: Int) {
         if (branchIndex !in current.branches.indices || branchLoading) return
@@ -1932,11 +2120,23 @@ private fun AIClassroomApp() {
                             store.saveNetToolsEnabled(enabled)
                             saveNotice = if (enabled) "已允许 AI 调用网络" else "已关闭 AI 网络调用"
                         },
+                        webActDomains = webActDomains,
+                        onWebActDomainsChange = { domains ->
+                            store.saveWebActDomains(domains)
+                            webActDomains = store.loadWebActDomains()
+                            saveNotice = if (webActDomains.isEmpty()) "网页操作白名单已清空" else "网页操作白名单已更新"
+                        },
                         imageToolsEnabled = imageToolsEnabled,
                         onImageToolsEnabledChange = { enabled ->
                             imageToolsEnabled = enabled
                             store.saveImageToolsEnabled(enabled)
                             saveNotice = if (enabled) "已启用生图插件" else "已关闭生图插件"
+                        },
+                        mediaToolsEnabled = mediaToolsEnabled,
+                        onMediaToolsEnabledChange = { enabled ->
+                            mediaToolsEnabled = enabled
+                            store.saveMediaToolsEnabled(enabled)
+                            saveNotice = if (enabled) "已启用音乐插件" else "已关闭音乐插件"
                         },
                         imageConfig = imageConfig,
                         onImageConfig = { updated ->
@@ -2942,6 +3142,202 @@ private fun ChatInputBar(
 }
 }
 
+/**
+ * 消息图片的解码缓存。
+ *
+ * 为什么要这一层：像素钟那次闪烁就是「重组里重复解码」造成的。produceState(path) 只挡住
+ * 同一处组合体内的重复解码，挡不住 LazyColumn 把条目回收后再滚回来——每次都要重新解码一张
+ * 几 MB 的大图，界面就闪一下。这里按路径做 LRU（按位图字节数计量，上限 24MB），
+ * 并且按目标边长做 inSampleSize 降采样，避免把 4096 见方的图整张读进内存。
+ */
+private object MessageImageLoader {
+    private val cache = object : LruCache<String, ImageBitmap>(24 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: ImageBitmap): Int = value.width * value.height * 4
+    }
+
+    /** 已经在缓存里就直接返回（同步、极便宜），用来给 produceState 当初始值消除首帧空白。 */
+    fun cached(path: String): ImageBitmap? = if (path.isBlank()) null else cache.get(path)
+
+    fun load(path: String, maxSide: Int): ImageBitmap? {
+        if (path.isBlank()) return null
+        cache.get(path)?.let { return it }
+        return runCatching {
+            val file = File(path)
+            if (!file.isFile || file.length() <= 0L) return@runCatching null
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= maxSide || bounds.outHeight / (sample * 2) >= maxSide) sample *= 2
+            val bitmap = BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
+            if (bitmap == null) null else bitmap.asImageBitmap().also { cache.put(path, it) }
+        }.getOrNull()
+    }
+}
+
+/**
+ * 消息里的图片附件渲染。
+ *
+ * 位图按「路径」缓存（见 [MessageImageLoader]）：同一条消息在反复重组、来回滚动时都不重新解码。
+ * 解码在 IO 线程做，主线程只拿结果。点击任意一张进全屏查看（可双指缩放 / 拖动）。
+ */
+@Composable
+private fun MessageImageAttachment(entry: String, palette: AppPalette, allowFullScreen: Boolean = true) {
+    val path = imagePathOf(entry)
+    val caption = imageCaptionOf(entry)
+    val bitmap by produceState<ImageBitmap?>(initialValue = MessageImageLoader.cached(path), path) {
+        value = if (path.isBlank()) null else withContext(Dispatchers.IO) { MessageImageLoader.load(path, MESSAGE_IMAGE_MAX_SIDE) }
+    }
+    var fullScreen by remember(path) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(top = DesignTokens.Spacing.Xs)) {
+        val image = bitmap
+        if (image == null) {
+            // 文件被删 / 解码失败时给一行明确的占位，不留一块空白。
+            Box(
+                Modifier.fillMaxWidth().height(120.dp)
+                    .background(palette.card, RoundedCornerShape(DesignTokens.Radius.Card))
+                    .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Card)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.Image, contentDescription = null, tint = palette.muted, modifier = Modifier.size(24.dp))
+                    Text("图片已不存在或无法解码", color = palette.muted, fontSize = DesignTokens.Type.Small)
+                }
+            }
+        } else {
+            // 宽高比 = 宽/高，夹在 0.2–5 之间防止极端长条把气泡撑变形。
+            val ratio = (image.width.toFloat() / image.height.toFloat()).coerceIn(0.2f, 5f)
+            BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                val available = maxWidth
+                // 先按「宽度填满」算高度；超过 320dp 上限就反过来按高度缩宽度，
+                // 而不是留着宽高不变的框让 Fit 去补黑边。
+                val filledHeight = available / ratio
+                val width = if (filledHeight <= MESSAGE_IMAGE_MAX_HEIGHT) available else MESSAGE_IMAGE_MAX_HEIGHT * ratio
+                val height = if (filledHeight <= MESSAGE_IMAGE_MAX_HEIGHT) filledHeight else MESSAGE_IMAGE_MAX_HEIGHT
+                Image(
+                    bitmap = image,
+                    contentDescription = caption.ifBlank { "图片" },
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .width(width)
+                        .height(height)
+                        .clip(RoundedCornerShape(DesignTokens.Radius.Card))
+                        .clickable(enabled = allowFullScreen) { fullScreen = true }
+                )
+            }
+        }
+        if (caption.isNotBlank()) {
+            Text(caption, color = palette.muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+        }
+    }
+    if (fullScreen && bitmap != null) {
+        ImageFullScreenDialog(path = path, palette = palette, onClose = { fullScreen = false })
+    }
+}
+
+/**
+ * 一条消息里的全部图片：单张铺满气泡按原比例；两张以上排成两列网格（每格方形、居中裁切），
+ * 气泡本来就是窄栏，再横滑会挤，网格更好点选。
+ */
+@Composable
+private fun MessageImages(images: List<String>, palette: AppPalette, allowFullScreen: Boolean = true) {
+    if (images.isEmpty()) return
+    if (images.size == 1) {
+        MessageImageAttachment(images.first(), palette, allowFullScreen)
+        return
+    }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Xs)) {
+        images.chunked(2).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Xs)) {
+                row.forEach { entry -> MessageImageThumbnail(entry, palette, allowFullScreen, Modifier.weight(1f)) }
+                // 奇数张时把最后一格留空，保证两列对齐。
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/** 网格里的一格：方形裁切 + 说明文字放在格子下方（说明也参与网格，所以和方图同宽）。 */
+@Composable
+private fun MessageImageThumbnail(entry: String, palette: AppPalette, allowFullScreen: Boolean, modifier: Modifier = Modifier) {
+    val path = imagePathOf(entry)
+    val caption = imageCaptionOf(entry)
+    val bitmap by produceState<ImageBitmap?>(initialValue = MessageImageLoader.cached(path), path) {
+        value = if (path.isBlank()) null else withContext(Dispatchers.IO) { MessageImageLoader.load(path, MESSAGE_IMAGE_MAX_SIDE) }
+    }
+    var fullScreen by remember(path) { mutableStateOf(false) }
+    Column(modifier) {
+        val image = bitmap
+        if (image == null) {
+            Box(
+                Modifier.fillMaxWidth().aspectRatio(1f)
+                    .background(palette.card, RoundedCornerShape(DesignTokens.Radius.Card))
+                    .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Card)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Image, contentDescription = null, tint = palette.muted, modifier = Modifier.size(20.dp))
+            }
+        } else {
+            Image(
+                bitmap = image,
+                contentDescription = caption.ifBlank { "图片" },
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(DesignTokens.Radius.Card))
+                    .clickable(enabled = allowFullScreen) { fullScreen = true }
+            )
+        }
+        if (caption.isNotBlank()) {
+            Text(caption, color = palette.muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        }
+        if (fullScreen && bitmap != null) {
+            ImageFullScreenDialog(path = path, palette = palette, onClose = { fullScreen = false })
+        }
+    }
+}
+
+/** 全屏看图：双指缩放 0.6–4 倍、单指拖动，点空白或右上角关闭。 */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ImageFullScreenDialog(path: String, palette: AppPalette, onClose: () -> Unit) {
+    val bitmap by produceState<ImageBitmap?>(initialValue = MessageImageLoader.cached(path), path) {
+        value = withContext(Dispatchers.IO) { MessageImageLoader.load(path, FULLSCREEN_IMAGE_MAX_SIDE) }
+    }
+    var scale by remember(path) { mutableStateOf(1f) }
+    var pan by remember(path) { mutableStateOf(Offset.Zero) }
+    Dialog(onDismissRequest = onClose) {
+        Box(
+            Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.94f))
+                .pointerInput(path) {
+                    detectTransformGestures { _, panChange, zoom, _ ->
+                        scale = (scale * zoom).coerceIn(0.6f, 4f)
+                        pan += panChange
+                    }
+                }
+                .clickable(onClick = onClose),
+            contentAlignment = Alignment.Center
+        ) {
+            val image = bitmap
+            if (image == null) {
+                CircularProgressIndicator(color = palette.onButton, strokeWidth = 2.dp)
+            } else {
+                Image(
+                    bitmap = image,
+                    contentDescription = "查看图片",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxWidth().padding(12.dp)
+                        .graphicsLayer { scaleX = scale; scaleY = scale; translationX = pan.x; translationY = pan.y }
+                )
+            }
+            TextButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp)) {
+                Text("关闭", color = Color.White)
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageCard(
@@ -2978,7 +3374,8 @@ private fun MessageCard(
             ) {
                 Text("YOU", style = DesignTokens.TextStyles.Kicker, color = palette.muted)
                 Spacer(Modifier.height(DesignTokens.Spacing.Xs))
-                Text(message.text, style = DesignTokens.TextStyles.Body, color = palette.ink)
+                if (message.text.isNotBlank()) Text(message.text, style = DesignTokens.TextStyles.Body, color = palette.ink)
+                MessageImages(message.images, palette)
                 TextButton(onClick = { onBranch(index) }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) { Text("↳ 从这里开分支", color = palette.secondary, fontSize = DesignTokens.Type.Small) }
             }
         }
@@ -2996,7 +3393,9 @@ private fun MessageCard(
                         .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Card))
                         .padding(horizontal = DesignTokens.Spacing.CardHorizontal, vertical = DesignTokens.Spacing.CardVertical)
                 ) {
-                    MarkdownText(message.text)
+                    if (message.text.isNotBlank()) MarkdownText(message.text)
+                    // AI 用 send_image 附加的图片，排在正文下方、插件装饰之上。
+                    MessageImages(message.images, palette)
                     // MESSAGE_BODY_TAIL：每条 AI 消息正文下方的插件装饰（无插件时不组合、不建对象）。
                     if (pluginMessageTail.isNotEmpty()) {
                         val messageContext = remember(message.text, index) {
@@ -3727,7 +4126,8 @@ private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette, mentorN
             ) {
                 Text("YOU", style = DesignTokens.TextStyles.Kicker, color = palette.muted)
                 Spacer(Modifier.height(DesignTokens.Spacing.Xs))
-                Text(message.text, style = DesignTokens.TextStyles.Body, color = palette.ink)
+                if (message.text.isNotBlank()) Text(message.text, style = DesignTokens.TextStyles.Body, color = palette.ink)
+                MessageImages(message.images, palette)
             }
         }
     } else {
@@ -3752,7 +4152,10 @@ private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette, mentorN
                         .background(palette.surface, RoundedCornerShape(DesignTokens.Radius.Card))
                         .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Card))
                         .padding(horizontal = DesignTokens.Spacing.CardHorizontal, vertical = DesignTokens.Spacing.CardVertical)
-                ) { MarkdownText(message.text) }
+                ) {
+                    if (message.text.isNotBlank()) MarkdownText(message.text)
+                    MessageImages(message.images, palette)
+                }
             }
         }
     }
@@ -4041,8 +4444,12 @@ private fun ModelScreen(
     onConfigToolsEnabledChange: (Boolean) -> Unit,
     netToolsEnabled: Boolean,
     onNetToolsEnabledChange: (Boolean) -> Unit,
+    webActDomains: List<String>,
+    onWebActDomainsChange: (List<String>) -> Unit,
     imageToolsEnabled: Boolean,
     onImageToolsEnabledChange: (Boolean) -> Unit,
+    mediaToolsEnabled: Boolean,
+    onMediaToolsEnabledChange: (Boolean) -> Unit,
     imageConfig: ImageConfig,
     onImageConfig: (ImageConfig) -> Unit,
     customToolsJson: String,
@@ -4396,8 +4803,13 @@ private fun ModelScreen(
                 PluginRow(Icons.Default.Folder, "文件工具", 4, "读写应用私有目录内的文件", fsToolsEnabled, onFsToolsEnabledChange)
                 PluginRow(Icons.Default.Public, "网络工具", 1, "调用任意 http/https 地址", netToolsEnabled, onNetToolsEnabledChange)
                 Text("关闭后 net_request 在本地直接拒绝，不发起任何网络请求。http:// 为明文传输，建议只填本地或可信局域网地址。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                Text("网页工具（web_capture 截图、web_search 搜索、web_act 代操作）同样受这个开关约束：关掉后 AI 打不开任何网页。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                Spacer(Modifier.height(DesignTokens.Spacing.Sm))
+                WebActWhitelistSection(webActDomains, onWebActDomainsChange)
                 PluginRow(Icons.Default.Tune, "配置工具", 5, "让 AI 修改模型/BaseURL/温度（密钥不可写）", configToolsEnabled, onConfigToolsEnabledChange)
-                PluginRow(Icons.Default.Image, "生图", 1, "调用云端或本地生图服务生成图片", imageToolsEnabled, onImageToolsEnabledChange)
+                PluginRow(Icons.Default.Image, "生图", 2, "调用云端或本地生图服务生成图片，并把图片发到对话里", imageToolsEnabled, onImageToolsEnabledChange)
+                PluginRow(Icons.Default.PlayArrow, "音乐", 3, "读取正在播放的歌名/歌手/封面，并控制播放", mediaToolsEnabled, onMediaToolsEnabledChange)
+                Text("与网络、生图是三个独立开关：音乐只读系统「正在播放」并转发播放/暂停，不发任何网络请求。关闭后 media.* 在本地直接拒绝，插件拿不到任何播放信息。需要系统「通知使用权」，在系统设置 → 通知使用权里给 AI Classroom 打开。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
                 TextButton(onClick = { imageDetailExpanded = !imageDetailExpanded }) {
                     Text(if (imageDetailExpanded) "收起生图配置" else "生图详细配置（运营商 / Key / 模型 / 尺寸）", color = MaterialTheme.colorScheme.primary)
                 }
@@ -5294,6 +5706,53 @@ private fun PluginRow(
     }
 }
 
+/**
+ * 网页操作白名单：AI 只有在这个清单里的站点上，才能替用户点页面 / 填表。
+ *
+ * 这张卡是用户唯一的入口——AI 没有工具能改它（web_act 遇到新域名只能"申请"，用户点了「允许」
+ * 才会经由弹框里的同一条路径写进来）。留空就等于彻底禁止代操作，只保留截图与搜索。
+ */
+@Composable
+private fun WebActWhitelistSection(domains: List<String>, onChange: (List<String>) -> Unit) {
+    var draft by remember(domains) { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth()) {
+        Text("网页操作白名单 · " + domains.size + " 个站点", fontWeight = FontWeight.Bold)
+        Text(
+            "只有这个清单里的网站，AI 才能替你点按钮、填表。第一次碰到新网站时会当场弹框问你；拒绝就什么都不会做。" +
+                "密码框任何时候都填不了——密码必须由你自己输入。",
+            color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
+        )
+        Spacer(Modifier.height(DesignTokens.Spacing.Sm))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                draft, { draft = it }, Modifier.weight(1f),
+                label = { Text("添加域名，例如 example.com") }, singleLine = true
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(
+                onClick = {
+                    val added = WebDomains.parseList(draft)
+                    if (added.isNotEmpty()) {
+                        onChange((domains + added).distinct())
+                        draft = ""
+                    }
+                },
+                shape = AppShapes.button
+            ) { Text("添加") }
+        }
+        if (domains.isEmpty()) {
+            Text("清单为空：AI 目前不能在任何网站代你操作。", color = Muted, fontSize = DesignTokens.Type.Small)
+        } else {
+            domains.forEach { domain ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(domain, Modifier.weight(1f), fontSize = DesignTokens.Type.Body)
+                    TextButton(onClick = { onChange(domains - domain) }) { Text("移除", color = MaterialTheme.colorScheme.error) }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun SettingsCard(title: String, expanded: Boolean, onToggle: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     InfoCard {
@@ -5527,6 +5986,16 @@ private class ClassroomStore(context: Context) {
         prefs.edit().putBoolean("plugin_config_enabled", enabled).apply()
     }
 
+    /**
+     * web_act 的域名白名单：只有用户显式放行的站点，AI 才能替他点页面 / 填表。
+     * 存成一串逗号分隔的 host，空串表示还没放行任何站点。
+     */
+    fun loadWebActDomains(): List<String> = WebDomains.parseList(prefs.getString("web_act_domains", "").orEmpty())
+
+    fun saveWebActDomains(domains: List<String>) {
+        prefs.edit().putString("web_act_domains", WebDomains.joinList(domains.map { WebDomains.normalize(it) }.filter { it.isNotBlank() }.distinct())).apply()
+    }
+
     /** 生图插件总开关，默认开启；关闭后 generate_image 在本地直接拒绝，不发任何请求。 */
     /** 插件包总开关：一次一个键 plugin_enabled_<id>，缺省为开。 */
     fun loadPluginEnabled(pluginId: String): Boolean = prefs.getBoolean("plugin_enabled_$pluginId", true)
@@ -5558,6 +6027,17 @@ private class ClassroomStore(context: Context) {
         val obj = JSONObject()
         values.forEach { (key, value) -> obj.put(key, value) }
         prefs.edit().putString("plugin_settings_$pluginId", obj.toString()).apply()
+    }
+
+    /**
+     * 音乐插件总开关（读取正在播放 / 控制播放器），默认开启。
+     *
+     * 独立于网络与生图：它读的是别的 App 的播放状态，与「能不能发 http」没有关系。
+     */
+    fun loadMediaToolsEnabled(): Boolean = prefs.getBoolean("media_tools_enabled", true)
+
+    fun saveMediaToolsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("media_tools_enabled", enabled).apply()
     }
 
     fun loadImageToolsEnabled(): Boolean = prefs.getBoolean("image_tools_enabled", true)
@@ -5700,11 +6180,11 @@ private fun Classroom.toJson() = JSONObject().apply {
     put("name", name)
     put("topic", topic)
     put("summary", summary)
-    put("messages", JSONArray(messages.map { JSONObject().put("role", it.role).put("text", it.text) }))
+    put("messages", JSONArray(messages.map { it.toMessageJson() }))
     put("branches", JSONArray(branches.map { branch ->
         JSONObject().put("title", branch.title).put("source", branch.source).put("memory", branch.memory)
-            .put("messages", JSONArray(branch.messages.map { JSONObject().put("role", it.role).put("text", it.text) }))
-            .put("context", JSONArray(branch.context.map { JSONObject().put("role", it.role).put("text", it.text) }))
+            .put("messages", JSONArray(branch.messages.map { it.toMessageJson() }))
+            .put("context", JSONArray(branch.context.map { it.toMessageJson() }))
     }))
     put("memories", JSONArray(memories))
     put("corePremises", JSONArray(corePremises))
@@ -5752,7 +6232,28 @@ private fun JSONObject.toExamSession(): ExamSession? {
     )
 }
 
-private fun JSONArray?.toMessages(): List<ChatMessage> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ChatMessage(item.optString("role"), item.optString("text")) } }
+/**
+ * 读一条消息。images 是后加的字段：旧存档没有它 → 空列表（不报错、不影响其它字段）。
+ * 条目本身坏掉只丢那一张图，不让整条消息读不出来。
+ */
+private fun JSONObject.toChatMessage(): ChatMessage = ChatMessage(
+    role = optString("role"),
+    text = optString("text"),
+    images = runCatching {
+        optJSONArray("images")?.let { array ->
+            List(array.length()) { index -> array.optString(index, "") }
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+        }.orEmpty()
+    }.getOrDefault(emptyList())
+)
+
+private fun JSONArray?.toMessages(): List<ChatMessage> = if (this == null) emptyList() else List(length()) { getJSONObject(it).toChatMessage() }
+
+/** 只写有图的那些条目；纯文字消息的存档格式与改造前逐字节一致。 */
+private fun ChatMessage.toMessageJson(): JSONObject = JSONObject().put("role", role).put("text", text).apply {
+    if (images.isNotEmpty()) put("images", JSONArray(images))
+}
 private fun ChatMessage.isLegacyWelcomeMessage(): Boolean = role == "assistant" && text.startsWith("输入学习目标，我会开始主课堂教学。")
 private fun JSONArray?.toBranches(): List<BranchClass> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item ->
     val messages = item.optJSONArray("messages").toMessages().toMutableStateList()
@@ -6037,19 +6538,39 @@ private suspend fun callChatStreamWithFallback(
     return last
 }
 
-private suspend fun callVisionWithFallback(config: ClassroomConfig, models: List<String>, system: String, prompt: String, dataUrl: String): String = withContext(Dispatchers.IO) {
+private suspend fun callVisionWithFallback(config: ClassroomConfig, models: List<String>, system: String, prompt: String, dataUrl: String): String =
+    callVisionWithFallback(config, models, system, prompt, listOf(dataUrl), emptyList())
+
+/**
+ * 识图调用：图片可以是 data URL（历史里的调用方式），也可以传本地路径由这里转 data URL。
+ * [history] 是这一轮之前的对话，按普通聊天气泡拼在最后一条带图消息之前——
+ * 只把图片放在最后一条 user 消息上，避免每轮把历史图片重复 base64 一遍。
+ */
+private suspend fun callVisionWithFallback(
+    config: ClassroomConfig,
+    models: List<String>,
+    system: String,
+    prompt: String,
+    imageSources: List<String>,
+    history: List<ChatMessage> = emptyList()
+): String = withContext(Dispatchers.IO) {
     if (config.apiKey.isBlank()) return@withContext "请先填写 API Key。"
+    // 图片来源有两种：data URL（老调用方式）和本地路径（用户发图 / 历史附件）。
+    val dataUrls = imageSources.mapNotNull { source ->
+        if (source.startsWith("data:")) source else imageDataUrl(source)
+    }
+    if (dataUrls.isEmpty()) return@withContext "图片读取失败，请重新选择照片。"
     val candidates = models.ifEmpty { config.visionModels() }
     var last = "请先选择或填写识图模型名。"
     candidates.forEach { model ->
-        val result = callVision(config.visionBaseUrlOrMain(), config.visionApiKeyOrMain(), model, system, prompt, dataUrl)
+        val result = callVision(config.visionBaseUrlOrMain(), config.visionApiKeyOrMain(), model, system, prompt, dataUrls, history)
         if (!isApiFailure(result)) return@withContext result
         last = result
     }
     last
 }
 
-private suspend fun callVision(baseUrl: String, apiKey: String, model: String, system: String, prompt: String, dataUrl: String): String = withContext(Dispatchers.IO) {
+private suspend fun callVision(baseUrl: String, apiKey: String, model: String, system: String, prompt: String, dataUrls: List<String>, history: List<ChatMessage> = emptyList()): String = withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) return@withContext "请先填写 API Key。"
     if (model.isBlank()) return@withContext "请先选择或填写识图模型名。"
     runCatching {
@@ -6060,7 +6581,7 @@ private suspend fun callVision(baseUrl: String, apiKey: String, model: String, s
         connection.setRequestProperty("Content-Type", "application/json")
         connection.connectTimeout = 20000
         connection.readTimeout = 90000
-        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildVisionJson(model, system, prompt, dataUrl)) }
+        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(buildVisionJson(model, system, prompt, dataUrls, history)) }
         if (connection.responseCode !in 200..299) return@runCatching readBody(connection).ifBlank { "调用失败：HTTP ${connection.responseCode}" }
         Regex("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").find(readBody(connection))?.groupValues?.get(1)?.unescapeJson() ?: NO_CONTENT_REPLY
     }.getOrElse { "调用失败：${it.message ?: "未知错误"}" }
@@ -6123,6 +6644,51 @@ private fun displayNameOf(context: Context, uri: Uri): String = runCatching {
  * 选中图片的后缀：先看 MIME（SAF 给的 displayName 常常没有后缀），再退回名字后缀。
  * 只用于给落盘文件挑一个后缀，插件拿不到这个值，所以不做严格校验。
  */
+/** 音乐总开关关闭时的提示：说清楚它和网络/生图是两回事，以及去哪儿打开。 */
+private const val MEDIA_DISABLED_HINT =
+    "音乐插件已在「设置 → 插件 → 音乐」关闭：本次没有读取也没有控制任何播放器"
+
+/** 当前没有活跃的播放会话时的提示。 */
+private const val MEDIA_NO_SESSION_HINT =
+    "当前没有正在播放的播放器。先打开酷狗 / B 站音乐等 App 播放一首，再回来试。"
+
+/**
+ * 把当前曲目拼成插件侧看的紧凑 JSON。
+ *
+ * artworkPath 直接回填缓存文件里已有的那一张（没有就不给）：mediaCurrent 是每秒都可能被调用的
+ * 高频能力，在这里顺手把封面再编码一次就等于每秒写一个 PNG。真正的落盘只在换歌时由
+ * mediaArtwork 做一次。
+ */
+private fun mediaJson(context: Context, track: NowPlaying.Track?, cache: MediaArtworkCache): String {
+    val obj = JSONObject()
+    if (track == null) {
+        obj.put("playing", false)
+        return obj.toString()
+    }
+    obj.put("playing", track.isPlaying)
+    obj.put("title", track.title)
+    obj.put("artist", track.artist)
+    obj.put("album", track.album)
+    obj.put("durationMs", track.durationMs)
+    obj.put("positionMs", track.positionMs)
+    obj.put("packageName", track.packageName)
+    traceArtworkPath(obj, track, cache)
+    return obj.toString()
+}
+
+/**
+ * 封面路径：缓存里已经存的是「当前这首」才回填。
+ *
+ * 判据是缓存键（包名 + 歌名 + 专辑）—— 它只看歌，不看播放进度，
+ * 所以暂停、拖动进度、每秒 tick 都不会让这张图失效。
+ */
+private fun traceArtworkPath(obj: JSONObject, track: NowPlaying.Track, cache: MediaArtworkCache) {
+    val path = cache.existingPath()
+    if (path != null && cache.matches(MediaArtworkCache.keyOf(track.packageName, track.title, track.album))) {
+        obj.put("artworkPath", path)
+    }
+}
+
 private fun extensionOf(context: Context, uri: Uri): String? {
     val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
     val fromMime = when (mime) {
@@ -6559,10 +7125,67 @@ private fun messageJson(message: ChatMessage): String = buildString {
     append('}')
 }
 
-private fun buildVisionJson(model: String, system: String, prompt: String, dataUrl: String): String {
-    return """
-        {"model":"${model.escapeJson()}","messages":[{"role":"system","content":"${system.escapeJson()}"},{"role":"user","content":[{"type":"text","text":"${prompt.escapeJson()}"},{"type":"image_url","image_url":{"url":"${dataUrl.escapeJson()}"}}]}],"temperature":0.7}
-    """.trimIndent()
+/**
+ * 图片条目 → data URL。文件不存在 / 读不出来 / 超出体积上限一律返回 null（这一张就不发了），
+ * mime 按扩展名推断，与 ImageSink 写盘时用的扩展名一致。
+ */
+/**
+ * 用户从系统选择器选中的图片 → filesDir/images/ 里的一份副本。
+ * 必须先落盘：SAF 给的 uri 授权只在本次授权期内有效，重启后读不到，
+ * 而消息里的图片要能长期回看（也在重启后能再次发给模型）。
+ * 复制失败返回 null，由调用方提示「重新选择照片」。
+ */
+private fun saveUserImage(context: Context, uri: Uri): File? = runCatching {
+    val directory = File(context.filesDir, "images")
+    if (!directory.isDirectory && !directory.mkdirs()) return@runCatching null
+    val extension = when (context.contentResolver.getType(uri)?.lowercase()) {
+        "image/jpeg" -> "jpg"
+        "image/webp" -> "webp"
+        "image/gif" -> "gif"
+        else -> "png"
+    }
+    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching null
+    if (bytes.isEmpty()) return@runCatching null
+    val target = File(directory, "user_image_" + System.currentTimeMillis() + "." + extension)
+    target.outputStream().use { it.write(bytes) }
+    target
+}.getOrNull()
+
+private fun imageDataUrl(entry: String): String? {
+    val path = imagePathOf(entry)
+    if (path.isBlank()) return null
+    return runCatching {
+        val file = File(path)
+        if (!file.isFile || file.length() <= 0L || file.length() > MAX_ATTACHED_IMAGE_BYTES) return@runCatching null
+        val bytes = file.readBytes()
+        val mime = when (file.extension.lowercase()) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "webp" -> "image/webp"
+            "gif" -> "image/gif"
+            else -> "image/png"
+        }
+        "data:" + mime + ";base64," + Base64.getEncoder().encodeToString(bytes)
+    }.getOrNull()
+}
+
+/**
+ * 识图请求体。history 为空、只有一张图时与改造前逐字节一致；
+ * 有历史就按「system → 历史气泡 → 最后一条带图消息」的顺序拼，图片只在最后一条 user 消息上。
+ */
+private fun buildVisionJson(model: String, system: String, prompt: String, dataUrls: List<String>, history: List<ChatMessage> = emptyList()): String {
+    val imageBlocks = dataUrls.joinToString(",") { url ->
+        "{\"type\":\"image_url\",\"image_url\":{\"url\":\"" + url.escapeJson() + "\"}}"
+    }
+    // 只带 user / assistant 气泡：history 里那条 system 是课堂状态包，已经有了自己的 system 槽位。
+    val historyBlocks = history.filter { it.role == "user" || it.role == "assistant" }
+        .joinToString("") { message ->
+            ",{\"role\":\"" + message.role + "\",\"content\":\"" + message.text.take(2000).escapeJson() + "\"}"
+        }
+    return "{\"model\":\"" + model.escapeJson() +
+        "\",\"messages\":[{\"role\":\"system\",\"content\":\"" + system.escapeJson() + "\"}" +
+        historyBlocks +
+        ",{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"" + prompt.escapeJson() + "\"}," +
+        imageBlocks + "]}],\"temperature\":0.7}"
 }
 
 private fun summarize(scope: String, messages: List<ChatMessage>): String = "$scope 记忆：" + messages.joinToString(" ") { it.text }.replace(Regex("\\s+"), " ").take(180)
@@ -7029,3 +7652,9 @@ private const val MAIN_MEMORY_PREFIX = "主课堂记忆："
 private const val DAY_MS = 86_400_000L
 private const val GITHUB_RELEASES_URL = "https://github.com/AHWJ-Alpha/AI-Classroom/releases"
 private const val GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/AHWJ-Alpha/AI-Classroom/releases/latest"
+/** 消息气泡里图片的解码边长上限（气泡最宽也就三百多 dp，再大纯属浪费内存）。 */
+private const val MESSAGE_IMAGE_MAX_SIDE = 1080
+/** 全屏看图的解码边长上限：能放大到 4 倍，所以给得比气泡高。 */
+private const val FULLSCREEN_IMAGE_MAX_SIDE = 2048
+/** 气泡里单张图片的最大显示高度：再高就把一屏占满了，长图请点开全屏看。 */
+private val MESSAGE_IMAGE_MAX_HEIGHT = 320.dp

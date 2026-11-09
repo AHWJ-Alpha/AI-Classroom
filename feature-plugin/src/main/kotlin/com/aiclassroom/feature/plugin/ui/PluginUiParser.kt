@@ -32,6 +32,48 @@ object PluginUiParser {
     /** pixeltext 单个像素点的上限（dp）：再大就不是像素风，而是一个方块。 */
     const val MAX_PIXEL_SIZE = 64
 
+    /** waveform 竖线条数上限：再多在手机上就细到看不见，纯粹是白耗 GPU。 */
+    const val MAX_WAVEFORM_BARS = 48
+
+    /** waveform 竖线条数的默认值。 */
+    const val DEFAULT_WAVEFORM_BARS = 24
+
+    /** waveform 容器高的默认值（dp）。 */
+    const val DEFAULT_WAVEFORM_HEIGHT = 48
+
+    /** waveform 起伏幅度默认值的万分比：0.35。用户要的是「微微有一点」。 */
+    const val DEFAULT_WAVEFORM_AMPLITUDE_PERMYRIAD = 3500
+
+    /** waveform 起伏幅度的上限（万分比）：1.0。超过 1 会让竖线溢出容器。 */
+    const val MAX_AMPLITUDE_PERMYRIAD = 10000
+
+    /** waveform 速度倍率默认为 1.0 倍。 */
+    const val DEFAULT_SPEED_PERMYRIAD = 10000
+
+    /** waveform 速度倍率下限：0.1 倍（再慢就看不出在动）。 */
+    const val MIN_SPEED_PERMYRIAD = 1000
+
+    /** waveform 速度倍率上限（万分比）：5.0 倍。再快就是闪。 */
+    const val MAX_SPEED_PERMYRIAD = 50000
+
+    /** disk / glow 尺寸的上限（dp）：再大就不是装饰，是一块盖住内容的色斑。 */
+    const val MAX_DECORATION_SIZE = 480
+
+    /** disk / glow 尺寸的下限（dp）：小到这个份上就只剩一个点，参数写错了。 */
+    const val MIN_DECORATION_SIZE = 8
+
+    /** disk 直径的默认值（dp）。 */
+    const val DEFAULT_DISK_SIZE = 160
+
+    /** glow 半径的默认值（dp）。 */
+    const val DEFAULT_GLOW_RADIUS = 120
+
+    /** glow 强度上限（万分比）：0.6 以上就从「光波」变成「发光特效」，不是用户要的。 */
+    const val MAX_GLOW_INTENSITY_PERMYRIAD = 6000
+
+    /** glow 强度的默认值（万分比）：0.25。 */
+    const val DEFAULT_GLOW_INTENSITY_PERMYRIAD = 2500
+
     private val EVENT_NAME = Regex("^[A-Za-z_$][A-Za-z0-9_$]*$")
 
     /** 表达式只支持 `state.xxx` / `msg.xxx` 的单层取值，不做完整表达式求值。 */
@@ -65,6 +107,14 @@ object PluginUiParser {
                 "text", "textFrom", "pixelSize", "color", "textColor",
                 "align", "scanlines", "glow", "border", "borderColor",
             )
+        // 三个装饰组件：color 必须走语义色（FOREGROUNDS），数值参数一律有上下限。
+        UiNodeType.WAVEFORM -> COMMON_FIELDS + setOf("bars", "color", "amplitude", "speed", "activeFrom")
+        // disk 的直径用 size；半径 dp 的用户语义在 disk 上不成立，所以它没有 radius。
+        UiNodeType.DISK -> COMMON_FIELDS + setOf("size", "color", "coverFrom", "spinningFrom")
+        // glow 的 radius 是「光的半径 dp」，与公共字段里那个圆角 token 同名不同义：
+        // 在 glow 上按数字解析（见 radiusField），圆角对它没有落点，因此这里不再接受
+        // card|control|panel|full 这套取值。
+        UiNodeType.GLOW -> (COMMON_FIELDS - "radius") + setOf("radius", "color", "intensity")
         UiNodeType.SPACER, UiNodeType.DIVIDER -> COMMON_FIELDS
     }
 
@@ -140,7 +190,12 @@ object PluginUiParser {
             height = lengthField(node, "height", path, errors),
             visibleWhen = expressionField(node, "visibleWhen", path, errors),
             background = colorField(node, "background", path, errors, UiColor.BACKGROUNDS),
-            radius = enumField(node, "radius", path, errors, UiRadius.wireNames, UiRadius::fromWire),
+            // glow 的 radius 是「光的半径 dp」，不是圆角 token；其余组件照旧按枚举解析。
+            radius = if (type == UiNodeType.GLOW) {
+                null
+            } else {
+                enumField(node, "radius", path, errors, UiRadius.wireNames, UiRadius::fromWire)
+            },
             animation = animationField(node, path, errors),
             onTap = eventField(node, "onTap", path, errors),
             onLongPress = eventField(node, "onLongPress", path, errors),
@@ -153,8 +208,14 @@ object PluginUiParser {
                 null
             },
             textColor = when (type) {
-                UiNodeType.TEXT, UiNodeType.ICON, UiNodeType.PROGRESS ->
+                UiNodeType.TEXT, UiNodeType.ICON, UiNodeType.PROGRESS,
+                UiNodeType.WAVEFORM, UiNodeType.GLOW,
+                ->
                     colorField(node, "color", path, errors, UiColor.FOREGROUNDS)
+
+                // 唱片的 color 是「黑胶底色」：没有封面时它是 surfaceVariant，
+                // 所以这里额外放行 BACKGROUNDS 里的面色，但仍然只认语义 token。
+                UiNodeType.DISK -> colorField(node, "color", path, errors, UiColor.DECORATION_SURFACES)
 
                 // flipcard / pixeltext 接受 color / textColor 两种写法，同时给且不一致才算错。
                 UiNodeType.FLIP_CARD, UiNodeType.PIXEL_TEXT -> {
@@ -170,7 +231,7 @@ object PluginUiParser {
             },
             weight = enumField(node, "weight", path, errors, UiWeight.wireNames, UiWeight::fromWire),
             maxLines = intField(node, "maxLines", path, errors, 1, 1),
-            src = imageSource(node, path, errors),
+            src = imageSource(node, "src", path, errors),
             name = enumField(node, "name", path, errors, UiIcon.wireNames, UiIcon::fromWire),
             iconSize = if (type == UiNodeType.ICON) intField(node, "size", path, errors, null, 1) else null,
             label = stringField(node, "label", path, errors),
@@ -202,6 +263,63 @@ object PluginUiParser {
             min = intField(node, "min", path, errors, null),
             max = intField(node, "max", path, errors, null),
             onChange = eventField(node, "onChange", path, errors),
+            bars = if (type == UiNodeType.WAVEFORM) {
+                intField(
+                    node, "bars", path, errors, DEFAULT_WAVEFORM_BARS, 1,
+                    maxValue = MAX_WAVEFORM_BARS,
+                    maxMessage = "竖线最多 $MAX_WAVEFORM_BARS 条，再多在手机上就细到看不见",
+                )
+            } else {
+                null
+            },
+            amplitudePermyriad = if (type == UiNodeType.WAVEFORM) {
+                ratioField(
+                    node, "amplitude", path, errors,
+                    DEFAULT_WAVEFORM_AMPLITUDE_PERMYRIAD, MAX_AMPLITUDE_PERMYRIAD,
+                )
+            } else {
+                null
+            },
+            speedPermyriad = if (type == UiNodeType.WAVEFORM) {
+                ratioField(
+                    node, "speed", path, errors,
+                    DEFAULT_SPEED_PERMYRIAD, MAX_SPEED_PERMYRIAD, MIN_SPEED_PERMYRIAD,
+                )
+            } else {
+                null
+            },
+            // disk 的 size 是直径、glow 的 radius 是半径：两者都存进 sizeDp，含义由 type 决定。
+            // disk 没写 size 时按 width（上面已校验过 width 与 height 相等）推直径，两边都不写才用默认值。
+            sizeDp = when (type) {
+                UiNodeType.DISK -> intField(
+                    node, "size", path, errors, diameterFallback(node), MIN_DECORATION_SIZE,
+                    maxValue = MAX_DECORATION_SIZE,
+                    maxMessage = "直径最大 $MAX_DECORATION_SIZE dp",
+                )
+
+                UiNodeType.GLOW -> intField(
+                    node, "radius", path, errors, DEFAULT_GLOW_RADIUS, MIN_DECORATION_SIZE,
+                    maxValue = MAX_DECORATION_SIZE,
+                    maxMessage = "半径最大 $MAX_DECORATION_SIZE dp",
+                )
+
+                else -> null
+            },
+            intensityPermyriad = if (type == UiNodeType.GLOW) {
+                ratioField(
+                    node, "intensity", path, errors,
+                    DEFAULT_GLOW_INTENSITY_PERMYRIAD, MAX_GLOW_INTENSITY_PERMYRIAD,
+                )
+            } else {
+                null
+            },
+            coverFrom = if (type == UiNodeType.DISK) coverSource(node, path, errors) else null,
+            activeFrom = expressionField(
+                node,
+                if (type == UiNodeType.DISK) "spinningFrom" else "activeFrom",
+                path,
+                errors,
+            ),
         ).also { requireFields(it, node, path, errors) }
     }
 
@@ -276,6 +394,38 @@ object PluginUiParser {
                 if (node.height == null) errors += path + " 缺少必需字段 height（翻页卡片要固定的高，否则上下两半切不出来）"
                 if (node.width == UiLength.Fill) errors += path + ".width 不能是 fill（翻页卡片必须是固定宽）"
                 if (node.height == UiLength.Fill) errors += path + ".height 不能是 fill（翻页卡片必须是固定高）"
+            }
+
+            // 三个装饰组件都不接收 color 之外的视觉自由度，但各自有「画不出来」的组合要先拦掉。
+            UiNodeType.WAVEFORM -> {
+                if (node.width == null) errors += path + " 缺少必需字段 width（竖线要按容器宽度均分）"
+                if (node.width == UiLength.Wrap) {
+                    errors += path + ".width 不能是 wrap（wrap 量不出宽度，竖线间距无从计算）"
+                }
+                if (node.height == null) {
+                    errors += path + " 缺少必需字段 height（竖线的最大高度就是容器高）"
+                }
+                if (node.height == UiLength.Fill) {
+                    errors += path + ".height 不能是 fill（起伏幅度要相对一个确定的高度）"
+                }
+            }
+
+            UiNodeType.DISK -> {
+                // 直径要么由 size 决定，要么由宽高一致地撑出来；宽高不一致会把圆画成椭圆。
+                if (node.width != null && node.height != null &&
+                    node.width != node.height
+                ) {
+                    errors += path + " 的 width 与 height 必须一致（唱片是圆，宽高不等会画成椭圆）"
+                }
+                if (node.width == UiLength.Fill || node.height == UiLength.Fill) {
+                    errors += path + " 不能用 fill（唱片要有确定的直径，fill 会把圆压成椭圆）"
+                }
+            }
+
+            UiNodeType.GLOW -> {
+                if (node.width != null && node.height != null && node.width != node.height) {
+                    errors += path + " 的 width 与 height 必须一致（光晕是圆）"
+                }
             }
 
             else -> Unit
@@ -368,22 +518,45 @@ object PluginUiParser {
     }
 
     /**
+     * 唱片封面：静态图（包内相对路径 / `user:<设置项>`）或者**运行期表达式**（`state.artworkPath`）。
+     *
+     * 封面是随歌变的，写死一张显然不够用；又不能让插件随便写一个字面绝对路径
+     * 去读宿主目录里的任意文件 —— 所以只有 `state.xxx` / `msg.xxx` 这种「值来自插件自己声明的
+     * state」的写法才会被当成路径，渲染器还会再把它夹在宿主封面目录内（见 PluginUiRenderer）。
+     */
+    private fun coverSource(node: JsonNode.Obj, path: String, errors: MutableList<String>): String? {
+        val value = stringField(node, "coverFrom", path, errors) ?: return null
+        if (VALUE_EXPRESSION.matches(value)) return value
+        if (value.startsWith(USER_IMAGE_PREFIX) || PluginPackage.isSafeRelativePath(value)) {
+            return imageSource(node, "coverFrom", path, errors)
+        }
+        errors += path + ".coverFrom 必须是包内相对路径、user:<设置项>，或 state.xxx / msg.xxx 取值表达式，实际 '" +
+            value + "'"
+        return null
+    }
+
+    /**
      * 图片来源：包内相对路径，或者 `user:<settings key>`。
      * `user:` 指向用户在设置页选的图片 —— 插件只写一个键名，宿主负责把文件找出来，
      * 脚本拿不到、也不需要处理任何二进制。
      */
-    private fun imageSource(node: JsonNode.Obj, path: String, errors: MutableList<String>): String? {
-        val value = stringField(node, "src", path, errors) ?: return null
+    private fun imageSource(
+        node: JsonNode.Obj,
+        field: String,
+        path: String,
+        errors: MutableList<String>,
+    ): String? {
+        val value = stringField(node, field, path, errors) ?: return null
         if (value.startsWith(USER_IMAGE_PREFIX)) {
             val key = value.removePrefix(USER_IMAGE_PREFIX)
             if (key.isBlank()) {
-                errors += path + ".src 写成 '" + value + "' 时后面必须跟设置项的 key（例：user:bgImage）"
+                errors += path + "." + field + " 写成 '" + value + "' 时后面必须跟设置项的 key（例：user:bgImage）"
                 return null
             }
             return value
         }
         if (!PluginPackage.isSafeRelativePath(value)) {
-            errors += path + ".src 必须是包内相对路径或 user:<设置项>（不能以 / 开头、不能含 .. ），实际 '" + value + "'"
+            errors += path + "." + field + " 必须是包内相对路径或 user:<设置项>（不能以 / 开头、不能含 .. ），实际 '" + value + "'"
             return null
         }
         return value
@@ -490,6 +663,8 @@ object PluginUiParser {
         errors: MutableList<String>,
         default: Int? = null,
         min: Int? = null,
+        maxValue: Int? = null,
+        maxMessage: String? = null,
     ): Int? {
         val raw = node.fields[field] ?: return default
         if (raw is JsonNode.Null) return default
@@ -502,8 +677,52 @@ object PluginUiParser {
             errors += path + "." + field + " 不能小于 " + min + "（实际 " + value + "）"
             return default
         }
+        if (maxValue != null && value > maxValue) {
+            errors += path + "." + field + " " + (maxMessage ?: ("不能大于 " + maxValue)) + "（实际 " + value + "）"
+            return default
+        }
         return value
     }
+
+    /**
+     * 0..1 之间的比例参数（amplitude / speed / intensity），协议侧写小数，模型里存万分比整数。
+     *
+     * 不收整数写法的「百分比」：这三个参数和 min/max 那种刻度不是一回事，
+     * 允许 0.35 和 35 两种写法只会让「35 到底是 35% 还是 3500%」变成猜谜。
+     */
+    private fun ratioField(
+        node: JsonNode.Obj,
+        field: String,
+        path: String,
+        errors: MutableList<String>,
+        defaultPermyriad: Int,
+        maxPermyriad: Int,
+        minPermyriad: Int = 0,
+    ): Int? {
+        val raw = node.fields[field] ?: return defaultPermyriad
+        if (raw is JsonNode.Null) return defaultPermyriad
+        val value = raw.asNumberOrNull
+        if (value == null) {
+            errors += path + "." + field + " 必须是数字（" + trimZero(minPermyriad / 10000.0) +
+                "~" + trimZero(maxPermyriad / 10000.0) + " 之间的小数）"
+            return defaultPermyriad
+        }
+        val minimum = minPermyriad / 10000.0
+        val maximum = maxPermyriad / 10000.0
+        if (value < minimum || value > maximum) {
+            errors += path + "." + field + " 必须在 " + trimZero(minimum) + "~" + trimZero(maximum) +
+                " 之间，实际 " + value
+            return defaultPermyriad
+        }
+        return Math.round(value * 10000.0).toInt().coerceIn(minPermyriad, maxPermyriad)
+    }
+
+    /** disk 没写 size 时，用 width 上的固定 dp 当直径；没有就退回默认值。 */
+    private fun diameterFallback(node: JsonNode.Obj): Int =
+        (node.fields["width"] as? JsonNode.Num)?.asIntOrNull?.takeIf { it > 0 } ?: DEFAULT_DISK_SIZE
+
+    private fun trimZero(value: Double): String =
+        if (value == Math.floor(value) && !value.isInfinite()) value.toLong().toString() else value.toString()
 
     private fun describe(node: JsonNode): String = when (node) {
         is JsonNode.Null -> "null"

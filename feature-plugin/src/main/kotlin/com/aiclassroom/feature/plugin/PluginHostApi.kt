@@ -73,4 +73,27 @@ interface PluginHostApi {
 
     /** 跨课堂读对话；classroomId 为空表示全部课堂，limitPerClassroom 由宿主再夹一次上限。 */
     suspend fun readAllDialogs(classroomId: String?, limitPerClassroom: Int): PluginResult
+
+    /**
+     * 当前「正在播放」。value 是紧凑 JSON：
+     * {playing:true, title, artist, album, durationMs, positionMs, packageName, artworkPath}。
+     *
+     * 没有任何播放器时返回 {playing:false} 而不是错误 —— 「现在没在放歌」是正常状态。
+     * 没有通知使用权时返回 code=media_permission_required（提示文案在 message 里），不静默返回空。
+     */
+    suspend fun mediaCurrent(): PluginResult
+
+    /**
+     * 控制外部播放器。action 取 play / pause / next / prev / seek:<毫秒>。
+     * 没有活跃会话时 code=media_no_session（用户没开播放器，不是插件写错了）。
+     */
+    suspend fun mediaControl(action: String): PluginResult
+
+    /**
+     * 把当前封面落盘到 filesDir/images/media_cover.png，Success.path 返回绝对路径。
+     *
+     * 只在「曲目变了」时才真的写文件（缓存键 = packageName + title），
+     * 插件每秒轮询也不会变成每秒一次 PNG 编码。
+     */
+    suspend fun mediaArtwork(): PluginResult
 }

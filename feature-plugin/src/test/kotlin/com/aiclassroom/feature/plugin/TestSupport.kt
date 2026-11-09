@@ -130,6 +130,27 @@ class RecordingHostApi : PluginHostApi {
         calls += "pickImage:$pluginId"
         return pickImageResult
     }
+
+    /** 媒体能力：默认返回一个「正在播」的假曲目，测试据此断言 JS 侧拿到的字段。 */
+    var mediaCurrentResult: PluginResult =
+        PluginResult.Success("""{"playing":true,"title":"测试曲","artist":"测试歌手"}""")
+    var mediaControlResult: PluginResult = PluginResult.Success("play")
+    var mediaArtworkResult: PluginResult = PluginResult.Success("ok", "/tmp/media_cover.png")
+
+    override suspend fun mediaCurrent(): PluginResult {
+        calls += "mediaCurrent"
+        return mediaCurrentResult
+    }
+
+    override suspend fun mediaControl(action: String): PluginResult {
+        calls += "mediaControl:$action"
+        return mediaControlResult
+    }
+
+    override suspend fun mediaArtwork(): PluginResult {
+        calls += "mediaArtwork"
+        return mediaArtworkResult
+    }
 }
 
 /** 把「文件名 -> 文本」打成真正的 ZIP，验证插件包格式解析走的是真实压缩包路径。 */

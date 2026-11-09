@@ -42,6 +42,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -66,11 +67,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -96,8 +99,14 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.TextUnit
 import com.aiclassroom.feature.plugin.ui.PixelFont
 import com.aiclassroom.feature.plugin.ui.PixelTextMetrics
+import com.aiclassroom.feature.plugin.ui.PluginUiParser
+import com.aiclassroom.feature.plugin.ui.UI_DISK_ROTATION_MS
 import com.aiclassroom.feature.plugin.ui.UI_FLIP_DURATION_MS
+import com.aiclassroom.feature.plugin.ui.UI_GLOW_BREATH_MS
 import com.aiclassroom.feature.plugin.ui.UI_PIXEL_ROLL_DURATION_MS
+import com.aiclassroom.feature.plugin.ui.UI_WAVEFORM_CYCLE_MS
+import com.aiclassroom.feature.plugin.ui.UI_WAVEFORM_FLOOR_RATIO
+import com.aiclassroom.feature.plugin.ui.UI_WAVEFORM_REST_RATIO
 import com.aiclassroom.feature.plugin.ui.UiAlign
 import com.aiclassroom.feature.plugin.ui.UiAnchor
 import com.aiclassroom.feature.plugin.ui.UiAnimation
@@ -598,6 +607,12 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
 
         UiNodeType.PIXEL_TEXT -> PixelText(node, paint, modifier)
 
+        UiNodeType.WAVEFORM -> Waveform(node, paint, modifier)
+
+        UiNodeType.DISK -> Disk(node, paint, modifier)
+
+        UiNodeType.GLOW -> Glow(node, paint, modifier)
+
         UiNodeType.BUTTON -> PluginButton(node, paint, modifier)
 
         UiNodeType.SWITCH -> {
@@ -643,6 +658,212 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
         }
     }
 }
+
+// ------------------------------------------------------- 装饰组件：waveform / disk / glow
+
+/**
+ * 节奏竖线。
+ *
+ * 三条实现约束（都对应协议里的要求）：
+ * 1. **相位不进重组**：正弦只在 Canvas 的 draw 里算，用一个 [Animatable] 的相位值驱动，
+ *    整棵树一帧一帧地「只重绘不重组」，24~48 根竖线不会每帧重建 48 个 Composable；
+ * 2. **相位固定种子**：每条线的相位偏移由节点路径哈希出来，同一插件实例重建后完全一致，
+ *    否则每秒 tick 一次重组就会换一批相位，看上去像在乱跳；
+ * 3. **可见才跑**：用 produceState 跟着 Canvas 所在的 composition 走，节点不可见时
+ *    PaintNode 直接 return，动画自然停 —— 不做常驻的后台动画循环。
+ *
+ * 暂停时竖线降到 [UI_WAVEFORM_REST_RATIO] 的静止高度：不归零（留一点呼吸感），也不跳。
+ */
+@Composable
+private fun Waveform(node: UiNode, paint: Paint, modifier: Modifier) {
+    val bars = (node.bars ?: PluginUiParser.DEFAULT_WAVEFORM_BARS).coerceIn(1, PluginUiParser.MAX_WAVEFORM_BARS)
+    // 幅度按万分比存，渲染时折成 0..1；默认 0.35 是「微微有一点」的档位。
+    val amplitude = (node.amplitudePermyriad ?: PluginUiParser.DEFAULT_WAVEFORM_AMPLITUDE_PERMYRIAD) / 10000f
+    val speed = (node.speedPermyriad ?: PluginUiParser.DEFAULT_SPEED_PERMYRIAD) / 10000f
+    val active = booleanOf(node.activeFrom, paint) ?: true
+    val color = colorOf(node.textColor ?: UiColor.DECORATIVE, paint.palette, paint.aod)
+    val phases = remember(node.path, bars) { waveformPhases(node.path, bars) }
+
+    // 相位随「真实时间」推进：暂停时把相位冻在当前值，恢复播放从原处接着走，
+    // 不会因为暂停过一次就把整排竖线的节奏打乱。
+    val phase = remember(node.path) { Animatable(0f) }
+    LaunchedEffect(node.path, active, speed) {
+        if (!active) return@LaunchedEffect
+        val cycleMillis = UI_WAVEFORM_CYCLE_MS / speed
+        val start = phase.value
+        var startedAt = 0L
+        withFrameNanos { startedAt = it }
+        while (true) {
+            // withFrameNanos 的 lambda 不是 suspend，只能在里面读时间、在外面写状态。
+            var now = startedAt
+            withFrameNanos { now = it }
+            // 用真实时钟算相位，而不是一帧加一个固定增量：掉帧时节奏不会越走越慢。
+            phase.snapTo(start + ((now - startedAt) / 1_000_000f) * TWO_PI / cycleMillis)
+        }
+    }
+
+    Canvas(modifier) {
+        val stroke = WAVEFORM_BAR_WIDTH.toPx()
+        val slot = size.width / bars
+        val maxHeight = size.height
+        val rest = maxHeight * UI_WAVEFORM_REST_RATIO
+        // amplitude 是「用掉多少可用摆幅」：0 时所有线停在同一条地板上，1 时摆到容器顶。
+        // 暂停时压到 rest（比地板更低），于是「暂停 = 整排降下去并静止」看得出来但不过火。
+        val floor = maxHeight * UI_WAVEFORM_FLOOR_RATIO
+        val span = maxHeight * (1f - UI_WAVEFORM_FLOOR_RATIO) * amplitude
+        val t = phase.value
+        for (index in 0 until bars) {
+            // h = floor + span * (0.5 + 0.5 * sin(t + phase_i))
+            val wave = 0.5f + 0.5f * kotlin.math.sin(t + phases[index])
+            val height = if (active) floor + span * wave else rest
+            val x = slot * index + slot / 2f
+            drawLine(
+                color = color,
+                start = Offset(x, size.height),
+                end = Offset(x, (size.height - height).coerceAtLeast(0f)),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round,
+            )
+        }
+    }
+}
+
+/** 每条竖线的相位偏移：由节点路径 + 序号哈希出来，同一实例每次重建都一致。 */
+private fun waveformPhases(path: String, bars: Int): FloatArray {
+    val seed = path.hashCode().toLong()
+    return FloatArray(bars) { index ->
+        // 末位雪崩，避免相邻序号的哈希挤在一起导致「整排同步上下」。
+        var hash = seed * 31 + index * 2654435761L
+        hash = hash xor (hash ushr 33)
+        hash *= -0x3b3d5ac6f9e7a1b1L
+        hash = hash xor (hash ushr 29)
+        (((hash and 0xFFFFFF).toFloat() / 0xFFFFFF.toFloat()) * TWO_PI)
+    }
+}
+
+/**
+ * 唱片：圆底 + 封面裁切填满 + 中心小孔。
+ *
+ * 播放时匀速转（[UI_DISK_ROTATION_MS] 一圈），暂停时停在当前角度而不是弹回 0 ——
+ * 「停在当前角度」正是真实唱机的行为，弹回去会让暂停看起来像重启。
+ * 旋转走 graphicsLayer 的 rotationZ，只影响绘制矩阵，不触发重排与重组。
+ */
+@Composable
+private fun Disk(node: UiNode, paint: Paint, modifier: Modifier) {
+    val diameter = (node.sizeDp ?: PluginUiParser.DEFAULT_DISK_SIZE).dp
+    val spinning = booleanOf(node.activeFrom, paint) ?: true
+    // 封面来源既可以是静态图，也可以是 state.artworkPath 这种运行期取值（宿主刚落盘的封面）。
+    val coverPath = node.coverFrom?.let { source ->
+        if (source.startsWith("state.") || source.startsWith("msg.")) {
+            valueOf(source, paint)?.toString()
+        } else {
+            source
+        }
+    }
+    val cover = rememberAsset(paint.assets, coverPath, paint.userImages)
+    val discColor = colorOf(node.textColor ?: UiColor.SURFACE_VARIANT, paint.palette, paint.aod)
+    val holeColor = colorOf(UiColor.PRIMARY, paint.palette, paint.aod)
+    val outline = colorOf(UiColor.OUTLINE, paint.palette, paint.aod)
+
+    val angle = remember(node.path) { Animatable(0f) }
+    LaunchedEffect(node.path, spinning) {
+        if (!spinning) return@LaunchedEffect
+        // 从当前角度接着转：暂停再播放不会跳回 0 度。
+        val start = angle.value
+        var startedAt = 0L
+        withFrameNanos { startedAt = it }
+        while (true) {
+            var now = startedAt
+            withFrameNanos { now = it }
+            val elapsed = (now - startedAt) / 1_000_000f
+            angle.snapTo((start + elapsed * 360f / UI_DISK_ROTATION_MS) % 360f)
+        }
+    }
+
+    Box(
+        modifier
+            .size(diameter)
+            .graphicsLayer { rotationZ = angle.value },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.matchParentSize()) {
+            val radius = size.minDimension / 2f
+            drawCircle(color = discColor, radius = radius, center = center)
+            drawCircle(
+                color = outline,
+                radius = radius - DesignTokens.Border.Hairline.toPx() / 2f,
+                center = center,
+                style = Stroke(width = DesignTokens.Border.Hairline.toPx()),
+            )
+        }
+        if (cover != null) {
+            // 封面按正圆裁切填满：ContentScale.Crop 已经在 Box 里，再 clip 成圆才是唱片。
+            Image(
+                bitmap = cover,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(diameter * DISK_COVER_RATIO)
+                    .clip(CircleShape),
+            )
+        }
+        // 中心小孔：有封面时它是「转轴」，没有封面时它是唯一还能看出这是张唱片的东西。
+        Canvas(Modifier.matchParentSize()) {
+            drawCircle(color = holeColor, radius = size.minDimension * DISK_HOLE_RATIO)
+        }
+    }
+}
+
+/**
+ * 光波：极低强度的径向渐变，按正弦缓慢呼吸。
+ *
+ * 强度默认 0.25，上限 0.6 —— 用户要的是「微小光波」，不是发光特效。
+ * 渐变从中心向外到边缘渐隐，中心色 alpha = intensity，边缘恒为 0。
+ */
+@Composable
+private fun Glow(node: UiNode, paint: Paint, modifier: Modifier) {
+    val radius = (node.sizeDp ?: PluginUiParser.DEFAULT_GLOW_RADIUS).dp
+    val intensity = (node.intensityPermyriad ?: PluginUiParser.DEFAULT_GLOW_INTENSITY_PERMYRIAD) / 10000f
+    val color = colorOf(node.textColor ?: UiColor.DECORATIVE, paint.palette, paint.aod)
+
+    val breath = remember(node.path) { Animatable(0f) }
+    LaunchedEffect(node.path) {
+        var startedAt = 0L
+        withFrameNanos { startedAt = it }
+        while (true) {
+            var now = startedAt
+            withFrameNanos { now = it }
+            breath.snapTo(((now - startedAt) / 1_000_000f) / UI_GLOW_BREATH_MS)
+        }
+    }
+
+    Canvas(modifier.size(radius * 2)) {
+        // 呼吸：半径 ±6%、透明度在 0.75~1.0 倍强度之间来回，幅度刻意很小。
+        val wave = 0.5f + 0.5f * kotlin.math.sin(breath.value * TWO_PI)
+        val liveRadius = size.minDimension / 2f * (0.94f + 0.06f * wave)
+        val alpha = intensity * (0.75f + 0.25f * wave)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(color.copy(alpha = alpha), color.copy(alpha = 0f)),
+                center = center,
+                radius = liveRadius,
+            ),
+            radius = liveRadius,
+            center = center,
+        )
+    }
+}
+
+/** 竖线线宽（dp）：3dp 是这个尺寸下「看得见但不成块」的宽度。 */
+private val WAVEFORM_BAR_WIDTH = 3.5.dp
+
+/** 封面相对唱片直径的比例：留一圈黑胶边，才看得出这是唱片而不是头像。 */
+private const val DISK_COVER_RATIO = 0.72f
+
+/** 中心小孔相对直径的比例。 */
+private const val DISK_HOLE_RATIO = 0.06f
+
+private const val TWO_PI = (Math.PI * 2).toFloat()
 
 @Composable
 private fun PluginButton(node: UiNode, paint: Paint, modifier: Modifier) {
@@ -1222,6 +1443,10 @@ internal fun colorOf(color: UiColor, palette: AppPalette, aod: Boolean = false):
     UiColor.DANGER -> DesignTokens.Danger
     UiColor.ON_SURFACE -> if (aod) AOD_INK else palette.ink
     UiColor.OUTLINE -> if (aod) AOD_OUTLINE else palette.outline
+    // 装饰色：比「线」更轻的一档。主色是给行动按钮的，24 根竖线全用主色就成了视觉噪音，
+    // 所以 waveform / disk / glow 的默认色都落在这里 —— 它仍然是主题色推导出来的，
+    // 换主题时跟着变，只是不抢视线。
+    UiColor.DECORATIVE -> if (aod) AOD_OUTLINE else lerp(palette.muted, palette.outline, 0.55f)
     // 息屏底色固定近黑：它不是「主题里的某个面」，而是屏幕关掉之后剩下的那点光。
     UiColor.SCREEN -> AOD_SCREEN
 }
@@ -1363,6 +1588,19 @@ private fun resolveUserAsset(dir: File?, userImages: Map<String, File>, path: St
     return if (file.isFile) file else null
 }
 
+/**
+ * 宿主媒体封面：插件目录是 <filesDir>/plugins/<id>，所以 <filesDir> 是它的上两级。
+ * 只放行 <filesDir>/images 里的文件，防止插件借 artworkPath 读到宿主私有目录里别的东西。
+ */
+private fun resolveHostMediaAsset(dir: File?, path: String): File? {
+    if (dir == null) return null
+    val filesDir = dir.parentFile?.parentFile ?: return null
+    val mediaDir = File(filesDir, "images")
+    val file = File(path)
+    if (!file.absolutePath.startsWith(mediaDir.absolutePath + File.separator)) return null
+    return if (file.isFile) file else null
+}
+
 /** 裁切方式：用户在设置里选「剪裁 / 适应 / 填充」，user: 图片默认按剪裁铺满。 */
 private fun contentScaleOf(paint: Paint, path: String?): ContentScale {
     if (path == null || !path.startsWith(USER_IMAGE_PREFIX)) return ContentScale.Fit
@@ -1377,10 +1615,13 @@ private fun contentScaleOf(paint: Paint, path: String?): ContentScale {
 @Composable
 private fun rememberAsset(dir: File?, path: String?, userImages: Map<String, File> = emptyMap()): ImageBitmap? {
     val file = remember(dir, path, userImages) {
-        if (path != null && path.startsWith(USER_IMAGE_PREFIX)) {
-            resolveUserAsset(dir, userImages, path)
-        } else {
-            resolveAsset(dir, path)
+        when {
+            path == null -> null
+            path.startsWith(USER_IMAGE_PREFIX) -> resolveUserAsset(dir, userImages, path)
+            // 宿主刚落盘的封面（media.artworkPath）是绝对路径：它在插件目录之外，
+            // 所以单独放行 —— 但只认 <filesDir>/images 这一个目录，别的绝对路径一律当不存在。
+            path.startsWith("/") -> resolveHostMediaAsset(dir, path)
+            else -> resolveAsset(dir, path)
         }
     }
     val bitmap by produceState<ImageBitmap?>(initialValue = null, file) {

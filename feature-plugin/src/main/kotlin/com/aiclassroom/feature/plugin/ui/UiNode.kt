@@ -22,6 +22,15 @@ enum class UiColor(val wire: String) {
     OUTLINE("outline"),
 
     /**
+     * 「弱化装饰色」：waveform / disk / glow 这三个装饰组件的默认色。
+     *
+     * 它和 OUTLINE 在浅色主题下是同一个值，但语义不同 —— outline 是「线」，decorative 是
+     * 「不抢视线的音律装饰」。放在这里而不是让组件各自默认 primary：
+     * 用户要的是「微微有一点」的节奏感，满饱和度的强调色满屏画 24 根竖线会变成视觉噪音。
+     */
+    DECORATIVE("decorative"),
+
+    /**
      * 息屏底色（近黑）。息屏时钟要的是「关掉屏幕还剩一点光」的那种黑，
      * 面板色 surface 在这种场景下偏亮，会把像素字衬成灰蒙蒙一片。
      */
@@ -35,7 +44,13 @@ enum class UiColor(val wire: String) {
         val BACKGROUNDS: List<UiColor> = listOf(SURFACE, SURFACE_VARIANT, PRIMARY, TRANSPARENT, SCREEN)
 
         /** color（前景）允许的取值。 */
-        val FOREGROUNDS: List<UiColor> = listOf(PRIMARY, MUTED, DANGER, ON_SURFACE, OUTLINE)
+        val FOREGROUNDS: List<UiColor> = listOf(PRIMARY, MUTED, DANGER, ON_SURFACE, OUTLINE, DECORATIVE)
+
+        /**
+         * 唱片底色的允许取值：surfaceVariant / primary 这些「面」和「装饰色」它都要能取 ——
+         * 没有封面时黑胶底是 surfaceVariant，有封面时中心孔是 primary，两者都得说得出话。
+         */
+        val DECORATION_SURFACES: List<UiColor> = (FOREGROUNDS + BACKGROUNDS).distinct()
 
         val backgroundWires: List<String> = BACKGROUNDS.map { it.wire }
         val foregroundWires: List<String> = FOREGROUNDS.map { it.wire }
@@ -160,6 +175,20 @@ enum class UiNodeType(val wire: String) {
      * 尺寸按容器宽高自适应（见 PixelTextMetrics），横竖屏都不会把字挤出屏幕。
      */
     PIXEL_TEXT("pixeltext"),
+
+    /**
+     * 节奏竖线：一组圆头竖线按正弦相位起伏，模拟播放器的音频律动。
+     *
+     * 纯正弦模拟，不接 Visualizer / 不申请录音权限 —— 那会多一个运行时权限弹窗，
+     * 而这里要的只是「和歌一起轻轻呼吸」的观感。
+     */
+    WAVEFORM("waveform"),
+
+    /** 唱片：圆形黑胶 + 居中封面裁切，播放时匀速旋转、暂停停在当前角度。 */
+    DISK("disk"),
+
+    /** 光波：极低强度的径向渐变光晕，按正弦缓慢呼吸。 */
+    GLOW("glow"),
     ;
 
     /** 能装子节点的容器。 */
@@ -187,6 +216,33 @@ const val UI_FLIP_DURATION_MS: Int = 350
 
 /** 像素滚动动画的时长（毫秒）：变化的字符垂直滚过一格。同样不开放给插件。 */
 const val UI_PIXEL_ROLL_DURATION_MS: Int = 180
+
+/**
+ * waveform 一个完整起伏周期的时长（毫秒）：正弦相位走完 2π。
+ *
+ * 取 2.6 秒是照着 60–90 BPM 的慢歌定的 —— 一周期略长于一拍会让竖线「跟着歌走」，
+ * 而不是像均衡器那样比歌快。插件只能按倍数缩放（speed），改不了这个基数，
+ * 免得每个插件跳出完全不同的节奏感。
+ */
+const val UI_WAVEFORM_CYCLE_MS: Int = 2600
+
+/** waveform 暂停后的静止基准高度占比：不归零，留一点呼吸感，但完全不跳。 */
+const val UI_WAVEFORM_REST_RATIO: Float = 0.18f
+
+/**
+ * waveform 播放时竖线的最低高度占比（摆动的地板）。
+ *
+ * amplitude 是「用掉多少可用摆幅」：amplitude=0 时所有竖线停在这条地板线上，
+ * amplitude=1 时从地板一直摆到容器顶。默认 0.35 因此只有约 1/4 容器高的起伏 ——
+ * 用户要的是「微微有一点」，而不是均衡器那种满幅跳动。
+ */
+const val UI_WAVEFORM_FLOOR_RATIO: Float = 0.25f
+
+/** disk 转一圈的时长（毫秒）：33 转黑胶约 1.8 秒，但屏幕上那太快，8 秒是肉眼舒服的匀速。 */
+const val UI_DISK_ROTATION_MS: Int = 8000
+
+/** glow 呼吸一个周期的时长（毫秒）：3 秒，比 waveform 更慢，两层动画不会互相打架。 */
+const val UI_GLOW_BREATH_MS: Int = 3000
 
 /** 动画描述。fade / scale / slide 是入场动画，sprite 是循环切帧。 */
 sealed class UiAnimation {
@@ -263,6 +319,22 @@ data class UiNode(
     val min: Int? = null,
     val max: Int? = null,
     val onChange: String? = null,
+    // waveform / disk / glow —— 三个装饰组件共用一组「数值参数」，
+    // 一律存成整数（万分比 / 千分比），协议层不出现浮点，解析与单测才好断言。
+    /** waveform 竖线条数（1..[PluginUiParser.MAX_WAVEFORM_BARS]）。 */
+    val bars: Int? = null,
+    /** waveform 起伏幅度，万分比 0..10000（0.35 → 3500）。 */
+    val amplitudePermyriad: Int? = null,
+    /** waveform 速度倍率，万分比 1000..50000（1.0 → 10000）。 */
+    val speedPermyriad: Int? = null,
+    /** disk 直径 dp / glow 半径 dp。 */
+    val sizeDp: Int? = null,
+    /** glow 强度，万分比 0..10000（0.25 → 2500）。 */
+    val intensityPermyriad: Int? = null,
+    /** disk 的封面来源，与 image 的 src 同一套写法（包内相对路径 / user:<设置项>）。 */
+    val coverFrom: String? = null,
+    /** disk 何时旋转；waveform 何时起伏。读 state.xxx / msg.xxx 的布尔取值。 */
+    val activeFrom: String? = null,
 )
 
 /** 解析结果：成功时 [root] 非空且 [errors] 为空；失败时 [root] 为 null，[errors] 逐条可读。 */
