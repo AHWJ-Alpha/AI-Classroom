@@ -89,7 +89,10 @@ enum class UiRadius(val wire: String) {
 
 /** 图标 token：只给宿主已确认的一组图标，插件不能自造。 */
 enum class UiIcon(val wire: String) {
-    STAR("star"), HEART("heart"), SETTINGS("settings"), PUBLIC("public"), SEND("send");
+    STAR("star"), HEART("heart"), SETTINGS("settings"), PUBLIC("public"), SEND("send"),
+
+    // 音乐插件要的五个：没有它们，播放器就只能退化成一排汉字按钮。
+    MUSIC("music"), PLAY("play"), PAUSE("pause"), PREV("prev"), NEXT("next");
 
     companion object {
         fun fromWire(wire: String): UiIcon? = entries.firstOrNull { it.wire == wire }
@@ -296,7 +299,7 @@ data class UiNode(
     val textColor: UiColor? = null,
     val weight: UiWeight? = null,
     val maxLines: Int? = null,
-    // image
+    // image：包内相对路径 / user:<设置项>，或 state.xxx / msg.xxx 运行期取值
     val src: String? = null,
     // icon
     val name: UiIcon? = null,

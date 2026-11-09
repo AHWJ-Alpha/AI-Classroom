@@ -47,9 +47,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -204,8 +209,13 @@ internal fun PluginUiOverlay(
     Box(modifier.fillMaxSize()) {
         bindings.forEach { binding ->
             val root = binding.root ?: return@forEach
-            /** 每个插件一个 key：A 插件刷新不会连带把 B 插件的节点重新组合。 */
-            key(binding.pluginId, stateVersions[binding.pluginId] ?: 0) {
+            // 每个插件一个 key：A 插件刷新不会连带把 B 插件的节点重新组合。
+            //
+            // key 里**不带 stateVersion**：带上它等于每次刷新都把整棵子树销毁重建，
+            // 插件的 image 每秒重新解码（封面闪一下）、waveform / disk 的动画相位每秒归零
+            // （ui_ticker 一秒一次，看上去就是「每秒抖一下」）。state 变更是快照读，
+            // PaintNode 的 paint 参数变了自然会重组 —— 和全屏层那条注释是同一个道理。
+            key(binding.pluginId) {
                 Box(Modifier.align(alignmentOf(root.anchor)), contentAlignment = Alignment.TopStart) {
                     PaintNode(
                         root,
@@ -243,7 +253,7 @@ internal fun PluginUiMessageTail(
     Column(modifier.fillMaxWidth().padding(top = DesignTokens.Spacing.Xs)) {
         bindings.forEach { binding ->
             val root = binding.root ?: return@forEach
-            key(binding.pluginId, stateVersions[binding.pluginId] ?: 0) {
+            key(binding.pluginId) {
                 PaintNode(
                     root,
                     Paint(
@@ -278,7 +288,7 @@ internal fun PluginUiTopBarActions(
         val root = binding.root
         val entry = binding.entry
         when {
-            root != null -> key(binding.pluginId, stateVersions[binding.pluginId] ?: 0) {
+            root != null -> key(binding.pluginId) {
                 PaintNode(
                     root,
                     Paint(
@@ -582,15 +592,19 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
 
         UiNodeType.IMAGE -> {
             val sprite = node.animation as? UiAnimation.Sprite
-            val path = if (sprite != null) spriteFrame(sprite) else node.src
-            // user:<key> 指向用户在设置页选中的图片（已复制进插件私有目录），
-            // 其余一律按包内相对路径解析 —— 插件拿不到这两条以外的任何文件。
+            // user:<key> 指向用户在设置页选中的图片（已复制进插件私有目录），state.xxx 是运行期取值
+            // （播放器封面），其余一律按包内相对路径解析 —— 插件拿不到这三条以外的任何文件。
+            val path = if (sprite != null) spriteFrame(sprite) else imagePathOf(node, paint)
             val bitmap = rememberAsset(paint.assets, path, paint.userImages)
             if (bitmap != null) {
                 Image(
                     bitmap = bitmap,
                     contentDescription = null,
-                    modifier = modifier.then(if (node.width == null) Modifier.size(48.dp) else Modifier),
+                    modifier = modifier
+                        .then(if (node.width == null) Modifier.size(48.dp) else Modifier)
+                        // 写了 radius 就按圆角裁：radius 在协议里对所有组件都是同一个意思，
+                        // 以前只有 card / bubble 有形状，image 上写了等于静默失效（封面只能是直角方块）。
+                        .then(node.radius?.let { Modifier.clip(shapeOf(it)) } ?: Modifier),
                     contentScale = contentScaleOf(paint, path),
                 )
             }
@@ -1477,6 +1491,11 @@ private fun iconOf(icon: UiIcon): ImageVector = when (icon) {
     UiIcon.SETTINGS -> Icons.Default.Settings
     UiIcon.PUBLIC -> Icons.Default.Public
     UiIcon.SEND -> Icons.Default.Send
+    UiIcon.MUSIC -> Icons.Default.MusicNote
+    UiIcon.PLAY -> Icons.Default.PlayArrow
+    UiIcon.PAUSE -> Icons.Default.Pause
+    UiIcon.PREV -> Icons.Default.SkipPrevious
+    UiIcon.NEXT -> Icons.Default.SkipNext
 }
 
 private fun alignmentOf(anchor: UiAnchor?): Alignment = when (anchor) {
@@ -1528,7 +1547,10 @@ private fun childPaint(paint: Paint, parent: UiNode): Paint =
 private fun backgroundModifier(node: UiNode, paint: Paint): Modifier {
     val color = node.background ?: return Modifier
     if (color == UiColor.TRANSPARENT) return Modifier
-    return Modifier.background(colorOf(color, paint.palette, paint.aod))
+    val fill = Modifier.background(colorOf(color, paint.palette, paint.aod))
+    // 容器上的 radius 同样要生效：以前只有 card / bubble 自带形状，
+    // box 上写 radius 是静默失效的（封面占位块就只能是个直角方块）。
+    return node.radius?.let { Modifier.clip(shapeOf(it)).then(fill) } ?: fill
 }
 
 private fun offsetModifier(node: UiNode): Modifier =
@@ -1601,8 +1623,20 @@ private fun resolveHostMediaAsset(dir: File?, path: String): File? {
     return if (file.isFile) file else null
 }
 
+/**
+ * image 的 src 现取一次值：包内相对路径 / user:<设置项> 原样返回，
+ * `state.xxx` / `msg.xxx` 取当前 state 里的字符串（封面路径）。
+ */
+private fun imagePathOf(node: UiNode, paint: Paint): String? {
+    val src = node.src ?: return null
+    if (!src.startsWith("state.") && !src.startsWith("msg.")) return src
+    return valueOf(src, paint)?.toString()?.takeIf { it.isNotBlank() }
+}
+
 /** 裁切方式：用户在设置里选「剪裁 / 适应 / 填充」，user: 图片默认按剪裁铺满。 */
 private fun contentScaleOf(paint: Paint, path: String?): ContentScale {
+    // 宿主刚落盘的封面是绝对路径：正方形封面框里要铺满，Fit 会在两边留黑边。
+    if (path != null && path.startsWith("/")) return ContentScale.Crop
     if (path == null || !path.startsWith(USER_IMAGE_PREFIX)) return ContentScale.Fit
     val key = path.removePrefix(USER_IMAGE_PREFIX)
     return when (paint.userImageFit[key]) {

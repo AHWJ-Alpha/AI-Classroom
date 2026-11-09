@@ -1,5 +1,9 @@
 package com.aiclassroom.app.web
 
+import android.app.Activity
+import android.content.ContextWrapper
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
@@ -19,6 +23,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.CancellationException
 
@@ -33,6 +39,16 @@ import java.util.concurrent.CancellationException
  * 所以整段都跑在 [Dispatchers.Main] 上，靠挂起（delay / await）让出主线程，
  * 不做任何阻塞等待；真正耗 CPU 的 PNG 编码由调用方挪回 IO 线程。
  */
+/** 从任意 context 往上找 Activity（挂 decorView 要用它）。 */
+private fun Context.findActivity(): Activity? {
+    var current: Context? = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return this as? Activity
+}
+
 class WebCaptureEngine(private val context: Context) {
 
     /**
@@ -62,24 +78,47 @@ class WebCaptureEngine(private val context: Context) {
             try {
                 val view = newWebView()
                 webView = view
-                view.webViewClient = loadClient(target, loaded)
-                view.measure(
-                    View.MeasureSpec.makeMeasureSpec(safeWidth, View.MeasureSpec.EXACTLY),
-                    View.MeasureSpec.makeMeasureSpec(safeHeight, View.MeasureSpec.EXACTLY),
-                )
-                view.layout(0, 0, safeWidth, safeHeight)
-                view.loadUrl(target)
+                // 关键：先临时挂到窗口上再 load。
+                // 未 attach 的 WebView 在某些 ROM / WebView 实现上不会真正发起网络加载，
+                // onPageFinished 永远不来 —— 实测模拟器上就是这样稳定超时的。
+                val detach = attachForLoad(view, safeWidth, safeHeight)
+                try {
+                    view.webViewClient = loadClient(target, loaded)
+                    view.measure(
+                        View.MeasureSpec.makeMeasureSpec(safeWidth, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(safeHeight, View.MeasureSpec.EXACTLY),
+                    )
+                    view.layout(0, 0, safeWidth, safeHeight)
+                    Log.i(TAG, "准备加载 " + target + " | attached=" + view.isAttachedToWindow +
+                        " size=" + view.width + "x" + view.height +
+                        " visibility=" + view.visibility +
+                        " wv=" + runCatching { WebView.getCurrentWebViewPackage()?.versionName }.getOrNull())
+                    view.loadUrl(target)
+                    Log.i(TAG, "loadUrl 已调用 " + target)
 
-                val loadError = withTimeoutOrNull(LOAD_TIMEOUT_MS) { loaded.await() }
-                    ?: return@withTimeoutOrNull Result.failure<T>(
+                // 注意：这里**不能**写 `withTimeoutOrNull(...) { loaded.await() } ?: 超时`。
+                // loaded 是 CompletableDeferred<String?>，成功时 complete(null)，await() 返回 null ——
+                // 与「withTimeoutOrNull 超时返回 null」撞在一起，导致每一次成功加载都被判成超时。
+                // 实测就是它把 example.com / bing.com 全判死（日志里 onPageFinished 明明已经 progress=100）。
+                // 改用 withTimeout + TimeoutCancellationException：只有真超时才抛异常，null 只剩「成功无错误」一个含义。
+                val loadError: String? = try {
+                    withTimeout(LOAD_TIMEOUT_MS) { loaded.await() }
+                } catch (timeout: TimeoutCancellationException) {
+                    return@withTimeoutOrNull Result.failure<T>(
                         IllegalStateException("加载超时（" + (LOAD_TIMEOUT_MS / 1000) + " 秒内没有触发页面加载完成）：" + target)
                     )
-                if (loadError != null) return@withTimeoutOrNull Result.failure(IllegalStateException(loadError))
+                }
+                if (!loadError.isNullOrBlank()) {
+                    return@withTimeoutOrNull Result.failure(IllegalStateException(loadError))
+                }
 
                 // 页面 load 完成 ≠ 渲染完成：React / Vue 那一挂还要再跑一会儿才把内容挂上去。
                 if (safeWait > 0) delay(safeWait)
 
-                Result.success(block(PageHandle(view, safeWidth, safeHeight)))
+                    Result.success(block(PageHandle(view, safeWidth, safeHeight)))
+                } finally {
+                    detach()
+                }
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (throwable: Throwable) {
@@ -150,6 +189,48 @@ class WebCaptureEngine(private val context: Context) {
         }
     }
 
+    /**
+     * 把 WebView 临时挂到 Activity 的 decorView 上，返回一个「摘下来」的回调。
+     *
+     * 为什么必须挂：WebView 只有真正 attach 到窗口后才会走完整加载流程；
+     * 纯离屏（new 出来只 measure/layout）在部分实现上 onPageFinished 永远不回调，
+     * 表现就是「加载超时（12 秒内没有触发页面加载完成）」。
+     *
+     * 为了不干扰界面：容器与 WebView 都是 0x0、INVISIBLE，用完立刻移除。
+     * 拿不到 Activity（Application context）时退化为不挂 —— 那种情况下大概率仍会超时，
+     * 但至少不会崩。
+     */
+    private fun attachForLoad(view: WebView, width: Int, height: Int): () -> Unit {
+        val activity = context.findActivity() ?: return {}
+        val root = activity.window?.decorView as? ViewGroup ?: return {}
+        return runCatching {
+            val holder = FrameLayout(activity)
+            // 尺寸必须是**真实的截图尺寸**，不能用 0x0：
+            // 0x0 的 WebView 虽然能加载（onPageFinished 会来），但渲染表面是空的，
+            // draw 到 Bitmap 上只有一片白（实测过：1080x1920 全白，只有一种颜色）。
+            holder.addView(view, ViewGroup.LayoutParams(width, height))
+            root.addView(holder, ViewGroup.LayoutParams(width, height))
+            // 留在屏幕内（移出屏幕外会导致不再加载/渲染，实测会退回「加载超时」），
+            // 用近乎全透明把它藏起来：alpha=0 的 View 仍会走绘制流程，但用户看不见。
+            // 顺带把它压到最底层，避免盖住界面交互。
+            holder.alpha = 0.01f
+            holder.isClickable = false
+            holder.isFocusable = false
+            val detach: () -> Unit = {
+                runCatching {
+                    holder.removeView(view)
+                    root.removeView(holder)
+                }
+                Unit
+            }
+            detach
+        }.getOrElse {
+            Log.w(TAG, "临时挂载 WebView 失败（按离屏方式尝试）：" + it.message)
+            val noop: () -> Unit = {}
+            noop
+        }
+    }
+
     /** 每次现建一个 WebView：不复用就不会把上一页的 cookie / JS 状态带进下一次操作。 */
     @SuppressLint("SetJavaScriptEnabled")
     private fun newWebView(): WebView {
@@ -166,12 +247,20 @@ class WebCaptureEngine(private val context: Context) {
         settings.saveFormData = false
         settings.setGeolocationEnabled(false)
         view.setBackgroundColor(Color.WHITE)
+        // 软件渲染层：硬件加速下 WebView 的 draw(canvas) 常常只画出一片白
+        // （RenderNode 的内容不进 Bitmap），所以截图路径必须强制走软件层。
+        view.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
         return view
     }
 
     private fun loadClient(target: String, loaded: CompletableDeferred<String?>): WebViewClient =
         object : WebViewClient() {
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                Log.i(TAG, "onPageStarted " + url)
+            }
+
             override fun onPageFinished(view: WebView?, loadedUrl: String?) {
+                Log.i(TAG, "onPageFinished " + loadedUrl + " progress=" + (view?.progress ?: -1))
                 loaded.complete(null)
             }
 

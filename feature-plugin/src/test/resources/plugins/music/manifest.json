@@ -1,0 +1,33 @@
+{
+  "id": "music",
+  "name": "音乐",
+  "version": "1.0.0",
+  "description": "平时是小悬浮窗：封面 + 歌名 + 进度；点一下展开成胶囊，可以直接播放 / 暂停 / 上一首 / 下一首",
+  "author": "AI Classroom",
+  "minApiVersion": 1,
+  "permissions": [
+    "media.read",
+    "media.control",
+    "storage",
+    "ui.fullscreen"
+  ],
+  "extensions": [
+    {
+      "type": "bar_button",
+      "slot": "TOP_BAR_ACTIONS",
+      "label": "音乐",
+      "config": "btn.json"
+    },
+    {
+      "type": "ui_overlay",
+      "slot": "GLOBAL_OVERLAY",
+      "config": "root.json",
+      "provider": "provideState"
+    },
+    {
+      "type": "ui_ticker",
+      "intervalMs": 1000,
+      "entry": "onTick"
+    }
+  ]
+}

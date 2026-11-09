@@ -540,6 +540,13 @@ object PluginUiParser {
      * `user:` 指向用户在设置页选的图片 —— 插件只写一个键名，宿主负责把文件找出来，
      * 脚本拿不到、也不需要处理任何二进制。
      */
+    /**
+     * 图片来源。除了包内相对路径与 `user:<设置项>`，还接受 **运行期取值表达式**（`state.xxx` / `msg.xxx`）：
+     * 播放器封面是随歌变的（`state.artworkPath`），写死一张显然不够用。
+     *
+     * 之所以不放开任意绝对路径：取值表达式只能来自插件自己声明的 state，渲染器还会把结果再夹在
+     * 宿主封面目录内（见 PluginUiRenderer.rememberAsset），插件拿不到别的文件。
+     */
     private fun imageSource(
         node: JsonNode.Obj,
         field: String,
@@ -547,6 +554,7 @@ object PluginUiParser {
         errors: MutableList<String>,
     ): String? {
         val value = stringField(node, field, path, errors) ?: return null
+        if (VALUE_EXPRESSION.matches(value)) return value
         if (value.startsWith(USER_IMAGE_PREFIX)) {
             val key = value.removePrefix(USER_IMAGE_PREFIX)
             if (key.isBlank()) {

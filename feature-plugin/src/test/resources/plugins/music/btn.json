@@ -1,0 +1,20 @@
+{
+  "type": "row",
+  "gap": 4,
+  "onTap": "onToggleShow",
+  "children": [
+    {
+      "type": "icon",
+      "name": "music",
+      "size": 18,
+      "color": "primary"
+    },
+    {
+      "type": "text",
+      "text": "音乐",
+      "size": "caption",
+      "color": "primary",
+      "weight": "bold"
+    }
+  ]
+}
