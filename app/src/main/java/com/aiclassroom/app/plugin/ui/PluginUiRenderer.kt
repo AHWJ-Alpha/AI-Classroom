@@ -68,7 +68,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -169,6 +174,13 @@ private class Paint(
      * 否则浅色主题下会变成「深字压在深底上」，整屏什么都看不见。
      */
     val aod: Boolean = false,
+    /**
+     * 从祖先继承来的水平对齐。
+     *
+     * 拖动把节点吸附到九宫格的哪一格，就按那里的对齐排文字 ——「位置即对齐」。
+     * 节点自己写了 align 时以自己为准，没写才用这个继承值。
+     */
+    val inheritedAlign: UiAlign? = null,
 ) {
     /** 进入 / 离开一个容器的背景时，把「我在息屏底上」这个事实传给它的子树。 */
     fun withBackground(background: UiColor?): Paint {
@@ -178,18 +190,106 @@ private class Paint(
             else -> false
         }
         if (next == aod) return this
-        return Paint(
-            pluginId = pluginId,
-            state = state,
-            message = message,
-            assets = assets,
-            palette = palette,
-            onEvent = onEvent,
-            userImages = userImages,
-            userImageFit = userImageFit,
-            aod = next,
-        )
+        return copy(aod = next)
     }
+
+    /** 把「这一层按哪种水平对齐排」传给子树（由可拖动节点的吸附结果决定）。 */
+    fun withAlign(align: UiAlign?): Paint = if (align == inheritedAlign) this else copy(inheritedAlign = align)
+
+    private fun copy(aod: Boolean = this.aod, inheritedAlign: UiAlign? = this.inheritedAlign): Paint = Paint(
+        pluginId = pluginId,
+        state = state,
+        message = message,
+        assets = assets,
+        palette = palette,
+        onEvent = onEvent,
+        userImages = userImages,
+        userImageFit = userImageFit,
+        aod = aod,
+        inheritedAlign = inheritedAlign,
+    )
+}
+
+/**
+ * 松手后吸附到九宫格的哪一格。
+ *
+ * 以「拖了多远」判断方向：超过容器 1/6 就算跨了一格，否则留在中间。
+ * 用相对位移而不是绝对坐标，是因为锚点本身就承载了基准位置 ——
+ * 从 TOP_LEFT 往右拖过 1/6 宽就是 TOP_CENTER，再拖就是 TOP_RIGHT。
+ */
+private fun snapAnchorTo(base: UiAnchor?, offset: IntOffset, width: Int, height: Int): UiAnchor {
+    val startRow = when (base) {
+        UiAnchor.TOP_LEFT, UiAnchor.TOP_CENTER, UiAnchor.TOP_RIGHT -> 0
+        UiAnchor.CENTER_LEFT, UiAnchor.CENTER, UiAnchor.CENTER_RIGHT -> 1
+        else -> 2
+    }
+    val startCol = when (base) {
+        UiAnchor.TOP_LEFT, UiAnchor.CENTER_LEFT, UiAnchor.BOTTOM_LEFT -> 0
+        UiAnchor.TOP_CENTER, UiAnchor.CENTER, UiAnchor.BOTTOM_CENTER -> 1
+        else -> 2
+    }
+    val thresholdX = (width / 6).coerceAtLeast(1)
+    val thresholdY = (height / 6).coerceAtLeast(1)
+    val col = (startCol + offset.x / thresholdX).coerceIn(0, 2)
+    val row = (startRow + offset.y / thresholdY).coerceIn(0, 2)
+    return GRID9[row * 3 + col]
+}
+
+/**
+ * 可拖动的子节点。
+ *
+ * 拖动状态只活在这一个节点上（remember 以节点路径为 key），不影响兄弟节点。
+ * 松手吸附到九宫格后，位置改由 anchor 表达、offset 归零 —— 于是「位置即对齐」：
+ * 落在左边，它内部的文字就左对齐。
+ */
+@Composable
+private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
+    var anchor by remember(node.path) { mutableStateOf(node.anchor) }
+    var offset by remember(node.path) { mutableStateOf(IntOffset(node.offsetX, node.offsetY)) }
+    // 外层管锚点（吸附结果），内层管拖动偏移。
+    // constraints 只在 BoxWithConstraints 的 content 里可见，所以 pointerInput 放在内层 Box 上。
+    BoxWithConstraints(Modifier.align(alignmentOf(anchor))) {
+        val boxWidth = constraints.maxWidth
+        val boxHeight = constraints.maxHeight
+        Box(
+            Modifier
+                .offset { offset }
+                .pointerInput(node.path, node.snapTo) {
+                    detectDragGestures(
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            offset = IntOffset(
+                                (offset.x + dragAmount.x).roundToInt(),
+                                (offset.y + dragAmount.y).roundToInt(),
+                            )
+                        },
+                        onDragEnd = {
+                            if (node.snapTo == "grid9") {
+                                anchor = snapAnchorTo(anchor, offset, boxWidth, boxHeight)
+                            }
+                            offset = IntOffset.Zero
+                        },
+                    )
+                },
+        ) {
+            PaintNode(node, paint.withAlign(anchor.horizontalAlign()))
+        }
+    }
+}
+
+/** 九宫格顺序：行优先。 */
+private val GRID9 = listOf(
+    UiAnchor.TOP_LEFT, UiAnchor.TOP_CENTER, UiAnchor.TOP_RIGHT,
+    UiAnchor.CENTER_LEFT, UiAnchor.CENTER, UiAnchor.CENTER_RIGHT,
+    UiAnchor.BOTTOM_LEFT, UiAnchor.BOTTOM_CENTER, UiAnchor.BOTTOM_RIGHT,
+)
+
+/** 九宫格锚点 → 水平对齐（位置即对齐）。 */
+private fun UiAnchor?.horizontalAlign(): UiAlign? = when (this) {
+    UiAnchor.TOP_LEFT, UiAnchor.CENTER_LEFT, UiAnchor.BOTTOM_LEFT -> UiAlign.START
+    UiAnchor.TOP_CENTER, UiAnchor.CENTER, UiAnchor.BOTTOM_CENTER -> UiAlign.CENTER
+    UiAnchor.TOP_RIGHT, UiAnchor.CENTER_RIGHT, UiAnchor.BOTTOM_RIGHT -> UiAlign.END
+    null -> null
 }
 
 /** GLOBAL_OVERLAY：铺满父容器但不拦截触摸，每个插件按自己的 anchor / offset 定位。 */
@@ -216,7 +316,43 @@ internal fun PluginUiOverlay(
             // （ui_ticker 一秒一次，看上去就是「每秒抖一下」）。state 变更是快照读，
             // PaintNode 的 paint 参数变了自然会重组 —— 和全屏层那条注释是同一个道理。
             key(binding.pluginId) {
-                Box(Modifier.align(alignmentOf(root.anchor)), contentAlignment = Alignment.TopStart) {
+                // 可拖动节点的位置状态：拖动中累加 offset，松手吸附到九宫格后归零。
+                // 吸附的是**锚点**而不是像素：落哪边就按哪边对齐，于是「位置即对齐」，
+                // 不需要再单独配置一个 align 项。
+                var dragAnchor by remember(binding.pluginId) { mutableStateOf(root.anchor) }
+                var dragOffset by remember(binding.pluginId) {
+                    mutableStateOf(IntOffset(root.offsetX, root.offsetY))
+                }
+                Box(
+                    Modifier
+                        .align(alignmentOf(dragAnchor))
+                        .offset { dragOffset }
+                        .then(
+                            if (!root.draggable) Modifier else Modifier.pointerInput(root.draggable, root.snapTo) {
+                                android.util.Log.i("PluginDrag", "${binding.pluginId} pointerInput 已装载 draggable=${root.draggable} snapTo=${root.snapTo}")
+                                detectDragGestures(
+                                    onDrag = { change, dragAmount ->
+                                        android.util.Log.i("PluginDrag", "${binding.pluginId} drag dx=${dragAmount.x} dy=${dragAmount.y}")
+                                        change.consume()
+                                        dragOffset = IntOffset(
+                                            (dragOffset.x + dragAmount.x).roundToInt(),
+                                            (dragOffset.y + dragAmount.y).roundToInt(),
+                                        )
+                                    },
+                                    onDragEnd = {
+                                        android.util.Log.i("PluginDrag", "${binding.pluginId} dragEnd offset=$dragOffset")
+                                        if (root.snapTo == "grid9") {
+                                            val snapped = snapAnchorTo(dragAnchor, dragOffset, size.width, size.height)
+                                            dragAnchor = snapped
+                                        }
+                                        // 吸附后 offset 归零：位置完全由锚点表达，不会再累积偏移。
+                                        dragOffset = IntOffset.Zero
+                                    },
+                                )
+                            }
+                        ),
+                    contentAlignment = Alignment.TopStart,
+                ) {
                     PaintNode(
                         root,
                         Paint(
@@ -228,6 +364,8 @@ internal fun PluginUiOverlay(
                             onEvent = onEvent,
                             userImages = userImages[binding.pluginId].orEmpty(),
                             userImageFit = userImageFits[binding.pluginId].orEmpty(),
+                            // 位置即对齐：把吸附锚点的水平分量作为整棵子树的默认对齐。
+                            inheritedAlign = dragAnchor.horizontalAlign(),
                         ),
                     )
                 }
@@ -341,17 +479,19 @@ internal fun PluginUiFullscreen(
         userImages = userImages,
         userImageFit = userImageFit,
     )
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(palette.page)
-            .clickable(
-                interactionSource = MutableInteractionSource(),
-                indication = null,
-                // 全屏层自己吃掉点击：它盖住了整个课堂页，穿透会让用户误触下面的消息卡片。
-                onClick = {},
-            ),
-    ) {
+    Box(Modifier.fillMaxSize().background(palette.page)) {
+        // 背景层单独吃点击：全屏层盖住整个课堂页，不挡就会误触下面的消息卡片。
+        //
+        // 这里**不能用 Modifier.clickable**：clickable 会把按下事件整段消费掉，
+        // 于是子节点里的 detectDragGestures 永远收不到拖动手势（实测拖不动就是这个原因）。
+        // 换成 detectTapGestures —— 它只在「点一下」时消费，拖动时把事件让给子节点。
+        Box(
+            Modifier
+                .matchParentSize()
+                .pointerInput(Unit) {
+                    detectTapGestures { /* 吃掉点击，不影响拖动 */ }
+                },
+        )
         Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             // 闪烁修复：key 只认 pluginId，**不要带上 stateVersion**。
             // 带上它等于每次 tick 都把整棵渲染树销毁重建（图片重新解码、动画重新开始），
@@ -493,7 +633,13 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
             // 居中由父容器的 anchor 决定；这里只负责子项对齐，不再擅自 fillMaxWidth ——
             // 那会把 Row 里的卡片撑满整行，分钟/秒被挤出可视区。
             modifier.then(backgroundModifier(node, paint)),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            // 子项水平对齐跟随「位置即对齐」的继承值：拖到左边就左对齐、拖到右边就右对齐。
+            // 没继承值时退回居中（这是 app 里纵向容器一贯的默认）。
+            horizontalAlignment = when (paint.inheritedAlign) {
+                UiAlign.START -> Alignment.Start
+                UiAlign.END -> Alignment.End
+                else -> Alignment.CenterHorizontally
+            },
             // 高度撑满的列默认垂直居中：协议里 height:fill 的列，语义就是「这一列占满这块地方」，
             // 内容贴着顶边摆会让上下留白完全失衡（息屏钟要求的是居中偏上的对称留白）。
             verticalArrangement = when {
@@ -534,8 +680,14 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
             node.children.forEach { child ->
                 // 子节点的 anchor 在 box 里同样有效：铺满背景的 image 没有 anchor，
                 // 保持左上角对齐；写了 anchor 的（居中时钟、底部按钮）按锚点摆。
-                val alignment = child.anchor?.let { alignmentOf(it) } ?: Alignment.TopStart
-                Box(Modifier.align(alignment)) { PaintNode(child, childPaint(paint, node)) }
+                val childPaint = childPaint(paint, node)
+                if (child.draggable) {
+                    // 可拖动子节点：位置由吸附出来的 anchor 决定，文字对齐跟着它走。
+                    DraggableChild(child, childPaint)
+                } else {
+                    val alignment = child.anchor?.let { alignmentOf(it) } ?: Alignment.TopStart
+                    Box(Modifier.align(alignment)) { PaintNode(child, childPaint) }
+                }
             }
         }
 
@@ -578,15 +730,23 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
 
         UiNodeType.TEXT -> {
             val text = textOf(node, paint) ?: return
+            // 对齐：节点自己写了就用自己；没写就跟随拖动吸附出来的继承值。
+            // 这一行就是「位置即对齐」的落点 —— 时钟拖到左边自动左对齐。
+            val align = when (paint.inheritedAlign) {
+                UiAlign.START -> TextAlign.Start
+                UiAlign.END -> TextAlign.End
+                else -> TextAlign.Center
+            }
             Text(
                 text = text,
-                modifier = modifier,
+                modifier = if (paint.inheritedAlign != null) modifier.fillMaxWidth() else modifier,
                 color = colorOf(node.textColor ?: UiColor.ON_SURFACE, paint.palette, paint.aod),
                 fontSize = fontSizeOf(node.textSize),
                 lineHeight = lineHeightOf(node.textSize),
                 fontWeight = if (node.weight == UiWeight.BOLD) DesignTokens.Weight.Bold else DesignTokens.Weight.Regular,
                 maxLines = node.maxLines ?: Int.MAX_VALUE,
                 overflow = TextOverflow.Ellipsis,
+                textAlign = align,
             )
         }
 

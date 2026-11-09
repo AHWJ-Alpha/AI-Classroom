@@ -290,6 +290,23 @@ data class UiNode(
     val anchor: UiAnchor? = null,
     val offsetX: Int = 0,
     val offsetY: Int = 0,
+
+    /**
+     * 这个节点可以被手指拖动。
+     *
+     * 拖动结果会**替换** [anchor] / [offsetX] / [offsetY]，并持久化到宿主 prefs
+     * （键由 pluginId + 节点路径组成），下次启动仍在原位。
+     * 只有 GLOBAL_OVERLAY / FULLSCREEN 这类「自由摆放」的插槽里才有意义。
+     */
+    val draggable: Boolean = false,
+
+    /**
+     * 松手后的吸附方式：目前只认 "grid9" —— 吸附到九宫格里最近的一格。
+     *
+     * 吸附的是**锚点**，不是像素坐标：拖到左上就变成 TOP_LEFT，拖到正中就变成 CENTER。
+     * 于是「位置即对齐」—— 文字的左/中/右对齐不需要额外配置项，落在哪边就按哪边排。
+     */
+    val snapTo: String? = null,
     val padding: Int? = null,
     val gap: Int? = null,
     val width: UiLength? = null,

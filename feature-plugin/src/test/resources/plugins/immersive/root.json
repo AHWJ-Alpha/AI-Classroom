@@ -30,7 +30,10 @@
           "size": "caption",
           "color": "muted"
         }
-      ]
+      ],
+      "draggable": true,
+      "snapTo": "grid9",
+      "padding": 20
     },
     {
       "type": "column",
@@ -62,15 +65,26 @@
     {
       "type": "row",
       "anchor": "bottom_center",
-      "offsetY": -80,
+      "offsetY": -60,
       "gap": 10,
       "visibleWhen": "state.scene",
       "children": [
         {
-          "type": "button",
-          "label": "切换形态",
-          "style": "secondary",
-          "onTap": "onSwitch"
+          "type": "box",
+          "width": 40,
+          "height": 40,
+          "radius": "full",
+          "background": "surfaceVariant",
+          "onTap": "onSwitch",
+          "children": [
+            {
+              "type": "icon",
+              "name": "public",
+              "size": 20,
+              "color": "muted",
+              "anchor": "center"
+            }
+          ]
         }
       ]
     }

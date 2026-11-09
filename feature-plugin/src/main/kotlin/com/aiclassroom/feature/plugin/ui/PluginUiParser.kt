@@ -82,7 +82,9 @@ object PluginUiParser {
     private val COMMON_FIELDS: Set<String> = setOf(
         "type", "anchor", "offsetX", "offsetY", "padding", "gap",
         "width", "height", "visibleWhen", "background", "radius", "animation",
-        "onTap", "onLongPress",
+        "onTap", "onLongPress", "onDoubleTap",
+        // 自由摆放：可拖动 + 松手吸附到九宫格（位置即对齐）。
+        "draggable", "snapTo",
     )
 
     /** 每种组件允许的字段：多写一个未知字段会报错，避免拼错的字段静默失效。 */
@@ -334,11 +336,27 @@ object PluginUiParser {
             } else {
                 null
             },
+            // 可拖动 + 吸附：只认 grid9（吸附到九宫格最近一格），写别的值直接报错。
+            draggable = booleanField(node, "draggable", path, errors) ?: false,
+            snapTo = node.fields["snapTo"]?.asStringOrNull?.trim()?.let { raw ->
+                when (raw) {
+                    "" -> null
+                    "grid9" -> "grid9"
+                    else -> {
+                        errors += path + ".snapTo 只能是 grid9，实际 '" + raw.take(20) + "'"
+                        null
+                    }
+                }
+            },
         ).also { requireFields(it, node, path, errors) }
     }
 
     /** 各类型自己的必填项与取值约束（UI 渲染不出来的组合在这里就拦掉）。 */
     private fun requireFields(node: UiNode, source: JsonNode.Obj, path: String, errors: MutableList<String>) {
+        // 吸附必须配合拖动：只写 snapTo 不写 draggable 等于什么都没发生，早点报错。
+        if (node.snapTo != null && !node.draggable) {
+            errors += path + ".snapTo 需要同时设置 draggable: true"
+        }
         when (node.type) {
             UiNodeType.TEXT -> {
                 if (node.text == null && node.textFrom == null) errors += path + " 必须提供 text 或 textFrom"
