@@ -1,0 +1,47 @@
+{
+  "id": "immersive",
+  "name": "沉浸模式",
+  "version": "3.0.0",
+  "description": "全屏风景 / 息屏像素钟两种形态，一个键切换",
+  "author": "",
+  "minApiVersion": 1,
+  "permissions": [
+    "ui.fullscreen",
+    "storage.readImage",
+    "storage"
+  ],
+  "settings": [
+    {
+      "key": "bgImage",
+      "label": "背景照片",
+      "type": "image",
+      "required": false,
+      "description": "留空使用内置渐变背景"
+    },
+    {
+      "key": "autoDim",
+      "label": "像素钟夜间自动压暗",
+      "type": "boolean",
+      "default": true
+    }
+  ],
+  "extensions": [
+    {
+      "type": "bar_button",
+      "slot": "TOP_BAR_ACTIONS",
+      "label": "沉浸",
+      "config": "btn.json"
+    },
+    {
+      "type": "ui_overlay",
+      "slot": "FULLSCREEN",
+      "config": "root.json",
+      "provider": "provideState"
+    },
+    {
+      "type": "ui_ticker",
+      "intervalMs": 1000,
+      "entry": "onTick"
+    }
+  ]
+}

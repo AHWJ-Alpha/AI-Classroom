@@ -1,124 +1,25 @@
 {
   "type": "column",
-  "background": "surface",
+  "background": "screen",
   "width": "fill",
   "height": "fill",
+  "padding": 24,
+  "gap": 10,
   "children": [
     {
-      "type": "spacer",
-      "height": 200
+      "type": "pixeltext",
+      "textFrom": "state.time",
+      "color": "onSurface",
+      "scanlines": true,
+      "glow": true,
+      "border": "dashed",
+      "borderColor": "outline"
     },
     {
-      "type": "row",
-      "anchor": "center",
-      "gap": 10,
-      "children": [
-        {
-          "type": "card",
-          "background": "surfaceVariant",
-          "radius": "panel",
-          "padding": 20,
-          "children": [
-            {
-              "type": "column",
-              "gap": 2,
-              "children": [
-                {
-                  "type": "text",
-                  "textFrom": "state.hh",
-                  "size": "title",
-                  "color": "onSurface",
-                  "weight": "bold"
-                },
-                {
-                  "type": "text",
-                  "text": "时",
-                  "size": "caption",
-                  "color": "muted"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "type": "text",
-          "text": ":",
-          "size": "title",
-          "color": "muted"
-        },
-        {
-          "type": "card",
-          "background": "surfaceVariant",
-          "radius": "panel",
-          "padding": 20,
-          "children": [
-            {
-              "type": "column",
-              "gap": 2,
-              "children": [
-                {
-                  "type": "text",
-                  "textFrom": "state.mm",
-                  "size": "title",
-                  "color": "onSurface",
-                  "weight": "bold"
-                },
-                {
-                  "type": "text",
-                  "text": "分",
-                  "size": "caption",
-                  "color": "muted"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "type": "card",
-          "background": "surfaceVariant",
-          "radius": "control",
-          "padding": 10,
-          "children": [
-            {
-              "type": "text",
-              "textFrom": "state.ss",
-              "size": "body",
-              "color": "primary",
-              "weight": "bold"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "type": "column",
-      "anchor": "center",
-      "gap": 4,
-      "children": [
-        {
-          "type": "text",
-          "textFrom": "state.date",
-          "size": "subtitle",
-          "color": "onSurface"
-        },
-        {
-          "type": "text",
-          "textFrom": "state.period",
-          "size": "caption",
-          "color": "muted"
-        }
-      ]
-    },
-    {
-      "type": "spacer",
-      "height": 300
-    },
-    {
-      "type": "text",
-      "text": "长按退出 · 右上角 ✕ 也可退出",
-      "size": "caption",
-      "color": "muted",
-      "anchor": "center"
+      "type": "pixeltext",
+      "textFrom": "state.dateDigits",
+      "pixelSize": 4,
+      "color": "muted"
     }
   ]
 }

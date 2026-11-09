@@ -17,16 +17,25 @@ enum class UiColor(val wire: String) {
     MUTED("muted"),
     DANGER("danger"),
     ON_SURFACE("onSurface"),
+
+    /** 分隔线 / 描边色：像素虚线边框这种「低对比度装饰」用它。 */
+    OUTLINE("outline"),
+
+    /**
+     * 息屏底色（近黑）。息屏时钟要的是「关掉屏幕还剩一点光」的那种黑，
+     * 面板色 surface 在这种场景下偏亮，会把像素字衬成灰蒙蒙一片。
+     */
+    SCREEN("screen"),
     ;
 
     companion object {
         fun fromWire(wire: String): UiColor? = entries.firstOrNull { it.wire == wire }
 
         /** background 允许的取值。 */
-        val BACKGROUNDS: List<UiColor> = listOf(SURFACE, SURFACE_VARIANT, PRIMARY, TRANSPARENT)
+        val BACKGROUNDS: List<UiColor> = listOf(SURFACE, SURFACE_VARIANT, PRIMARY, TRANSPARENT, SCREEN)
 
         /** color（前景）允许的取值。 */
-        val FOREGROUNDS: List<UiColor> = listOf(PRIMARY, MUTED, DANGER, ON_SURFACE)
+        val FOREGROUNDS: List<UiColor> = listOf(PRIMARY, MUTED, DANGER, ON_SURFACE, OUTLINE)
 
         val backgroundWires: List<String> = BACKGROUNDS.map { it.wire }
         val foregroundWires: List<String> = FOREGROUNDS.map { it.wire }
@@ -83,6 +92,16 @@ enum class UiButtonStyle(val wire: String) {
     }
 }
 
+/** 水平对齐 token：pixeltext 的文字块在自己盒子里的对齐方式。 */
+enum class UiAlign(val wire: String) {
+    START("start"), CENTER("center"), END("end");
+
+    companion object {
+        fun fromWire(wire: String): UiAlign? = entries.firstOrNull { it.wire == wire }
+        val wireNames: List<String> = entries.map { it.wire }
+    }
+}
+
 /** 锚点（仅对挂在 overlay 上的根节点有意义）。 */
 enum class UiAnchor(val wire: String) {
     TOP_LEFT("top_left"),
@@ -98,6 +117,16 @@ enum class UiAnchor(val wire: String) {
 
     companion object {
         fun fromWire(wire: String): UiAnchor? = entries.firstOrNull { it.wire == wire }
+        val wireNames: List<String> = entries.map { it.wire }
+    }
+}
+
+/** 边框样式 token：目前只有「像素虚线」。 */
+enum class UiBorder(val wire: String) {
+    DASHED("dashed");
+
+    companion object {
+        fun fromWire(wire: String): UiBorder? = entries.firstOrNull { it.wire == wire }
         val wireNames: List<String> = entries.map { it.wire }
     }
 }
@@ -119,6 +148,18 @@ enum class UiNodeType(val wire: String) {
     SLIDER("slider"),
     PROGRESS("progress"),
     BUBBLE("bubble"),
+
+    /**
+     * 3D 翻页卡片：一个被中缝切成上下两半的数字，valueFrom 变化时上半片绕中缝向下翻转。
+     * 叶组件（不装子节点）—— 它要画的是"一张被切开又翻过去的牌"，子节点在这一层没有意义。
+     */
+    FLIP_CARD("flipcard"),
+
+    /**
+     * 像素点阵文字：5x7 点阵逐像素画方块，不用字体。
+     * 尺寸按容器宽高自适应（见 PixelTextMetrics），横竖屏都不会把字挤出屏幕。
+     */
+    PIXEL_TEXT("pixeltext"),
     ;
 
     /** 能装子节点的容器。 */
@@ -140,6 +181,12 @@ sealed class UiLength {
 
     data class Fixed(val dp: Int) : UiLength()
 }
+
+/** 翻页卡片的翻转时长（毫秒）；协议不开放给插件，避免每个插件翻得不一样快。 */
+const val UI_FLIP_DURATION_MS: Int = 350
+
+/** 像素滚动动画的时长（毫秒）：变化的字符垂直滚过一格。同样不开放给插件。 */
+const val UI_PIXEL_ROLL_DURATION_MS: Int = 180
 
 /** 动画描述。fade / scale / slide 是入场动画，sprite 是循环切帧。 */
 sealed class UiAnimation {
@@ -201,6 +248,15 @@ data class UiNode(
     // button
     val label: String? = null,
     val style: UiButtonStyle? = null,
+    // pixeltext
+    /** 每个像素点的 dp 大小；不给就按容器宽高自适应（横竖屏不崩的关键）。 */
+    val pixelSize: Int? = null,
+    val align: UiAlign? = null,
+    val scanlines: Boolean? = null,
+    val glow: Boolean? = null,
+    /** 像素虚线边框；null 表示不画边框。 */
+    val border: UiBorder? = null,
+    val borderColor: UiColor? = null,
     // switch / slider / progress
     val checkedFrom: String? = null,
     val valueFrom: String? = null,

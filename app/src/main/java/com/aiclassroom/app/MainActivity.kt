@@ -1621,11 +1621,22 @@ private fun AIClassroomApp() {
     Scaffold(
         modifier = Modifier.fillMaxSize().hazeSource(hazeState),
         topBar = { if (!immersiveMode) {
-            Surface(
-                Modifier.fillMaxWidth(),
-                color = palette.surface,
-                tonalElevation = 0.dp,
-                shadowElevation = 0.dp
+            // 与底栏一致的毛玻璃：内容从栏下透出，避免顶栏像一块死板的白条。
+            // 用 TopHazeState 独立于 BottomHazeState —— 同一份 state 会在两处互相干扰模糊源。
+            // 顶栏毛玻璃。注意：Scaffold 的 topBar 会占位，内容被推到它下方，
+            // 所以这里采不到「背后内容」——真正的通透感来自底色半透明，
+            // 再叠 hazeEffect 让状态栏区域（有内容经过时）产生模糊。
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .background(palette.surface.copy(alpha = 0.82f))
+                    .hazeEffect(state = TopHazeState) {
+                        blurRadius = 16.dp
+                        backgroundColor = palette.surface.copy(alpha = 0.70f)
+                        tints = listOf(HazeTint(palette.surface.copy(alpha = 0.20f)))
+                        noiseFactor = 0.10f
+                        fallbackTint = HazeTint(palette.surface.copy(alpha = 0.94f))
+                    }
             ) {
                 Column(Modifier.fillMaxWidth().statusBarsPadding()) {
                     Row(
@@ -1659,27 +1670,26 @@ private fun AIClassroomApp() {
                                 )
                             }
                         }
-                        Column(Modifier.weight(1f)) {
-                            Text("AI CLASSROOM", style = DesignTokens.TextStyles.Kicker, color = palette.muted)
-                            Text(
-                                if (tab == Tab.Class) current.name else tab.title,
-                                color = palette.ink,
-                                fontSize = DesignTokens.Type.Subtitle,
-                                fontWeight = DesignTokens.Weight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                        // 标题列。Kicker（AI CLASSROOM）在宽度吃紧时让位：
+                        // 插件按钮多起来以后它会和标题挤在一起，所以低于阈值就整行不画，标题独占。
+                        BoxWithConstraints(Modifier.weight(1f)) {
+                            val showKicker = maxWidth >= 150.dp
+                            Column(Modifier.fillMaxWidth()) {
+                                if (showKicker) {
+                                    Text("AI CLASSROOM", style = DesignTokens.TextStyles.Kicker, color = palette.muted)
+                                }
+                                Text(
+                                    if (tab == Tab.Class) current.name else tab.title,
+                                    color = palette.ink,
+                                    fontSize = DesignTokens.Type.Subtitle,
+                                    fontWeight = DesignTokens.Weight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
-                        if (tab == Tab.Class) {
-                            Text(
-                                current.topic,
-                                color = palette.muted,
-                                fontSize = DesignTokens.Type.Caption,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.width(92.dp)
-                            )
-                        }
+                        // 「自定义学习内容」这类 topic 常驻在顶栏，和插件按钮抢宽度，已移除。
+                        // 位置不够时的降级见标题列（BoxWithConstraints）。
                         // TOP_BAR_ACTIONS：插件按钮插在现有图标那一排的左侧（无插件时这里什么都不渲染）。
                         PluginUiTopBarActions(
                             bindings = uiTopBarBindings,
@@ -1829,6 +1839,7 @@ private fun AIClassroomApp() {
             Modifier
                 .fillMaxSize()
                 .hazeSource(BottomHazeState)
+                .hazeSource(TopHazeState)
                 .padding(
                     PaddingValues(
                         start = padding.calculateLeftPadding(LocalLayoutDirection.current),
@@ -3024,6 +3035,12 @@ private val SharedHazeState = HazeState()
  * 菜单/浮层仍用 SharedHazeState，保持对顶栏与底栏的整屏模糊。
  */
 private val BottomHazeState = HazeState()
+
+/**
+ * 顶栏专用采样源。理由同 [BottomHazeState]：顶栏也是 Scaffold（SharedHazeState 的 hazeSource）的子孙，
+ * 直接复用会采到自己。顶栏与底栏各开一个独立 source，互不干扰。
+ */
+private val TopHazeState = HazeState()
 
 /**
  * 消息长按操作菜单：同 window 树内毛玻璃浮层（替代 Popup DropdownMenu，Popup 采不到 hazeSource）。

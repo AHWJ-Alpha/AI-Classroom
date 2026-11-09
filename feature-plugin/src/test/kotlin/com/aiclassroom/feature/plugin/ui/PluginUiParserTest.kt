@@ -201,6 +201,124 @@ class PluginUiParserTest {
     }
 
     @Test
+    fun `flipcard 解析出必填字段与可选 token`() {
+        val node = requireNode(
+            """
+            { "type": "flipcard", "valueFrom": "state.mm", "width": 120, "height": 160,
+              "background": "surfaceVariant", "radius": "control", "textColor": "onSurface", "label": "分" }
+            """.trimIndent(),
+        )
+        assertEquals(UiNodeType.FLIP_CARD, node.type)
+        assertEquals("state.mm", node.valueFrom)
+        assertEquals(UiLength.Fixed(120), node.width)
+        assertEquals(UiLength.Fixed(160), node.height)
+        assertEquals(UiColor.SURFACE_VARIANT, node.background)
+        assertEquals(UiRadius.CONTROL, node.radius)
+        assertEquals(UiColor.ON_SURFACE, node.textColor)
+        assertEquals("分", node.label)
+    }
+
+    @Test
+    fun `flipcard 的 color 是 textColor 的同义写法`() {
+        val node = requireNode(
+            """{ "type": "flipcard", "valueFrom": "state.hh", "width": 130, "height": 170, "color": "primary" }""",
+        )
+        assertEquals(UiColor.PRIMARY, node.textColor)
+        // 两种写法同时给且一致，不算错
+        assertTrue(
+            PluginUiParser.parse(
+                """{ "type": "flipcard", "valueFrom": "state.hh", "width": 130, "height": 170,
+                    "color": "muted", "textColor": "muted" }""",
+            ).ok,
+        )
+    }
+
+    @Test
+    fun `flipcard 缺少 valueFrom 报错`() {
+        val errors = errorsOf("""{ "type": "flipcard", "width": 130, "height": 170 }""")
+        assertTrue(errors, errors.contains("缺少必需字段 valueFrom"))
+    }
+
+    @Test
+    fun `flipcard 必须给固定的宽高`() {
+        val noSize = errorsOf("""{ "type": "flipcard", "valueFrom": "state.mm" }""")
+        assertTrue(noSize, noSize.contains("缺少必需字段 width"))
+        assertTrue(noSize, noSize.contains("缺少必需字段 height"))
+
+        val fill = errorsOf(
+            """{ "type": "flipcard", "valueFrom": "state.mm", "width": "fill", "height": "fill" }""",
+        )
+        assertTrue(fill, fill.contains("width 不能是 fill"))
+        assertTrue(fill, fill.contains("height 不能是 fill"))
+    }
+
+    @Test
+    fun `flipcard 的非法 radius 与颜色被拒绝`() {
+        val radius = errorsOf(
+            """{ "type": "flipcard", "valueFrom": "state.mm", "width": 120, "height": 160, "radius": "12dp" }""",
+        )
+        assertTrue(radius, radius.contains("root.radius"))
+        assertTrue(radius, radius.contains("card|control|panel|full"))
+
+        val color = errorsOf(
+            """{ "type": "flipcard", "valueFrom": "state.mm", "width": 120, "height": 160, "textColor": "#FF00FF" }""",
+        )
+        assertTrue(color, color.contains("root.textColor"))
+        assertTrue(color, color.contains("primary|muted|danger|onSurface"))
+
+        // 背景色不接受前景 token，前景色也不接受背景 token
+        assertTrue(
+            errorsOf("""{ "type": "flipcard", "valueFrom": "state.mm", "width": 120, "height": 160, "background": "danger" }""")
+                .contains("root.background"),
+        )
+        assertTrue(
+            errorsOf("""{ "type": "flipcard", "valueFrom": "state.mm", "width": 120, "height": 160, "color": "surface" }""")
+                .contains("root.color"),
+        )
+    }
+
+    @Test
+    fun `flipcard 的 valueFrom 必须是单层 state 取值`() {
+        for (bad in listOf("mm", "state.a.b", "state.", "window.mm", "state.mm.x")) {
+            val errors = errorsOf(
+                """{ "type": "flipcard", "valueFrom": "$bad", "width": 120, "height": 160 }""",
+            )
+            assertTrue(bad, errors.contains("只支持 state.xxx / msg.xxx"))
+        }
+        assertTrue(
+            PluginUiParser.parse(
+                """{ "type": "flipcard", "valueFrom": "msg.text", "width": 120, "height": 160 }""",
+            ).ok,
+        )
+    }
+
+    @Test
+    fun `flipcard 是叶组件 带 children 会被拒`() {
+        val errors = errorsOf(
+            """{ "type": "flipcard", "valueFrom": "state.mm", "width": 120, "height": 160,
+                "children": [ { "type": "text", "text": "x" } ] }""",
+        )
+        assertTrue(errors, errors.contains("root.children 不是 flipcard 支持的字段"))
+    }
+
+    @Test
+    fun `flipcard 仍然保留在协议里 只是沉浸插件不再用它`() {
+        // 组件本身不删：别的插件还可以继续写 flipcard。
+        assertEquals(UiNodeType.FLIP_CARD, UiNodeType.fromWire("flipcard"))
+        assertTrue(UiNodeType.wireNames.contains("flipcard"))
+
+        // 换成像素字时钟的 clock.json 里已经没有翻页卡（新的断言见 PixelTextTest）。
+        val root = requireNode(
+            com.aiclassroom.feature.plugin.readTestResource("plugins/immersive_flipclock/clock.json"),
+        )
+        assertEquals(UiNodeType.COLUMN, root.type)
+        assertTrue(
+            "时钟不该再有 flipcard 节点",
+            root.children.none { it.type == UiNodeType.FLIP_CARD },
+        )
+    }
+
+    @Test
     fun `顶层不是对象时报错`() {
         assertTrue(errorsOf("""[{ "type": "text", "text": "hi" }]""").contains("顶层必须是对象"))
         assertTrue(errorsOf("{").contains("不是合法 JSON"))

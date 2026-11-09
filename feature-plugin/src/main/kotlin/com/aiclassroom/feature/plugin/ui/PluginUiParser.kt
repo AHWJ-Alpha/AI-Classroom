@@ -29,6 +29,9 @@ object PluginUiParser {
     /** 单份 ui.json 的最大节点数。 */
     const val MAX_NODES = PluginLimits.MAX_UI_NODES
 
+    /** pixeltext 单个像素点的上限（dp）：再大就不是像素风，而是一个方块。 */
+    const val MAX_PIXEL_SIZE = 64
+
     private val EVENT_NAME = Regex("^[A-Za-z_$][A-Za-z0-9_$]*$")
 
     /** 表达式只支持 `state.xxx` / `msg.xxx` 的单层取值，不做完整表达式求值。 */
@@ -53,6 +56,15 @@ object PluginUiParser {
         UiNodeType.SWITCH -> COMMON_FIELDS + setOf("checkedFrom", "onChange")
         UiNodeType.SLIDER -> COMMON_FIELDS + setOf("valueFrom", "min", "max", "onChange")
         UiNodeType.PROGRESS -> COMMON_FIELDS + setOf("valueFrom", "color")
+        // flipcard 的字体大小由卡片高度决定（数字必须撑满中缝），因此没有 size 字段；
+        // textColor 是 color 的同义写法，两种都收，插件作者不用猜该写哪个。
+        UiNodeType.FLIP_CARD -> COMMON_FIELDS + setOf("valueFrom", "color", "textColor", "label")
+        // pixeltext 的尺寸给不给都能画：给了就当上限，不给按容器自适应。
+        UiNodeType.PIXEL_TEXT -> COMMON_FIELDS +
+            setOf(
+                "text", "textFrom", "pixelSize", "color", "textColor",
+                "align", "scanlines", "glow", "border", "borderColor",
+            )
         UiNodeType.SPACER, UiNodeType.DIVIDER -> COMMON_FIELDS
     }
 
@@ -140,10 +152,21 @@ object PluginUiParser {
             } else {
                 null
             },
-            textColor = if (type == UiNodeType.TEXT || type == UiNodeType.ICON || type == UiNodeType.PROGRESS) {
-                colorField(node, "color", path, errors, UiColor.FOREGROUNDS)
-            } else {
-                null
+            textColor = when (type) {
+                UiNodeType.TEXT, UiNodeType.ICON, UiNodeType.PROGRESS ->
+                    colorField(node, "color", path, errors, UiColor.FOREGROUNDS)
+
+                // flipcard / pixeltext 接受 color / textColor 两种写法，同时给且不一致才算错。
+                UiNodeType.FLIP_CARD, UiNodeType.PIXEL_TEXT -> {
+                    val primary = colorField(node, "color", path, errors, UiColor.FOREGROUNDS)
+                    val alias = colorField(node, "textColor", path, errors, UiColor.FOREGROUNDS)
+                    if (primary != null && alias != null && primary != alias) {
+                        errors += path + " 的 color 与 textColor 不一致（" + primary.wire + " / " + alias.wire + "）"
+                    }
+                    primary ?: alias
+                }
+
+                else -> null
             },
             weight = enumField(node, "weight", path, errors, UiWeight.wireNames, UiWeight::fromWire),
             maxLines = intField(node, "maxLines", path, errors, 1, 1),
@@ -152,6 +175,28 @@ object PluginUiParser {
             iconSize = if (type == UiNodeType.ICON) intField(node, "size", path, errors, null, 1) else null,
             label = stringField(node, "label", path, errors),
             style = enumField(node, "style", path, errors, UiButtonStyle.wireNames, UiButtonStyle::fromWire),
+            pixelSize = if (type == UiNodeType.PIXEL_TEXT) {
+                intField(node, "pixelSize", path, errors, null, 1)
+            } else {
+                null
+            },
+            align = if (type == UiNodeType.PIXEL_TEXT) {
+                enumField(node, "align", path, errors, UiAlign.wireNames, UiAlign::fromWire)
+            } else {
+                null
+            },
+            scanlines = if (type == UiNodeType.PIXEL_TEXT) booleanField(node, "scanlines", path, errors) else null,
+            glow = if (type == UiNodeType.PIXEL_TEXT) booleanField(node, "glow", path, errors) else null,
+            border = if (type == UiNodeType.PIXEL_TEXT) {
+                enumField(node, "border", path, errors, UiBorder.wireNames, UiBorder::fromWire)
+            } else {
+                null
+            },
+            borderColor = if (type == UiNodeType.PIXEL_TEXT) {
+                colorField(node, "borderColor", path, errors, UiColor.FOREGROUNDS)
+            } else {
+                null
+            },
             checkedFrom = expressionField(node, "checkedFrom", path, errors),
             valueFrom = expressionField(node, "valueFrom", path, errors),
             min = intField(node, "min", path, errors, null),
@@ -205,6 +250,32 @@ object PluginUiParser {
                 if (node.valueFrom == null && source.fields["valueFrom"] == null) {
                     errors += path + " 缺少必需字段 valueFrom"
                 }
+            }
+
+            UiNodeType.PIXEL_TEXT -> {
+                if (node.textFrom == null && source.fields["textFrom"] == null) {
+                    errors += path + " 缺少必需字段 textFrom（像素字画什么内容由它决定）"
+                }
+                node.pixelSize?.let {
+                    if (it > MAX_PIXEL_SIZE) {
+                        errors += path + ".pixelSize 最大 " + MAX_PIXEL_SIZE + "，实际 " + it
+                    }
+                }
+                // borderColor 只在画边框时才有意义，单写一个颜色却不要边框是作者写错了。
+                if (node.borderColor != null && node.border == null) {
+                    errors += path + ".borderColor 必须和 border 一起用（不画边框时颜色没有落点）"
+                }
+            }
+
+            UiNodeType.FLIP_CARD -> {
+                if (node.valueFrom == null && source.fields["valueFrom"] == null) {
+                    errors += path + " 缺少必需字段 valueFrom（没有它，卡片不知道该翻到哪个数字）"
+                }
+                // 翻页牌必须有明确的两条边：宽度撑满父级就量不出中缝，高度自适应就切不出上下两半。
+                if (node.width == null) errors += path + " 缺少必需字段 width（翻页卡片要固定的宽，否则中缝量不出来）"
+                if (node.height == null) errors += path + " 缺少必需字段 height（翻页卡片要固定的高，否则上下两半切不出来）"
+                if (node.width == UiLength.Fill) errors += path + ".width 不能是 fill（翻页卡片必须是固定宽）"
+                if (node.height == UiLength.Fill) errors += path + ".height 不能是 fill（翻页卡片必须是固定高）"
             }
 
             else -> Unit
@@ -391,6 +462,14 @@ object PluginUiParser {
             return null
         }
         return UiLength.Fixed(fixed)
+    }
+
+    private fun booleanField(node: JsonNode.Obj, field: String, path: String, errors: MutableList<String>): Boolean? {
+        val raw = node.fields[field] ?: return null
+        if (raw is JsonNode.Null) return null
+        val value = (raw as? JsonNode.Bool)?.value
+        if (value == null) errors += path + "." + field + " 必须是布尔值 true / false"
+        return value
     }
 
     private fun stringField(node: JsonNode.Obj, field: String, path: String, errors: MutableList<String>): String? {

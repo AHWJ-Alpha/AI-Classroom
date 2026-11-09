@@ -1,0 +1,78 @@
+{
+  "type": "box",
+  "background": "surface",
+  "width": "fill",
+  "height": "fill",
+  "children": [
+    {
+      "type": "image",
+      "src": "assets/bg.png",
+      "width": "fill",
+      "height": "fill",
+      "visibleWhen": "state.scene"
+    },
+    {
+      "type": "column",
+      "anchor": "center",
+      "gap": 8,
+      "visibleWhen": "state.scene",
+      "children": [
+        {
+          "type": "text",
+          "textFrom": "state.clock",
+          "size": "title",
+          "color": "onSurface",
+          "weight": "bold"
+        },
+        {
+          "type": "text",
+          "textFrom": "state.date",
+          "size": "caption",
+          "color": "muted"
+        }
+      ]
+    },
+    {
+      "type": "column",
+      "background": "screen",
+      "width": "fill",
+      "height": "fill",
+      "padding": 24,
+      "gap": 10,
+      "onTap": "onSwitch",
+      "visibleWhen": "state.flip",
+      "children": [
+        {
+          "type": "pixeltext",
+          "textFrom": "state.time",
+          "color": "onSurface",
+          "scanlines": true,
+          "glow": true,
+          "border": "dashed",
+          "borderColor": "outline"
+        },
+        {
+          "type": "pixeltext",
+          "textFrom": "state.dateDigits",
+          "pixelSize": 4,
+          "color": "muted"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "anchor": "bottom_center",
+      "offsetY": -80,
+      "gap": 10,
+      "visibleWhen": "state.scene",
+      "children": [
+        {
+          "type": "button",
+          "label": "切换形态",
+          "style": "secondary",
+          "onTap": "onSwitch"
+        }
+      ]
+    }
+  ]
+}
