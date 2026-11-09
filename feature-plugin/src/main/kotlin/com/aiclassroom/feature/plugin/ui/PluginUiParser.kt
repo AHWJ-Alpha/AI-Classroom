@@ -108,7 +108,7 @@ object PluginUiParser {
                 "align", "scanlines", "glow", "border", "borderColor",
             )
         // 三个装饰组件：color 必须走语义色（FOREGROUNDS），数值参数一律有上下限。
-        UiNodeType.WAVEFORM -> COMMON_FIELDS + setOf("bars", "color", "amplitude", "speed", "activeFrom")
+        UiNodeType.WAVEFORM -> COMMON_FIELDS + setOf("bars", "color", "amplitude", "speed", "activeFrom", "accentAt")
         // disk 的直径用 size；半径 dp 的用户语义在 disk 上不成立，所以它没有 radius。
         UiNodeType.DISK -> COMMON_FIELDS + setOf("size", "color", "coverFrom", "spinningFrom")
         // glow 的 radius 是「光的半径 dp」，与公共字段里那个圆角 token 同名不同义：
@@ -320,6 +320,20 @@ object PluginUiParser {
                 path,
                 errors,
             ),
+            // 只认 "edges"（首/中/末三根）；写别的值直接报错，避免插件作者以为随便填都行。
+            accentAt = if (type == UiNodeType.WAVEFORM) {
+                val raw = node.fields["accentAt"]?.asStringOrNull?.trim().orEmpty()
+                when (raw) {
+                    "" -> null
+                    "edges" -> "edges"
+                    else -> {
+                        errors += path + ".accentAt 只能是 edges，实际 '" + raw.take(20) + "'"
+                        null
+                    }
+                }
+            } else {
+                null
+            },
         ).also { requireFields(it, node, path, errors) }
     }
 

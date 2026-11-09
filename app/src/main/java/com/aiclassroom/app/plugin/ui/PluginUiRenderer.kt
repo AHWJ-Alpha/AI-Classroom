@@ -696,6 +696,12 @@ private fun Waveform(node: UiNode, paint: Paint, modifier: Modifier) {
     val speed = (node.speedPermyriad ?: PluginUiParser.DEFAULT_SPEED_PERMYRIAD) / 10000f
     val active = booleanOf(node.activeFrom, paint) ?: true
     val color = colorOf(node.textColor ?: UiColor.DECORATIVE, paint.palette, paint.aod)
+    // 强调位置：只把首、正中、末这三根画成 accent。
+    // 三根是「有节奏感但不吵」的最小剂量 —— 整排同色时眼睛没有落点，
+    // 整排换成强调色又会变成视觉噪音。
+    val accentColor = colorOf(UiColor.ACCENT, paint.palette, paint.aod)
+    val accentIndexes: Set<Int> =
+        if (node.accentAt == "edges" && bars >= 3) setOf(0, bars / 2, bars - 1) else emptySet()
     val phases = remember(node.path, bars) { waveformPhases(node.path, bars) }
 
     // 相位随「真实时间」推进：暂停时把相位冻在当前值，恢复播放从原处接着走，
@@ -731,11 +737,13 @@ private fun Waveform(node: UiNode, paint: Paint, modifier: Modifier) {
             val wave = 0.5f + 0.5f * kotlin.math.sin(t + phases[index])
             val height = if (active) floor + span * wave else rest
             val x = slot * index + slot / 2f
+            val highlighted = index in accentIndexes
             drawLine(
-                color = color,
+                color = if (highlighted) accentColor else color,
                 start = Offset(x, size.height),
                 end = Offset(x, (size.height - height).coerceAtLeast(0f)),
-                strokeWidth = stroke,
+                // 高亮的三根略粗一点，让「锚点」在不看颜色时也认得出来。
+                strokeWidth = if (highlighted) stroke * 1.2f else stroke,
                 cap = StrokeCap.Round,
             )
         }
@@ -1461,6 +1469,22 @@ internal fun colorOf(color: UiColor, palette: AppPalette, aod: Boolean = false):
     // 所以 waveform / disk / glow 的默认色都落在这里 —— 它仍然是主题色推导出来的，
     // 换主题时跟着变，只是不抢视线。
     UiColor.DECORATIVE -> if (aod) AOD_OUTLINE else lerp(palette.muted, palette.outline, 0.55f)
+    // 强调色：必须与主色拉开差距，否则「强调」是空话。
+    // 默认主题里 palette.accent 与 palette.primary 是同一个值（都取 button 色），
+    // 直接返回的话插件作者写了 accent 却看不出任何变化。
+    // 这里做一次推导：优先用主题的 secondary；它与 primary 相同时按明度往反方向推一档
+    // （浅色底加深、深色底提亮），保证 accent 永远是个看得见的锚点。
+    // 只影响插件渲染，不动全局 palette（它还挂在 Material3 的 tertiary 上）。
+    UiColor.ACCENT -> {
+        val base = palette.secondary
+        if (base == palette.primary) {
+            // 感知亮度（BT.601 权重），够判断「这颜色偏亮还是偏暗」。
+            val lum = 0.299f * base.red + 0.587f * base.green + 0.114f * base.blue
+            if (lum > 0.5f) lerp(base, Color.Black, 0.32f) else lerp(base, Color.White, 0.32f)
+        } else {
+            base
+        }
+    }
     // 息屏底色固定近黑：它不是「主题里的某个面」，而是屏幕关掉之后剩下的那点光。
     UiColor.SCREEN -> AOD_SCREEN
 }

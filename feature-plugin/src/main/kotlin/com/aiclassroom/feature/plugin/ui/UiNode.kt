@@ -35,6 +35,15 @@ enum class UiColor(val wire: String) {
      * 面板色 surface 在这种场景下偏亮，会把像素字衬成灰蒙蒙一片。
      */
     SCREEN("screen"),
+
+    /**
+     * 强调色：主题里的「点缀色」（palette.accent）。
+     *
+     * 与 PRIMARY 的分工：primary 是主操作色（按钮底、进度填充），
+     * accent 是视觉锚点 —— 一屏只用几处，把视线钉在关键位置。
+     * 用多了就没有强调的意义，所以协议层不设任何默认值，必须显式引用。
+     */
+    ACCENT("accent"),
     ;
 
     companion object {
@@ -44,7 +53,7 @@ enum class UiColor(val wire: String) {
         val BACKGROUNDS: List<UiColor> = listOf(SURFACE, SURFACE_VARIANT, PRIMARY, TRANSPARENT, SCREEN)
 
         /** color（前景）允许的取值。 */
-        val FOREGROUNDS: List<UiColor> = listOf(PRIMARY, MUTED, DANGER, ON_SURFACE, OUTLINE, DECORATIVE)
+        val FOREGROUNDS: List<UiColor> = listOf(PRIMARY, MUTED, DANGER, ON_SURFACE, OUTLINE, DECORATIVE, ACCENT)
 
         /**
          * 唱片底色的允许取值：surfaceVariant / primary 这些「面」和「装饰色」它都要能取 ——
@@ -338,6 +347,14 @@ data class UiNode(
     val coverFrom: String? = null,
     /** disk 何时旋转；waveform 何时起伏。读 state.xxx / msg.xxx 的布尔取值。 */
     val activeFrom: String? = null,
+
+    /**
+     * waveform 的强调位置：把少数几根竖线画成 [UiColor.ACCENT]。
+     *
+     * 目前只开放 "edges" —— 首、正中、末三根。这是「有节奏感但不吵」的最小剂量：
+     * 满屏同色时眼睛找不到落点，全换成强调色又会变成噪音，三根正好。
+     */
+    val accentAt: String? = null,
 )
 
 /** 解析结果：成功时 [root] 非空且 [errors] 为空；失败时 [root] 为 null，[errors] 逐条可读。 */
