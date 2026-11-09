@@ -135,4 +135,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended:1.7.4")
     implementation("dev.chrisbanes.haze:haze:1.5.4")
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.4")
+    // 纯 JVM 单测：视频抽帧的差异计算 / 选帧算法都只依赖 IntArray / List<Float>，
+    // 不需要 Robolectric，直接在 JVM 上跑。
+    testImplementation("junit:junit:4.13.2")
 }

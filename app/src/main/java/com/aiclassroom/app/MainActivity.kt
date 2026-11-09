@@ -12,6 +12,10 @@ import com.aiclassroom.app.web.WebDomains
 import com.aiclassroom.app.web.WebToolDeps
 import com.aiclassroom.app.web.WebSelfTest
 import com.aiclassroom.app.web.registerWebTools
+import com.aiclassroom.app.video.VideoFrameExtractor
+import com.aiclassroom.app.video.VideoSelfTest
+import com.aiclassroom.app.video.VideoToolDeps
+import com.aiclassroom.app.video.registerVideoTools
 import android.content.res.Configuration
 import android.content.SharedPreferences
 import android.net.Uri
@@ -80,6 +84,7 @@ import androidx.compose.material.icons.filled.HealthAndSafety
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Error
@@ -512,6 +517,9 @@ private fun AIClassroomApp() {
     // 它读的是别的 App 的播放状态（需要通知使用权），与「能发 http」是两回事：
     // 用户可能想听歌看封面却不想让任何插件联网，所以必须能只关一头。
     var mediaToolsEnabled by remember { mutableStateOf(store.loadMediaToolsEnabled()) }
+    // 视频工具：抽帧很吃 CPU（一次自适应扫描要解码上百个缩略图），所以给它一个独立开关，
+    // 不跟「网络工具」绑在一起——用户可能想看图却不想让 AI 碰视频文件。
+    var videoToolsEnabled by remember { mutableStateOf(store.loadVideoToolsEnabled()) }
     var imageConfig by remember { mutableStateOf(store.loadImageConfig()) }
     // 考试 / 文件 / 配置三组插件也由「设置 → 插件」统一开关，默认开启，状态落在 prefs。
     var examToolsEnabled by remember { mutableStateOf(store.loadExamToolsEnabled()) }
@@ -1238,6 +1246,34 @@ private fun AIClassroomApp() {
                 },
                 log = { line -> Log.i("WebTool", line) },
             ))
+            // 视频工具：从设备本地视频按自适应密度抽帧，可选交给视觉模型理解。
+            // 分析复用注入进来的视觉链路（一次可以带多张图），抽帧本身跑在 Dispatchers.IO。
+            registerVideoTools(this, VideoToolDeps(
+                extractor = VideoFrameExtractor(context),
+                saveFrame = { bytes, fileName -> imageSink.save(bytes, fileName, "image/png") },
+                analyze = { system, prompt, dataUrls ->
+                    val room = classes.getOrNull(classIndex.coerceIn(0, classes.lastIndex))
+                    if (room == null) {
+                        Result.failure(IllegalStateException("当前没有可用课堂配置，无法调用视觉模型。"))
+                    } else {
+                        // 视觉链路把失败也当普通字符串返回（"调用失败：…"），这里换成 Result，
+                        // 工具层才分得清「分析成功」和「模型不干了，该退化成逐帧再试」。
+                        runCatching {
+                            callVisionWithFallback(
+                                room.config,
+                                room.config.visionModels(),
+                                system,
+                                prompt,
+                                dataUrls,
+                                emptyList(),
+                            )
+                        }.mapCatching { answer ->
+                            if (isApiFailure(answer)) error(answer) else answer
+                        }
+                    }
+                },
+                log = { line -> Log.i("VideoTool", line) },
+            ))
             // 生图 / 网络工具都要访问「本机或局域网里的 http 端口」：本地 SD WebUI、其它应用的 API 端口
             // 只提供明文 http，而 targetSdk 35 默认拦截明文，所以 Manifest 里开了 usesCleartextTraffic。
             // 影响面：只有 http 走不加密链路（建议只填本地 / 可信局域网地址），https 仍走系统信任链。
@@ -1275,6 +1311,8 @@ private fun AIClassroomApp() {
             // 主动发图放在自定义插件之后注册：同名的自定义工具顶不掉它，也就绕不过下面那道生图总开关。
             register(SendImageTool(turnImages, filesDir = { context.filesDir }))
             gateTools("send_image", { imageToolsEnabled }, "生图插件已在设置里关闭，本次没有发送任何图片；需要发图请到「设置 → 插件 → 生图」打开开关。")
+            // 视频工具走自己的开关：抽帧吃 CPU，用户要能单独关掉，不必连生图一起关。
+            gateTools("video_", { videoToolsEnabled }, "视频插件已在设置里关闭，本次没有读取任何视频文件、也没有抽帧；需要视频工具请到「设置 → 插件 → 视频工具」打开开关。")
         }
     }
     // 注册表非空即外发 tools；若将来把工具全部关闭，这里自然返回 null，请求体回到纯聊天形态。
@@ -1297,6 +1335,30 @@ private fun AIClassroomApp() {
                 seedWhitelist = { domains -> store.saveWebActDomains(domains) },
                 log = { line -> Log.i("WebSelfTest", line) },
                 output = File(context.filesDir, "web_selftest_result.txt"),
+            )
+        }
+    }
+
+    // 视频工具的一次性自查：adb 带 --ez video_selftest true 启动才会跑，正常使用走不到这里。
+    // 走 toolRegistry.dispatch 这条与线上完全相同的路径，覆盖自适应 / 均匀 / 视觉分析 / 各类错误路径。
+    LaunchedEffect(Unit) {
+        val activity = context as? android.app.Activity ?: return@LaunchedEffect
+        if (!activity.intent.getBooleanExtra("video_selftest", false)) return@LaunchedEffect
+        val videoPath = activity.intent.getStringExtra("video_selftest_path")?.takeIf { it.isNotBlank() }
+            ?: File(context.filesDir, "test.mp4").absolutePath
+        scope.launch(Dispatchers.IO) {
+            VideoSelfTest.run(
+                videoPath = videoPath,
+                longVideoPath = activity.intent.getStringExtra("video_selftest_long_path")
+                    ?.takeIf { it.isNotBlank() },
+                dispatch = { toolName, argumentsJson ->
+                    when (val outcome = toolRegistry.dispatch(toolName, argumentsJson)) {
+                        is ToolResult.Ok -> "OK " + outcome.contentJson
+                        is ToolResult.Error -> "ERROR " + outcome.message
+                    }
+                },
+                output = File(context.filesDir, "video_selftest_result.txt"),
+                log = { line -> Log.i("VideoSelfTest", line) },
             )
         }
     }
@@ -2137,6 +2199,12 @@ private fun AIClassroomApp() {
                             mediaToolsEnabled = enabled
                             store.saveMediaToolsEnabled(enabled)
                             saveNotice = if (enabled) "已启用音乐插件" else "已关闭音乐插件"
+                        },
+                        videoToolsEnabled = videoToolsEnabled,
+                        onVideoToolsEnabledChange = { enabled ->
+                            videoToolsEnabled = enabled
+                            store.saveVideoToolsEnabled(enabled)
+                            saveNotice = if (enabled) "已启用视频工具" else "已关闭视频工具"
                         },
                         imageConfig = imageConfig,
                         onImageConfig = { updated ->
@@ -4450,6 +4518,8 @@ private fun ModelScreen(
     onImageToolsEnabledChange: (Boolean) -> Unit,
     mediaToolsEnabled: Boolean,
     onMediaToolsEnabledChange: (Boolean) -> Unit,
+    videoToolsEnabled: Boolean,
+    onVideoToolsEnabledChange: (Boolean) -> Unit,
     imageConfig: ImageConfig,
     onImageConfig: (ImageConfig) -> Unit,
     customToolsJson: String,
@@ -4795,8 +4865,8 @@ private fun ModelScreen(
         }
         item {
             SettingsCard("插件", expandedModule == "plugin", { expandedModule = if (expandedModule == "plugin") null else "plugin" }) {
-                val enabledPlugins = listOf(examToolsEnabled, fsToolsEnabled, netToolsEnabled, configToolsEnabled, imageToolsEnabled).count { it }
-                Text("已启用 " + enabledPlugins + " / 5 个插件 · 共 18 个工具", fontWeight = FontWeight.Bold)
+                val enabledPlugins = listOf(examToolsEnabled, fsToolsEnabled, netToolsEnabled, configToolsEnabled, imageToolsEnabled, videoToolsEnabled).count { it }
+                Text("已启用 " + enabledPlugins + " / 6 个插件 · 共 19 个工具", fontWeight = FontWeight.Bold)
                 Text("插件就是 AI 可以自己决定要不要调用的工具。关掉某个插件后，对应工具会在本地直接拒绝并回一条错误给模型，不产生任何副作用。开关对所有课堂生效。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
                 Spacer(Modifier.height(DesignTokens.Spacing.Md))
                 PluginRow(Icons.Default.School, "考试工具", 7, "创建/编辑考试并保存到课堂", examToolsEnabled, onExamToolsEnabledChange)
@@ -4810,6 +4880,8 @@ private fun ModelScreen(
                 PluginRow(Icons.Default.Image, "生图", 2, "调用云端或本地生图服务生成图片，并把图片发到对话里", imageToolsEnabled, onImageToolsEnabledChange)
                 PluginRow(Icons.Default.PlayArrow, "音乐", 3, "读取正在播放的歌名/歌手/封面，并控制播放", mediaToolsEnabled, onMediaToolsEnabledChange)
                 Text("与网络、生图是三个独立开关：音乐只读系统「正在播放」并转发播放/暂停，不发任何网络请求。关闭后 media.* 在本地直接拒绝，插件拿不到任何播放信息。需要系统「通知使用权」，在系统设置 → 通知使用权里给 AI Classroom 打开。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                PluginRow(Icons.Default.Movie, "视频工具", 1, "从本地视频按画面变化自适应抽帧，交给视觉模型理解", videoToolsEnabled, onVideoToolsEnabledChange)
+                Text("video_frames 只读设备本地的视频文件：网页流媒体（HLS / m3u8）无法按帧解码，会直接报错。自适应抽帧会先按 1 秒扫一遍缩略图算画面变化，所以比较吃 CPU；不想让 AI 碰视频就关掉这个开关。限制：文件 ≤ 500MB、单次 ≤ 10 分钟。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
                 TextButton(onClick = { imageDetailExpanded = !imageDetailExpanded }) {
                     Text(if (imageDetailExpanded) "收起生图配置" else "生图详细配置（运营商 / Key / 模型 / 尺寸）", color = MaterialTheme.colorScheme.primary)
                 }
@@ -5972,6 +6044,13 @@ private class ClassroomStore(context: Context) {
 
     fun saveExamToolsEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("plugin_exam_enabled", enabled).apply()
+    }
+
+    /** 视频工具独立开关，默认开启；抽帧吃 CPU，关掉后 video_frames 在本地直接拒绝。 */
+    fun loadVideoToolsEnabled(): Boolean = prefs.getBoolean("video_tools_enabled", true)
+
+    fun saveVideoToolsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("video_tools_enabled", enabled).apply()
     }
 
     fun loadFsToolsEnabled(): Boolean = prefs.getBoolean("plugin_fs_enabled", true)
