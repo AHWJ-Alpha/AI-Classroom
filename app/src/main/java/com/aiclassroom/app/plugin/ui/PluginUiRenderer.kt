@@ -1031,6 +1031,11 @@ private fun Disk(node: UiNode, paint: Paint, modifier: Modifier) {
     val holeColor = colorOf(UiColor.PRIMARY, paint.palette, paint.aod)
     val outline = colorOf(UiColor.OUTLINE, paint.palette, paint.aod)
 
+    // 小尺寸封面球（<=80dp）不画外圈留白，也不画中心孔：那个尺度下留白就是「难看的边缘」，
+    // 中心孔更是小到看不出是孔、只会让封面中间糊一个点。
+    val compact = diameter <= 80.dp
+    val coverRatio = if (compact) 1f else DISK_COVER_RATIO
+
     val angle = remember(node.path) { Animatable(0f) }
     LaunchedEffect(node.path, spinning) {
         if (!spinning) return@LaunchedEffect
@@ -1064,18 +1069,25 @@ private fun Disk(node: UiNode, paint: Paint, modifier: Modifier) {
         }
         if (cover != null) {
             // 封面按正圆裁切填满：ContentScale.Crop 已经在 Box 里，再 clip 成圆才是唱片。
+            //
+            // 比例分两档：**小尺寸（悬浮窗那种几十 dp 的封面球）直接铺满**，
+            // 不然 56dp 的圆里封面只占 40dp，四周一圈圆底看起来就是「旁边有很宽的边缘」，很难看；
+            // 大唱片（沉浸界面 200dp 那种）才保留 0.72 的留边，那是「唱片外圈」的质感。
             Image(
                 bitmap = cover,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .size(diameter * DISK_COVER_RATIO)
+                    .size(diameter * coverRatio)
                     .clip(CircleShape),
             )
         }
         // 中心小孔：有封面时它是「转轴」，没有封面时它是唯一还能看出这是张唱片的东西。
-        Canvas(Modifier.matchParentSize()) {
-            drawCircle(color = holeColor, radius = size.minDimension * DISK_HOLE_RATIO)
+        // 小尺寸封面球不画：那个尺度下孔只有一两个像素，只会让封面中间糊一个点。
+        if (!compact || cover == null) {
+            Canvas(Modifier.matchParentSize()) {
+                drawCircle(color = holeColor, radius = size.minDimension * DISK_HOLE_RATIO)
+            }
         }
     }
 }
