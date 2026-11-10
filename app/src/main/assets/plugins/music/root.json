@@ -32,7 +32,8 @@
       "onDoubleTap": "onExpand",
       "onTap": "onExpand",
       "widthFrom": "state.circleSize",
-      "heightFrom": "state.circleSize"
+      "heightFrom": "state.circleSize",
+      "visibleWhen": "state.circle"
     },
     {
       "type": "card",
@@ -111,67 +112,73 @@
           ]
         },
         {
-          "type": "row",
-          "anchor": "center",
-          "gap": 20,
+          "type": "box",
+          "width": "fill",
           "children": [
             {
-              "type": "box",
-              "width": 40,
-              "height": 40,
-              "radius": "full",
-              "background": "transparent",
-              "onTap": "onPrev",
+              "type": "row",
+              "anchor": "center",
+              "gap": 20,
               "children": [
                 {
-                  "type": "icon",
-                  "name": "prev",
-                  "size": 24,
-                  "color": "muted",
-                  "anchor": "center"
-                }
-              ]
-            },
-            {
-              "type": "box",
-              "width": 52,
-              "height": 52,
-              "radius": "full",
-              "background": "surfaceVariant",
-              "onTap": "onToggle",
-              "children": [
-                {
-                  "type": "icon",
-                  "name": "pause",
-                  "size": 26,
-                  "color": "primary",
-                  "anchor": "center",
-                  "visibleWhen": "state.playing"
+                  "type": "box",
+                  "width": 40,
+                  "height": 40,
+                  "radius": "full",
+                  "background": "transparent",
+                  "onTap": "onPrev",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "name": "prev",
+                      "size": 24,
+                      "color": "muted",
+                      "anchor": "center"
+                    }
+                  ]
                 },
                 {
-                  "type": "icon",
-                  "name": "play",
-                  "size": 26,
-                  "color": "primary",
-                  "anchor": "center",
-                  "visibleWhen": "state.paused"
-                }
-              ]
-            },
-            {
-              "type": "box",
-              "width": 40,
-              "height": 40,
-              "radius": "full",
-              "background": "transparent",
-              "onTap": "onNext",
-              "children": [
+                  "type": "box",
+                  "width": 52,
+                  "height": 52,
+                  "radius": "full",
+                  "background": "surfaceVariant",
+                  "onTap": "onToggle",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "name": "pause",
+                      "size": 26,
+                      "color": "primary",
+                      "anchor": "center",
+                      "visibleWhen": "state.playing"
+                    },
+                    {
+                      "type": "icon",
+                      "name": "play",
+                      "size": 26,
+                      "color": "primary",
+                      "anchor": "center",
+                      "visibleWhen": "state.paused"
+                    }
+                  ]
+                },
                 {
-                  "type": "icon",
-                  "name": "next",
-                  "size": 24,
-                  "color": "muted",
-                  "anchor": "center"
+                  "type": "box",
+                  "width": 40,
+                  "height": 40,
+                  "radius": "full",
+                  "background": "transparent",
+                  "onTap": "onNext",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "name": "next",
+                      "size": 24,
+                      "color": "muted",
+                      "anchor": "center"
+                    }
+                  ]
                 }
               ]
             }

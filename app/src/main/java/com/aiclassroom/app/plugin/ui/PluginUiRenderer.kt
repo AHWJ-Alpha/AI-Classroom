@@ -347,6 +347,13 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
     }
 }
 
+/** 九宫格锚点 → 纵向容器里的横向对齐（ColumnScope.align 只吃 Alignment.Horizontal）。 */
+private fun columnAlignOf(anchor: UiAnchor): Alignment.Horizontal = when (anchor) {
+    UiAnchor.TOP_LEFT, UiAnchor.CENTER_LEFT, UiAnchor.BOTTOM_LEFT -> Alignment.Start
+    UiAnchor.TOP_RIGHT, UiAnchor.CENTER_RIGHT, UiAnchor.BOTTOM_RIGHT -> Alignment.End
+    else -> Alignment.CenterHorizontally
+}
+
 /** 九宫格顺序：行优先。 */
 private val GRID9 = listOf(
     UiAnchor.TOP_LEFT, UiAnchor.TOP_CENTER, UiAnchor.TOP_RIGHT,
@@ -735,12 +742,16 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
             },
         ) {
             node.children.forEach { child ->
+                // 子项可以写 anchor 覆盖整列的对齐：横向容器（Row）里 anchor 一直是生效的，
+                // 纵向容器漏了这一条 —— 于是「一列左对齐的文字中间夹一行居中的按钮」做不到，
+                // 按钮行会跟着整列左对齐（实测大浮窗的播放键没有对准节律条）。
+                val alignModifier = child.anchor?.let { Modifier.align(columnAlignOf(it)) } ?: Modifier
                 // 纵向容器里 height:fill 的语义是「剩下的高度都归你」——用 weight 而不是
                 // fillMaxHeight：后者会让这一个子节点吃满整列，把它后面的兄弟顶出屏幕。
                 if (child.height == UiLength.Fill) {
-                    Box(Modifier.weight(1f)) { PaintNode(child, childPaint(paint, node)) }
+                    Box(Modifier.weight(1f).then(alignModifier)) { PaintNode(child, childPaint(paint, node)) }
                 } else {
-                    PaintNode(child, childPaint(paint, node))
+                    Box(alignModifier) { PaintNode(child, childPaint(paint, node)) }
                 }
             }
         }
