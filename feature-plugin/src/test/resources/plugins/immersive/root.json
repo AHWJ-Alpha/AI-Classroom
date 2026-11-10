@@ -65,8 +65,8 @@
     },
     {
       "type": "row",
-      "anchor": "bottom_center",
-      "offsetY": -60,
+      "anchor": "bottom_right",
+      "offsetY": -8,
       "gap": 10,
       "children": [
         {
@@ -86,7 +86,8 @@
             }
           ]
         }
-      ]
+      ],
+      "offsetX": -76
     },
     {
       "type": "box",
