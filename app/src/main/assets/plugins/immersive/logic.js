@@ -2,16 +2,25 @@
 // 有音乐在播时，第一次进入直接落在音乐形态（用户要的是「点沉浸就进音乐沉浸界面」）。
 function pad(n) { return (n < 10 ? '0' : '') + n; }
 
-// 进沉浸时先判断有没有音乐在播：有就落在音乐形态（用户要的「点沉浸直接进音乐」），
-// 没有则维持上次用的形态（时钟 / 风景）。
+// 进沉浸：先进入全屏，再决定落在哪个形态。
+//
+// **顺序很重要**：enterFullscreen 必须是第一件事。
+// 之前把它放在 refreshMedia 后面，而 refreshMedia 会调宿主能力（mediaCurrent），
+// 一旦那次调用抛异常，整个 onEnter 就中断 —— 表现就是「点了沉浸按钮但什么都没发生」。
+// 全屏是用户点这个按钮的唯一目的，不能让它被任何后续逻辑拖累。
 function onEnter(ctx) {
-  refreshMedia(ctx);
-  if (media.playing) {
-    ctx.storage.set('mode', 'music');
-  } else if (!ctx.storage.get('mode')) {
-    ctx.storage.set('mode', 'scene');
-  }
   ctx.host.enterFullscreen();
+  try {
+    refreshMedia(ctx);
+    if (media.playing) {
+      ctx.storage.set('mode', 'music');
+    } else if (!ctx.storage.get('mode')) {
+      ctx.storage.set('mode', 'scene');
+    }
+  } catch (e) {
+    // 读不到媒体就按风景形态进，不影响进全屏这件事。
+    ctx.storage.set('mode', ctx.storage.get('mode') || 'scene');
+  }
   return 'ok';
 }
 
@@ -37,7 +46,12 @@ function fmt(ms) {
 }
 
 function refreshMedia(ctx) {
-  var r = host.mediaCurrent();
+  var r;
+  try {
+    r = host.mediaCurrent();
+  } catch (e) {
+    r = null;
+  }
   media.dbg = 'raw:' + String(JSON.stringify(r)).slice(0, 90);
   if (!r || !r.ok) {
     media.playing = false;

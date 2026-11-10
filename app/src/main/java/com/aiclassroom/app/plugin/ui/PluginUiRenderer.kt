@@ -497,6 +497,13 @@ internal fun PluginUiFullscreen(
         userImages = userImages,
         userImageFit = userImageFit,
     )
+    // 保险：插件的根节点自己不可见（所有形态的 visibleWhen 都为 false）时，
+    // 绝不能继续拿一层不透明背景盖住整屏、还吃掉所有点击 —— 那时用户会觉得「界面死了」。
+    // 自动让出全屏槽位，把控制权还给课堂页。
+    if (!isVisible(root, paint)) {
+        LaunchedEffect(binding.pluginId) { onExit() }
+        return
+    }
     Box(Modifier.fillMaxSize().background(palette.page)) {
         // 背景层单独吃点击：全屏层盖住整个课堂页，不挡就会误触下面的消息卡片。
         //
@@ -516,8 +523,37 @@ internal fun PluginUiFullscreen(
             // 表现为每秒闪一下。状态变化只需触发重组（recomposition），不需要换 identity。
             key(binding.pluginId) { PaintNode(root, paint, Modifier.fillMaxSize()) }
         }
+        // 首次进入全屏时给一句引导：退出按钮只有图标，不说一句没人知道要长按。
+        // 4 秒后自动淡出，不常驻、不挡内容。
+        FullscreenExitHint(palette)
         FullscreenExitButton(palette, onExit)
     }
+}
+
+/**
+ * 进全屏后显示一次的引导文字（4 秒淡出）。
+ *
+ * 退出按钮按用户要求做成了「和回到底部差不多的圆形图标 + 长按画圈」，
+ * 但纯图标没有可发现性 —— 第一次进来的人根本不知道右下角那个圆是干什么的，
+ * 于是会觉得「全屏之后点什么都没反应」（实际是背景层在防穿透，设计如此）。
+ */
+@Composable
+private fun BoxScope.FullscreenExitHint(palette: AppPalette) {
+    var visible by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        delay(4000)
+        visible = false
+    }
+    if (!visible) return
+    Text(
+        text = "长按右下角按钮退出",
+        color = palette.muted,
+        fontSize = DesignTokens.Type.Small,
+        modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .navigationBarsPadding()
+            .padding(end = DesignTokens.Spacing.Md, bottom = DesignTokens.Size.Fab + DesignTokens.Spacing.Xl),
+    )
 }
 
 /**
