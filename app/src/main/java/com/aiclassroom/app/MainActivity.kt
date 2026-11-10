@@ -398,10 +398,10 @@ internal data class ClassroomConfig(
     val worldBook: String = "",
     val efficientMode: Boolean = true,
     val reverseConversation: Boolean = false,
-    val themeMode: String = "ocean",
+    val themeMode: String = "custom",
     val interfaceMode: String = "system",
-    val primaryColor: Long = 0xFF667085,
-    val secondaryColor: Long = 0xFF667085
+    val primaryColor: Long = 0xFFFF7A1A,
+    val secondaryColor: Long = 0xFFE85D04
 ) {
     fun primaryModel(): String = orderedModels().firstOrNull().orEmpty()
 
@@ -4776,7 +4776,8 @@ private fun ModelScreen(
     var primaryColor by remember(config.primaryColor) { mutableStateOf(config.primaryColor) }
     var secondaryColor by remember(config.secondaryColor) { mutableStateOf(config.secondaryColor) }
     var primaryHex by remember(config.primaryColor) { mutableStateOf(argbToHex(config.primaryColor)) }
-    val colorSwatches = listOf(0xFFFF5FA2, 0xFF6C63FF, 0xFF58D7E6, 0xFF8B7BFF, 0xFFFF9BC2, 0xFFEF6BA8, 0xFFEF4444, 0xFFF97316, 0xFF22C55E, 0xFF302044)
+    // 橙色排最前面：它是默认色，用户进来第一眼就看到自己现在的颜色。
+    val colorSwatches = listOf(0xFFFF7A1A, 0xFFE85D04, 0xFF58D7E6, 0xFF6C63FF, 0xFF22C55E, 0xFFEF4444, 0xFF8B7BFF, 0xFF302044)
     val primaryValid = parseHexColor(primaryHex) != null
     val scope = rememberCoroutineScope()
     var expandedModule by remember { mutableStateOf<String?>("model") }
@@ -4939,12 +4940,6 @@ private fun ModelScreen(
                 Text("按钮皮肤", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AppFilterChip(themeMode == "ocean", {
-                        themeMode = "ocean"
-                        primaryColor = 0xFFFF5FA2
-                        secondaryColor = 0xFF6C63FF
-                        primaryHex = argbToHex(primaryColor)
-                    }) { Text("二次元") }
                     AppFilterChip(themeMode == "custom", {
                         themeMode = "custom"
                         primaryHex = argbToHex(primaryColor)
@@ -4995,23 +4990,24 @@ private fun ModelScreen(
                     Spacer(Modifier.height(8.dp))
                     Text("自定义颜色只应用到按钮和可点击强调，不再染色背景、卡片或正文。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
                 } else {
-                    ButtonColorPreview(0xFFFF5FA2)
+                    ButtonColorPreview(primaryColor)
                     Spacer(Modifier.height(8.dp))
-                    Text("二次元主题使用 #FF5FA2 主色，搭配薰衣草紫与清透青色。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                    Text("默认强调色是橙色：按钮用 #FF7A1A，插件里的强调元素（节奏线锚点、播放键、进度填充）用更深的 #E85D04。", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = {
-                        themeMode = "ocean"
-                        primaryColor = 0xFFFF5FA2
-                        secondaryColor = 0xFF6C63FF
+                        themeMode = "custom"
+                        primaryColor = 0xFFFF7A1A
+                        secondaryColor = 0xFFE85D04
                         primaryHex = argbToHex(primaryColor)
-                    }) { Text("恢复二次元默认") }
+                    }) { Text("恢复默认橙色") }
                     Button(
                         onClick = {
                             val cleanThemeMode = normalizeThemeMode(themeMode)
-                            val cleanPrimary = if (cleanThemeMode == "ocean") 0xFFFF5FA2 else parseHexColor(primaryHex) ?: primaryColor
-                            val cleanSecondary = if (cleanThemeMode == "ocean") 0xFF6C63FF else cleanPrimary
+                            // 现在只有一种主题模型：颜色一律来自输入框，没有「预设主题覆盖」这回事。
+                            val cleanPrimary = parseHexColor(primaryHex) ?: primaryColor
+                            val cleanSecondary = secondaryColor
                             primaryColor = cleanPrimary
                             secondaryColor = cleanSecondary
                             primaryHex = argbToHex(cleanPrimary)
@@ -5019,7 +5015,7 @@ private fun ModelScreen(
                             onConfig(config.copy(reverseConversation = reverseConversation, themeMode = cleanThemeMode, interfaceMode = normalizeInterfaceMode(interfaceMode), primaryColor = cleanPrimary, secondaryColor = cleanSecondary))
                             expandedModule = null
                         },
-                        enabled = themeMode == "ocean" || primaryValid
+                        enabled = primaryValid
                     ) {
                         Icon(Icons.Default.Check, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
@@ -6564,8 +6560,8 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
             worldBook = configJson.optString("worldBook", ""),
             efficientMode = configJson.optBoolean("efficientMode", true),
             reverseConversation = configJson.optBoolean("reverseConversation", false),
-            themeMode = normalizeThemeMode(configJson.optString("themeMode", "ocean")),
-            interfaceMode = normalizeInterfaceMode(configJson.optString("interfaceMode", legacyInterfaceMode(configJson.optString("themeMode", "ocean")))),
+            themeMode = normalizeThemeMode(configJson.optString("themeMode", "custom")),
+            interfaceMode = normalizeInterfaceMode(configJson.optString("interfaceMode", legacyInterfaceMode(configJson.optString("themeMode", "custom")))),
             primaryColor = configJson.optLong("primaryColor", 0xFF667085),
             secondaryColor = configJson.optLong("secondaryColor", 0xFF667085)
         ),
@@ -7774,9 +7770,11 @@ private fun parseHexColor(raw: String): Long? {
     }
     return argb.toLongOrNull(16)?.takeIf { it in 0..0xFFFFFFFFL }
 }
+// 以前这里会把未知值归到 "ocean"（二次元粉紫主题）。
+// 现在只保留一种主题模型：用户自己选颜色（custom），默认就是橙色。
 private fun normalizeThemeMode(raw: String): String = when (raw) {
     "custom", "single", "自定义", "单主色", "鍗曚富鑹?" -> "custom"
-    else -> "ocean"
+    else -> "custom"
 }
 
 private fun normalizeInterfaceMode(raw: String): String = when (raw) {
@@ -8020,7 +8018,7 @@ TTS 模块用于保存语音服务配置，包括服务商、API Key、Base URL�
 高效模式用于过滤 NSFW 等不适合学习场景的内容，默认开启。它本质上是健康模式，适合学习、自习和考试场景。
 
 ## 界面与皮肤
-皮肤模块可切换对话方向、按钮颜色和界面明暗。按钮皮肤只保留“二次元”和“自定义”：二次元使用樱花粉 `#FF5FA2`，搭配薰衣草紫与清透青色；自定义可通过调色盘或 Hex 输入选择一个按钮色。除按钮和可点击强调外，背景、卡片和正文不再被皮肤色染色。
+皮肤模块可切换对话方向、按钮颜色和界面明暗。默认强调色是橙色（按钮 `#FF7A1A`，插件强调元素 `#E85D04`），可通过调色盘或 Hex 输入换任意颜色；除按钮和可点击强调外，背景、卡片和正文不会被皮肤色染色。
 
 默认界面采用低饱和灰蓝色和中性背景，减少高亮色与多层阴影；界面明暗可选择自动跟随系统、白色或黑色，应用会自动保持文字反色，保证可读性。
 
