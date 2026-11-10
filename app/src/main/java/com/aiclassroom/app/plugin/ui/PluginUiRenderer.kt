@@ -93,6 +93,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -1051,21 +1052,33 @@ private fun Disk(node: UiNode, paint: Paint, modifier: Modifier) {
         }
     }
 
+    // 封面球铺满后整块就是「一张图贴在浅色底上」，太平了没有层次。
+    // 补两样东西，都很轻：
+    // 1) 一层很淡的投影（ambient 6% / spot 10%），让它从背景上浮起来；
+    // 2) 一圈画在封面**之上**的高光描边，边缘才有「玻璃球」的厚度感。
+    // 投影只给 compact 封面球加：200dp 大唱片在深色沉浸底上，加投影反而显脏。
+    val bodyModifier = if (compact) {
+        Modifier.shadow(
+            elevation = 3.dp,
+            shape = CircleShape,
+            clip = false,
+            ambientColor = Color.Black.copy(alpha = 0.06f),
+            spotColor = Color.Black.copy(alpha = 0.10f),
+        )
+    } else {
+        Modifier
+    }
+
     Box(
         modifier
             .size(diameter)
+            .then(bodyModifier)
             .graphicsLayer { rotationZ = angle.value },
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.matchParentSize()) {
             val radius = size.minDimension / 2f
             drawCircle(color = discColor, radius = radius, center = center)
-            drawCircle(
-                color = outline,
-                radius = radius - DesignTokens.Border.Hairline.toPx() / 2f,
-                center = center,
-                style = Stroke(width = DesignTokens.Border.Hairline.toPx()),
-            )
         }
         if (cover != null) {
             // 封面按正圆裁切填满：ContentScale.Crop 已经在 Box 里，再 clip 成圆才是唱片。
@@ -1080,6 +1093,19 @@ private fun Disk(node: UiNode, paint: Paint, modifier: Modifier) {
                 modifier = Modifier
                     .size(diameter * coverRatio)
                     .clip(CircleShape),
+            )
+        }
+        // 描边画在封面**之上**：铺满之后先画描边会被封面整块盖住。
+        // compact 用一点浅色（白 22%）做高光，大唱片保持原来的 outline 细线。
+        Canvas(Modifier.matchParentSize()) {
+            val radius = size.minDimension / 2f
+            val lineColor = if (compact) Color.White.copy(alpha = 0.22f) else outline
+            val lineWidth = if (compact) 1.5.dp.toPx() else DesignTokens.Border.Hairline.toPx()
+            drawCircle(
+                color = lineColor,
+                radius = radius - lineWidth / 2f,
+                center = center,
+                style = Stroke(width = lineWidth),
             )
         }
         // 中心小孔：有封面时它是「转轴」，没有封面时它是唯一还能看出这是张唱片的东西。
