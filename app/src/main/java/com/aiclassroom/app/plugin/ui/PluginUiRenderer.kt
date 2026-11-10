@@ -75,6 +75,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import kotlinx.coroutines.delay
@@ -252,28 +253,45 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
     var anchor by remember(node.path) { mutableStateOf(node.anchor) }
     var offset by remember(node.path) { mutableStateOf(IntOffset(node.offsetX, node.offsetY)) }
     var scale by remember(node.path) { mutableFloatStateOf(1f) }
-    // 手势停下后吸附：detectTransformGestures 没有「松手」回调（它是个无限循环），
-    // 所以用 offset 变化后的静默期来判断「手已经离开」，再吸附并归零。
-    var pendingSnap by remember(node.path) { mutableStateOf(0) }
     val boxSize = remember(node.path) { mutableStateOf(IntSize.Zero) }
+    // grid9 = 吸附到九宫格；其余（free / 不写）= 无极摆放，位置自由只调对齐。
+    val snapToGrid = node.snapTo == "grid9"
 
-    LaunchedEffect(offset, scale) {
-        if (offset == IntOffset.Zero) return@LaunchedEffect
+    // 吸附只在 grid9 模式做：手势停下（320ms 静默）后吸到最近一格并归零。
+    // 无极摆放不归零 —— offset 本身就是位置。
+    LaunchedEffect(offset, scale, snapToGrid) {
+        if (!snapToGrid || offset == IntOffset.Zero) return@LaunchedEffect
         delay(320)
         val size = boxSize.value
-        if (node.snapTo == "grid9" && size.width > 0) {
+        if (size.width > 0) {
             anchor = snapAnchorTo(anchor, offset, size.width, size.height)
+            offset = IntOffset.Zero
         }
-        offset = IntOffset.Zero
-        pendingSnap++
+    }
+
+    // 对齐怎么算：
+    // - grid9：吸附出来的锚点直接决定（拖到左上就左对齐）
+    // - 无极：按当前横向偏移量判断自己在屏幕的哪一侧（超过容器宽 1/6 才算换边），
+    //   于是「随便摆在哪」也能得到合适的对齐，不需要把位置规整到九宫格上。
+    val width = boxSize.value.width
+    val align = when {
+        snapToGrid -> anchor.horizontalAlign()
+        width <= 0 -> anchor.horizontalAlign()
+        offset.x < -width / 6 -> UiAlign.START
+        offset.x > width / 6 -> UiAlign.END
+        else -> UiAlign.CENTER
     }
 
     // 外层管锚点（吸附结果），内层管实时偏移与缩放。
     // constraints 只在 BoxWithConstraints 的 content 里可见，所以手势放在内层。
     BoxWithConstraints(Modifier.align(alignmentOf(anchor))) {
-        boxSize.value = IntSize(constraints.maxWidth, constraints.maxHeight)
+        // 用 onSizeChanged 拿**节点自己的**尺寸，不能用 constraints：
+        // constraints 是父容器给的约束（常常是全屏），拿它判断左右会把所有位置都算成居中。
+        val localSize = remember { mutableStateOf(IntSize.Zero) }
+        boxSize.value = localSize.value
         Box(
             Modifier
+                .onSizeChanged { localSize.value = it }
                 .offset { offset }
                 // 缩放围绕中心：graphicsLayer 的 transformOrigin 默认就是中心。
                 .graphicsLayer {
@@ -298,7 +316,7 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
                     }
                 },
         ) {
-            PaintNode(node, paint.withAlign(anchor.horizontalAlign()))
+            PaintNode(node, paint.withAlign(align))
         }
     }
 }
@@ -342,43 +360,11 @@ internal fun PluginUiOverlay(
             // （ui_ticker 一秒一次，看上去就是「每秒抖一下」）。state 变更是快照读，
             // PaintNode 的 paint 参数变了自然会重组 —— 和全屏层那条注释是同一个道理。
             key(binding.pluginId) {
-                // 可拖动节点的位置状态：拖动中累加 offset，松手吸附到九宫格后归零。
-                // 吸附的是**锚点**而不是像素：落哪边就按哪边对齐，于是「位置即对齐」，
-                // 不需要再单独配置一个 align 项。
-                var dragAnchor by remember(binding.pluginId) { mutableStateOf(root.anchor) }
-                var dragOffset by remember(binding.pluginId) {
-                    mutableStateOf(IntOffset(root.offsetX, root.offsetY))
-                }
-                Box(
-                    Modifier
-                        .align(alignmentOf(dragAnchor))
-                        .offset { dragOffset }
-                        .then(
-                            if (!root.draggable) Modifier else Modifier.pointerInput(root.draggable, root.snapTo) {
-                                android.util.Log.i("PluginDrag", "${binding.pluginId} pointerInput 已装载 draggable=${root.draggable} snapTo=${root.snapTo}")
-                                detectDragGestures(
-                                    onDrag = { change, dragAmount ->
-                                        android.util.Log.i("PluginDrag", "${binding.pluginId} drag dx=${dragAmount.x} dy=${dragAmount.y}")
-                                        change.consume()
-                                        dragOffset = IntOffset(
-                                            (dragOffset.x + dragAmount.x).roundToInt(),
-                                            (dragOffset.y + dragAmount.y).roundToInt(),
-                                        )
-                                    },
-                                    onDragEnd = {
-                                        android.util.Log.i("PluginDrag", "${binding.pluginId} dragEnd offset=$dragOffset")
-                                        if (root.snapTo == "grid9") {
-                                            val snapped = snapAnchorTo(dragAnchor, dragOffset, size.width, size.height)
-                                            dragAnchor = snapped
-                                        }
-                                        // 吸附后 offset 归零：位置完全由锚点表达，不会再累积偏移。
-                                        dragOffset = IntOffset.Zero
-                                    },
-                                )
-                            }
-                        ),
-                    contentAlignment = Alignment.TopStart,
-                ) {
+                // 这里**只负责按根节点的 anchor 摆位置**。
+                // 拖动/缩放/吸附全部交给 PaintNode 的 BOX 分支（DraggableChild），
+                // 因为 draggable 是标在子节点上的；这里再写一遍会和它叠成双重定位
+                // （实测音乐浮窗因此跑到了屏幕中间而不是右下角）。
+                Box(Modifier.align(alignmentOf(root.anchor)), contentAlignment = Alignment.TopStart) {
                     PaintNode(
                         root,
                         Paint(
@@ -390,8 +376,6 @@ internal fun PluginUiOverlay(
                             onEvent = onEvent,
                             userImages = userImages[binding.pluginId].orEmpty(),
                             userImageFit = userImageFits[binding.pluginId].orEmpty(),
-                            // 位置即对齐：把吸附锚点的水平分量作为整棵子树的默认对齐。
-                            inheritedAlign = dragAnchor.horizontalAlign(),
                         ),
                     )
                 }

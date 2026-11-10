@@ -342,9 +342,11 @@ object PluginUiParser {
             snapTo = node.fields["snapTo"]?.asStringOrNull?.trim()?.let { raw ->
                 when (raw) {
                     "" -> null
+                    // grid9 = 吸附九宫格；free = 无极摆放（位置自由，只自动调对齐）。
                     "grid9" -> "grid9"
+                    "free" -> "free"
                     else -> {
-                        errors += path + ".snapTo 只能是 grid9，实际 '" + raw.take(20) + "'"
+                        errors += path + ".snapTo 只能是 grid9 或 free，实际 '" + raw.take(20) + "'"
                         null
                     }
                 }

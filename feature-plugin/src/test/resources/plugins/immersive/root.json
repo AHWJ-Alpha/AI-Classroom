@@ -32,8 +32,8 @@
         }
       ],
       "draggable": true,
-      "snapTo": "grid9",
-      "padding": 20,
+      "snapTo": "free",
+      "padding": 48,
       "scaleable": true
     },
     {
@@ -227,7 +227,10 @@
             }
           ]
         }
-      ]
+      ],
+      "anchor": "center",
+      "width": "fill",
+      "height": "fill"
     }
   ]
 }

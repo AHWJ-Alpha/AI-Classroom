@@ -290,5 +290,6 @@
         }
       ]
     }
-  ]
+  ],
+  "draggable": false
 }
