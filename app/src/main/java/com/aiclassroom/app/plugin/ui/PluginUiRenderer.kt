@@ -261,71 +261,74 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
     var offset by remember(node.path) { mutableStateOf(IntOffset(node.offsetX, node.offsetY)) }
     var scale by remember(node.path) { mutableFloatStateOf(1f) }
     val boxSize = remember(node.path) { mutableStateOf(IntSize.Zero) }
-    // grid9 = 吸附到九宫格；其余（free / 不写）= 无极摆放，位置自由只调对齐。
     val snapToGrid = node.snapTo == "grid9"
 
+    // grid9 的吸附：detectTransformGestures 没有「松手」回调（它是个无限循环），
+    // 所以用位移后的静默期判断手已离开。free 模式不做这一步（offset 本身就是位置）。
+    LaunchedEffect(offset, snapToGrid) {
+        if (!snapToGrid || offset == IntOffset.Zero) return@LaunchedEffect
+        delay(300)
+        val size = boxSize.value
+        if (size.width > 0) {
+            anchor = snapAnchorTo(anchor, offset, size.width, size.height)
+            offset = IntOffset.Zero
+        }
+    }
 
-    // 对齐怎么算：
-    // - grid9：吸附出来的锚点直接决定（拖到左上就左对齐）
-    // - 无极：按当前横向偏移量判断自己在屏幕的哪一侧（超过容器宽 1/6 才算换边），
-    //   于是「随便摆在哪」也能得到合适的对齐，不需要把位置规整到九宫格上。
-    val width = boxSize.value.width
+    // 对齐：grid9 由吸附锚点决定；free 按横向偏移量判断自己靠哪边（超过 1/6 才换边）。
+    val w = boxSize.value.width
     val align = when {
-        snapToGrid -> anchor.horizontalAlign()
-        width <= 0 -> anchor.horizontalAlign()
-        offset.x < -width / 6 -> UiAlign.START
-        offset.x > width / 6 -> UiAlign.END
+        snapToGrid || w <= 0 -> anchor.horizontalAlign()
+        offset.x < -w / 6 -> UiAlign.START
+        offset.x > w / 6 -> UiAlign.END
         else -> UiAlign.CENTER
     }
 
-    // 外层管锚点（吸附结果），内层管实时偏移与缩放。
-    // constraints 只在 BoxWithConstraints 的 content 里可见，所以手势放在内层。
-    BoxWithConstraints(Modifier.align(alignmentOf(anchor))) {
-        // 用 onSizeChanged 拿**节点自己的**尺寸，不能用 constraints：
-        // constraints 是父容器给的约束（常常是全屏），拿它判断左右会把所有位置都算成居中。
-        val localSize = remember { mutableStateOf(IntSize.Zero) }
-        boxSize.value = localSize.value
-        Box(
-            Modifier
-                .onSizeChanged { localSize.value = it }
-                .offset { offset }
-                // 缩放围绕中心：graphicsLayer 的 transformOrigin 默认就是中心。
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                }
-                // 点击 / 长按：单独一个识别器。
-                // 它和下面的拖动识别器是**两个独立的 pointerInput**，各自维护手势状态机：
-                // 手指一移动，tap 检测器自己取消；拖动检测器接手。这是 Compose 里组合手势的标准写法，
-                // 比手写 awaitEachGesture 稳（手写那版实测一个日志都没打印，说明事件根本没到）。
-                .pointerInput(node.path) {
-                    detectTapGestures(
-                        onTap = { entry ->
-                            node.onTap?.let { paint.onEvent(PluginUiEvent(paint.pluginId, it, "tap")) }
-                        },
-                        onLongPress = { entry ->
-                            node.onLongPress?.let { paint.onEvent(PluginUiEvent(paint.pluginId, it, "longPress")) }
-                        },
-                    )
-                }
-                // 拖动 + 双指缩放：detectTransformGestures 同时给平移和 zoom。
-                .pointerInput(node.path, node.snapTo, node.scaleable) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        // 缩放与平移互斥：正在捏合时不要再叠平移（否则捏合完整块内容会跑掉）。
-                        if (node.scaleable && zoom != 1f) {
-                            scale = (scale * zoom).coerceIn(0.5f, 3f)
-                        } else if (pan != Offset.Zero) {
-                            offset = IntOffset(
-                                (offset.x + pan.x).roundToInt(),
-                                (offset.y + pan.y).roundToInt(),
-                            )
-                        }
+    // **定位与手势必须在同一个 Box 上**。
+    // 之前的写法是 BoxWithConstraints(align) 里再套一个 Box(offset + 手势)，
+    // 结果视觉位置和命中区域对不上：胶囊画在 y880-1290，实际能点到的却是 y1394-1905，
+    // 点它没反应、反而穿透到下面的页面（实测点一下切到了「分支」页）。
+    // 现在 align → offset → 尺寸 → 缩放 → 手势 全在一条链上，点哪儿就是哪儿。
+    // **为什么用 `offset(x.dp, y.dp)` 而不是 `offset { IntOffset }`**：
+    //
+    // 后者（lambda 版）在测量**之后**才应用位移，于是「画在哪」和「点得到哪」是两个位置 ——
+    // 实测红色边框画出浮窗在 y1200-1660，而 boundsInRoot 报 y1394-1905，差 245px；
+    // 点浮窗没反应、反而穿透到下面的页面（点一下切到了「分支」页）。
+    // 非 lambda 版在测量阶段就位移，命中区域跟着一起走，两者始终一致。
+    val density = LocalDensity.current
+    val dx = with(density) { offset.x.toDp() }
+    val dy = with(density) { offset.y.toDp() }
+    Box(
+        Modifier
+            .align(alignmentOf(anchor))
+            .offset(x = dx, y = dy)
+            .onSizeChanged { boxSize.value = it }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            // 点击 / 长按：独立识别器，手指一移动它自己取消。
+            .pointerInput(node.path) {
+                detectTapGestures(
+                    onTap = { node.onTap?.let { paint.onEvent(PluginUiEvent(paint.pluginId, it, "tap")) } },
+                    onLongPress = { node.onLongPress?.let { paint.onEvent(PluginUiEvent(paint.pluginId, it, "longPress")) } },
+                )
+            }
+            // 拖动 + 双指缩放：一个识别器同时给平移和 zoom。
+            .pointerInput(node.path, node.snapTo, node.scaleable) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    if (node.scaleable && zoom != 1f) {
+                        scale = (scale * zoom).coerceIn(0.5f, 3f)
+                    } else if (pan != Offset.Zero) {
+                        offset = IntOffset(
+                            (offset.x + pan.x).roundToInt(),
+                            (offset.y + pan.y).roundToInt(),
+                        )
                     }
-                },
-        ) {
-            // interactive = false：点击/长按由上面那套手势统一派发，不再叠第二套识别器。
-            PaintNode(node, paint.withAlign(align), interactive = false)
-        }
+                }
+            },
+    ) {
+        PaintNode(node, paint.withAlign(align), interactive = false)
     }
 }
 

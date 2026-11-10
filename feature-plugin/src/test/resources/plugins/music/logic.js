@@ -31,7 +31,6 @@ var hintArtist = '';
 
 // 开关存插件私有存储：重装 app 也在，重启后悬浮窗保持上次的样子。
 state.shown = host.storageGet('shown') === 'true';
-state.compact = host.storageGet('compact') === 'true';
 state.expanded = host.storageGet('expanded') === 'true';
 
 function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -139,7 +138,6 @@ function onTick(ctx) {
 
 /** 展开成胶囊：点形态 A 时调用。 */
 function onExpand(ctx) {
-  state.compact = false;
   state.expanded = true;
   ctx.storage.set('compact', 'false');
   ctx.storage.set('expanded', 'true');
@@ -148,9 +146,8 @@ function onExpand(ctx) {
 
 /** 收回成小悬浮窗：点形态 B 的封面或空白处时调用。 */
 function onCollapse(ctx) {
-  state.compact = false;
+  // 点胶囊 → 收回小圆。
   state.expanded = false;
-  ctx.storage.set('compact', 'false');
   ctx.storage.set('expanded', 'false');
   host.requestUiRefresh();
 }
@@ -160,20 +157,11 @@ function onCollapse(ctx) {
  *
  * 用长按而不是单击：单击已经被「逐级展开 / 收回」占满了，再加一层单击没人猜得到。
  */
-function onCompact(ctx) {
-  state.compact = true;
-  state.expanded = false;
-  ctx.storage.set('compact', 'true');
-  ctx.storage.set('expanded', 'false');
-  host.requestUiRefresh();
-}
-
 /** 点最小圆：先回到形态 A，而不是一步跳到胶囊（手滑一下就全展开太跳）。 */
 function onCircleTap(ctx) {
-  state.compact = false;
-  state.expanded = false;
-  ctx.storage.set('compact', 'false');
-  ctx.storage.set('expanded', 'false');
+  // 点小圆 → 直接展开成胶囊（两态，没有中间的方卡了）。
+  state.expanded = true;
+  ctx.storage.set('expanded', 'true');
   host.requestUiRefresh();
 }
 
@@ -186,18 +174,17 @@ function onCircleTap(ctx) {
 function onToggleShow(ctx) {
   if (state.shown) {
     state.shown = false;
-    state.compact = false;
     state.expanded = false;
     ctx.storage.set('shown', 'false');
-    ctx.storage.set('compact', 'false');
     ctx.storage.set('expanded', 'false');
     host.requestUiRefresh();
     return;
   }
-  // 重新打开时回到形态 A：收起过的小圆不该在下次打开时当成默认。
+  // 打开时默认就是小圆（只有一个收起态了）。
   state.shown = true;
-  state.compact = false;
+  state.expanded = false;
   ctx.storage.set('shown', 'true');
+  ctx.storage.set('expanded', 'false');
   ctx.storage.set('compact', 'false');
   var result = host.mediaControl('playOrShow');
   var info = {};
@@ -260,15 +247,13 @@ function onNext(ctx) {
 
 /** provider 的返回：只给标量，ui.json 用 state.xxx 单层取值。 */
 function snapshot() {
-  // 三态互斥在这里算一次：ui.json 的 visibleWhen 只做单层取值，看不懂 && / !。
-  var circle = state.compact;
-  var expanded = !circle && state.expanded;
-  var collapsed = !circle && !state.expanded;
+  // 两态：展开 → 胶囊；否则 → 小圆。
+  // 原来的第三个「方卡」形态已按用户要求删掉 —— 它要靠长按才能变回小圆，
+  // 而长按小圆会崩（两个手势识别器同时抢事件），三态切换本身也是多余复杂度。
   return {
     shown: state.shown,
-    circle: circle,
-    collapsed: collapsed,
-    expanded: expanded,
+    // 只剩一个形态：永远画小圆。
+    circle: true,
     playing: state.playing,
     paused: !state.playing,
     title: state.title,
