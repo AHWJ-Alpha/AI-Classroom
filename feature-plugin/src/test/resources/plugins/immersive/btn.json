@@ -1,20 +1,14 @@
 {
-  "type": "row",
-  "gap": 4,
+  "type": "box",
   "onTap": "onEnter",
+  "padding": 6,
   "children": [
     {
       "type": "icon",
       "name": "public",
-      "size": 18,
-      "color": "primary"
-    },
-    {
-      "type": "text",
-      "text": "沉浸",
-      "size": "caption",
+      "size": 22,
       "color": "primary",
-      "weight": "bold"
+      "anchor": "center"
     }
   ]
 }
