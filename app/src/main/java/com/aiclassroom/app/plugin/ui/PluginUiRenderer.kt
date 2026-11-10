@@ -287,12 +287,20 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
         }
     }
 
-    // 对齐：grid9 由吸附锚点决定；free 按横向偏移量判断自己靠哪边（超过 1/6 才换边）。
-    val w = boxSize.value.width
+    // 对齐：grid9 由吸附锚点决定；free 按横向偏移量判断自己靠哪边。
+    //
+    // 阈值用**屏幕宽的 1/8**而不是「内容宽的 1/6」：
+    // 内容宽的 1/6 会随内容变大而变严（日期比时钟宽一倍，阈值也跟着翻倍），
+    // 于是「边界要够小以免内容被裁」和「阈值要够小才触发得了」互相顶死 ——
+    // 实测 816px 宽的内容：完整可见只允许 ±132px，而 w/6 阈值是 136px，差 4px 就废掉了对齐。
+    // 用屏宽做基准后两者解耦。系数取 1/10：
+    // 内容 810px 宽时，居中每边只剩 135px 余量 —— 阈值若取 1/8（135px）就正好卡在临界，
+    // 拖到最边也换不了边。1/10 = 108px，留出确定的余量，同时不至于一碰就换边。
+    val threshold = (screenW / 10f).roundToInt()
     val align = when {
-        snapToGrid || w <= 0 -> anchor.horizontalAlign()
-        offset.x < -w / 6 -> UiAlign.START
-        offset.x > w / 6 -> UiAlign.END
+        snapToGrid -> anchor.horizontalAlign()
+        offset.x < -threshold -> UiAlign.START
+        offset.x > threshold -> UiAlign.END
         else -> UiAlign.CENTER
     }
 
@@ -351,12 +359,14 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
                         //    上一版用「居中余量 × 0.85」算出上界 112px，而阈值是 136px，
                         //    结果对齐功能等于被废掉：文字无论怎么拖都只能居中。
                         //
-                        // 现在的公式 = 居中余量 + 35% 内容宽度：
-                        // 时钟实测上界 418px（> 阈值 136，能换边），拖到最左时内容仍有 65% 可见。
+                        // 边界 = 「内容居中时的余量」，即**保证内容完整可见**，一点都不切。
+                        // 配合阈值降到屏宽 1/10（108px），810px 宽的内容余量 135px > 108，
+                        // 拖到头仍然能换边 —— 两条约束终于同时成立。
+                        // 内容比屏幕还宽时余量为负，夹到 0（这种时候本来也无处可移）。
                         val contentW = boxSize.value.width * scale
                         val contentH = boxSize.value.height * scale
-                        val limitX = ((screenW - contentW) / 2f + contentW * 0.35f).roundToInt()
-                        val limitY = ((screenH - contentH) / 2f + contentH * 0.35f).roundToInt()
+                        val limitX = ((screenW - contentW) / 2f).coerceAtLeast(0f).roundToInt()
+                        val limitY = ((screenH - contentH) / 2f).coerceAtLeast(0f).roundToInt()
                         offset = IntOffset(
                             (offset.x + pan.x).roundToInt().coerceIn(-limitX, limitX),
                             (offset.y + pan.y).roundToInt().coerceIn(-limitY, limitY),
