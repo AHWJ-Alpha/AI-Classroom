@@ -982,7 +982,17 @@ private fun AIClassroomApp() {
             // 没授权时给的是 media_permission_required + 一句「去哪儿开」的提示，
             // 而不是一个空曲目 —— 静默失败会让插件作者以为自己的代码写错了。
             mediaCurrentImpl = {
-                val track = NowPlaying.current()
+                var track = NowPlaying.current()
+                if (track == null) {
+                    // 兜底：主动向系统要一次活跃会话。
+                    //
+                    // `refreshIfIdle` 只挂在 onNotificationPosted 上 —— 应用重装后、
+                    // 或播放器压根不发通知时，那个回调永远不来，sessions 表一直是空的，
+                    // 于是插件读到的永远是「未在播放」，进度条也就永远 0:00。
+                    // 这里在「真拿不到」时补一次扫描：正常情况零开销（current() 非空直接跳过）。
+                    withContext(Dispatchers.IO) { runCatching { NowPlaying.refresh() } }
+                    track = NowPlaying.current()
+                }
                 when {
                     !mediaToolsEnabled ->
                         PluginResult.Failure("media_disabled", MEDIA_DISABLED_HINT)

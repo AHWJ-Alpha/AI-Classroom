@@ -111,7 +111,23 @@ object NowPlaying {
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     /** 当前曲目快照；没有可用会话时是 null。 */
-    fun current(): Track? = currentTrack
+    /**
+     * 当前曲目。**每次调用都按锚点重算进度**，不是返回冻结的快照。
+     *
+     * 为什么必须这样：currentTrack 只在「扫描会话」时重建（收到通知 / 主动 refresh），
+     * 如果直接把缓存对象返回，positionMs 就冻结在上次扫描的那一刻 ——
+     * 界面上的进度会永远停在 1:33，哪怕播放器早就在往前走。
+     * 这是「进度条不动」的真正原因（之前一直在推算逻辑里找，方向错了）。
+     */
+    fun current(): Track? {
+        val t = currentTrack ?: return null
+        if (!t.isPlaying) return t
+        val elapsed = SystemClock.elapsedRealtime() - positionAnchorAt
+        if (elapsed <= 0L) return t
+        var pos = positionAnchorMs + elapsed
+        if (t.durationMs > 0) pos = pos.coerceIn(0L, t.durationMs)
+        return t.copy(positionMs = pos)
+    }
 
     /** 当前曲目来自哪个包（没有会话时为 null）。 */
     fun currentPackage(): String? = activePackage
