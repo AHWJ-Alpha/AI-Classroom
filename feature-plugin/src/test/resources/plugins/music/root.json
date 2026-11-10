@@ -2,13 +2,13 @@
   "type": "box",
   "anchor": "bottom_right",
   "offsetX": -16,
-  "offsetY": -100,
+  "offsetY": -180,
   "visibleWhen": "state.shown",
   "children": [
     {
       "type": "box",
       "anchor": "bottom_right",
-      "offsetY": -108,
+      "offsetY": -190,
       "width": 40,
       "height": 40,
       "radius": "full",
