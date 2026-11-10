@@ -344,15 +344,19 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
                         // **必须有边界**：offset 是无脑累加的，不夹住就能一路拖出屏幕，
                         // 用户实测「放大之后往左挪，时间直接飞出去了」。
                         //
-                        // 上界按**内容实际尺寸**算，而不是拍一个屏幕比例：
-                        // 固定比例（试过 0.5 和 0.38）会让宽内容贴着屏幕边缘被裁掉
-                        // （实测时钟文字左沿卡在 x0）。
-                        // 现在用「屏幕能容纳这个内容的居中余量」× 0.85：内容永远完整可见，
-                        // 放大后余量自动变小 —— 放大越多能拖的范围越小，符合直觉。
+                        // 边界要同时满足两件事，很容易顾此失彼：
+                        //
+                        // 1) 内容不能完全飞出屏幕（用户实测过「放大后往左挪，时间直接飞出去」）；
+                        // 2) **必须大于「位置即对齐」的阈值**（w/6），否则永远拖不到能换边的位置 ——
+                        //    上一版用「居中余量 × 0.85」算出上界 112px，而阈值是 136px，
+                        //    结果对齐功能等于被废掉：文字无论怎么拖都只能居中。
+                        //
+                        // 现在的公式 = 居中余量 + 35% 内容宽度：
+                        // 时钟实测上界 418px（> 阈值 136，能换边），拖到最左时内容仍有 65% 可见。
                         val contentW = boxSize.value.width * scale
                         val contentH = boxSize.value.height * scale
-                        val limitX = ((screenW - contentW) / 2f * 0.85f).coerceAtLeast(0f).roundToInt()
-                        val limitY = ((screenH - contentH) / 2f * 0.85f).coerceAtLeast(0f).roundToInt()
+                        val limitX = ((screenW - contentW) / 2f + contentW * 0.35f).roundToInt()
+                        val limitY = ((screenH - contentH) / 2f + contentH * 0.35f).roundToInt()
                         offset = IntOffset(
                             (offset.x + pan.x).roundToInt().coerceIn(-limitX, limitX),
                             (offset.y + pan.y).roundToInt().coerceIn(-limitY, limitY),
