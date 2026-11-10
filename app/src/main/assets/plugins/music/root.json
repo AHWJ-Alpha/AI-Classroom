@@ -31,7 +31,9 @@
           "anchor": "center",
           "visibleWhen": "state.noArt"
         }
-      ]
+      ],
+      "draggable": true,
+      "snapTo": "free"
     },
     {
       "type": "card",
@@ -119,7 +121,9 @@
             }
           ]
         }
-      ]
+      ],
+      "draggable": true,
+      "snapTo": "free"
     },
     {
       "type": "card",
@@ -288,7 +292,9 @@
             }
           ]
         }
-      ]
+      ],
+      "draggable": true,
+      "snapTo": "free"
     }
   ],
   "draggable": false

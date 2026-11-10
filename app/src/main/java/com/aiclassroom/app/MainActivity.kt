@@ -2512,8 +2512,24 @@ private fun AIClassroomApp() {
             replaceCurrent(current.copy(config = current.config.copy(reasoningEffort = effort)), "推理强度已调整")
         }
     )
-    // FULLSCREEN：课堂页最外层的最后一块，覆盖顶栏 / 消息 / 输入框 / 底栏（保留安全区）。
-    // 同一时刻只有一个插件在这里（FullscreenArbiter 仲裁），右上角永远有宿主兜底退出按钮。
+    // GLOBAL_OVERLAY：画在 Scaffold **之外**，才能覆盖顶栏和底栏。
+    //
+    // 以前它在课堂页内部（Scaffold 的 content 里），父容器只有消息区那么大 ——
+    // 于是 bottom_right 锚点算出来永远偏上（实测音乐浮窗悬在屏幕中间），
+    // 拖动也没法把它放到底栏附近。移到这一层后坐标就是整屏坐标。
+    PluginUiOverlay(
+        bindings = uiOverlayBindings,
+        states = uiStateSnapshot,
+        palette = palette,
+        onEvent = onPluginUiEvent,
+        stateVersions = pluginStateVersions,
+        userImages = uiUserImages,
+        userImageFits = uiUserImageFits,
+    )
+
+    // FULLSCREEN：最外层的最后一块，覆盖包括 GLOBAL_OVERLAY 在内的一切。
+    // 同一时刻只有一个插件在这里（FullscreenArbiter 仲裁），右下角永远有宿主兜底退出按钮。
+    // 沉浸模式就是靠它盖住悬浮窗的 —— 那时候音乐有自己的沉浸界面，不需要浮窗。
     uiFullscreenBinding?.let { binding ->
         PluginUiFullscreen(
             binding = binding,
@@ -2883,15 +2899,7 @@ private fun ClassScreen(
             savedExam?.let { archived ->
                 ExamResumeBanner(archived, palette, onResumeExam, Modifier.align(Alignment.TopCenter))
             }
-            PluginUiOverlay(
-                bindings = pluginOverlay,
-                states = pluginStates,
-                palette = palette,
-                onEvent = onPluginUiEvent,
-                stateVersions = pluginStateVersions,
-                userImages = pluginUserImages,
-                userImageFits = pluginUserImageFits,
-            )
+            // GLOBAL_OVERLAY 现在画在 Scaffold 之外（见主 Composable），这里不再重复绘制。
         }
         return
     }
@@ -3010,16 +3018,7 @@ private fun ClassScreen(
             onClick = { scope.launch { if (isAtBottom) listState.animateScrollToItem(topIndex) else listState.animateScrollToItem(bottomIndex) } },
             modifier = Modifier.align(Alignment.BottomEnd).padding(end = DesignTokens.Spacing.Md, bottom = (if (compactInput) 122.dp else 188.dp) + LocalBottomBarLift.current),
         )
-        // GLOBAL_OVERLAY：课堂页最外层 Box 的顶层，锚点定位、可覆盖在内容之上（宠物就在这里）。
-        PluginUiOverlay(
-            bindings = pluginOverlay,
-            states = pluginStates,
-            palette = palette,
-            onEvent = onPluginUiEvent,
-            stateVersions = pluginStateVersions,
-            userImages = pluginUserImages,
-            userImageFits = pluginUserImageFits,
-        )
+        // GLOBAL_OVERLAY 已提到 Scaffold 之外，这里不再绘制。
     }
 }
 

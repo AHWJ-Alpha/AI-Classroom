@@ -69,12 +69,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -257,17 +264,6 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
     // grid9 = 吸附到九宫格；其余（free / 不写）= 无极摆放，位置自由只调对齐。
     val snapToGrid = node.snapTo == "grid9"
 
-    // 吸附只在 grid9 模式做：手势停下（320ms 静默）后吸到最近一格并归零。
-    // 无极摆放不归零 —— offset 本身就是位置。
-    LaunchedEffect(offset, scale, snapToGrid) {
-        if (!snapToGrid || offset == IntOffset.Zero) return@LaunchedEffect
-        delay(320)
-        val size = boxSize.value
-        if (size.width > 0) {
-            anchor = snapAnchorTo(anchor, offset, size.width, size.height)
-            offset = IntOffset.Zero
-        }
-    }
 
     // 对齐怎么算：
     // - grid9：吸附出来的锚点直接决定（拖到左上就左对齐）
@@ -298,14 +294,25 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
                     scaleX = scale
                     scaleY = scale
                 }
+                // 点击 / 长按：单独一个识别器。
+                // 它和下面的拖动识别器是**两个独立的 pointerInput**，各自维护手势状态机：
+                // 手指一移动，tap 检测器自己取消；拖动检测器接手。这是 Compose 里组合手势的标准写法，
+                // 比手写 awaitEachGesture 稳（手写那版实测一个日志都没打印，说明事件根本没到）。
+                .pointerInput(node.path) {
+                    detectTapGestures(
+                        onTap = { entry ->
+                            node.onTap?.let { paint.onEvent(PluginUiEvent(paint.pluginId, it, "tap")) }
+                        },
+                        onLongPress = { entry ->
+                            node.onLongPress?.let { paint.onEvent(PluginUiEvent(paint.pluginId, it, "longPress")) }
+                        },
+                    )
+                }
+                // 拖动 + 双指缩放：detectTransformGestures 同时给平移和 zoom。
                 .pointerInput(node.path, node.snapTo, node.scaleable) {
-                    // detectTransformGestures 同时给平移（单指拖 / 双指拖）和缩放（双指捏合），
-                    // 一个识别器覆盖两种手势，比叠两个 pointerInput 更稳（不会互相抢事件）。
                     detectTransformGestures { _, pan, zoom, _ ->
-                        // 缩放与平移互斥：正在捏合时不要再叠平移。
-                        // 否则两指稍微同向移动就会把整块内容拖走（实测捏合完时钟跑到底部去了）。
+                        // 缩放与平移互斥：正在捏合时不要再叠平移（否则捏合完整块内容会跑掉）。
                         if (node.scaleable && zoom != 1f) {
-                            // 0.5×..3×：再小看不清，再大一块字糊满屏。
                             scale = (scale * zoom).coerceIn(0.5f, 3f)
                         } else if (pan != Offset.Zero) {
                             offset = IntOffset(
@@ -316,7 +323,8 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
                     }
                 },
         ) {
-            PaintNode(node, paint.withAlign(align))
+            // interactive = false：点击/长按由上面那套手势统一派发，不再叠第二套识别器。
+            PaintNode(node, paint.withAlign(align), interactive = false)
         }
     }
 }
@@ -609,7 +617,19 @@ private fun TopBarFallbackButton(binding: PluginUiBinding, palette: AppPalette, 
 // ------------------------------------------------------------------ 节点渲染
 
 @Composable
-private fun PaintNode(node: UiNode, paint: Paint, modifier: Modifier = Modifier) {
+private fun PaintNode(
+    node: UiNode,
+    paint: Paint,
+    modifier: Modifier = Modifier,
+    /**
+     * 是否由这里挂点击/长按识别器。
+     *
+     * [DraggableChild] 要传 false —— 它自己用一套手写手势同时处理点击、长按、拖动、缩放；
+     * 两套识别器叠在同一个节点上会互相抢事件：外层的 pointerInput 先消费掉 down，
+     * 内层的 combinedClickable 就永远收不到点击（实测小圆点了没反应）。
+     */
+    interactive: Boolean = true,
+) {
     if (!isVisible(node, paint)) return
     // 顺序很重要：尺寸 → 背景 → 内边距。
     // 背景压在 padding 外面，写了 padding 的整屏容器（息屏钟）才会连边都铺满颜色，
@@ -619,7 +639,7 @@ private fun PaintNode(node: UiNode, paint: Paint, modifier: Modifier = Modifier)
         .then(backgroundModifier(node, paint))
         .then(paddingModifier(node))
         .then(offsetModifier(node))
-        .then(clickModifier(node, paint))
+        .then(if (interactive) clickModifier(node, paint) else Modifier)
     val animation = node.animation
     if (animation == null || animation is UiAnimation.Sprite) {
         // sprite 是「一直循环」的帧动画，由 image 节点自己驱动，不走入场动画。
@@ -709,7 +729,10 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
             border = BorderStroke(DesignTokens.Border.Hairline, paint.palette.outline),
         ) {
             Column(
-                Modifier.padding(horizontal = DesignTokens.Spacing.Lg, vertical = DesignTokens.Spacing.Md),
+                // fillMaxWidth 必须写：card 的 width 是给 Surface 的，内容层不加这条就会 wrap content，
+                // 于是「里层有 fill 的子项 + 外层 wrap 的容器」互相等待，宽度塌到最小 ——
+                // 实测把浮窗拖到左边（对齐从 Center 变 Start）时宽度从 495px 缩到 390px。
+                Modifier.fillMaxWidth().padding(horizontal = DesignTokens.Spacing.Lg, vertical = DesignTokens.Spacing.Md),
                 verticalArrangement = node.gap?.let { Arrangement.spacedBy(it.dp) } ?: Arrangement.Top,
             ) {
                 node.children.forEach { PaintNode(it, childPaint(paint, node)) }
