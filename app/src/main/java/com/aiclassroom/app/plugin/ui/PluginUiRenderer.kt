@@ -72,7 +72,12 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -244,33 +249,53 @@ private fun snapAnchorTo(base: UiAnchor?, offset: IntOffset, width: Int, height:
  */
 @Composable
 private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
-    android.util.Log.i("PluginDrag", "DraggableChild 渲染 ${node.path} anchor=${node.anchor}")
     var anchor by remember(node.path) { mutableStateOf(node.anchor) }
     var offset by remember(node.path) { mutableStateOf(IntOffset(node.offsetX, node.offsetY)) }
-    // 外层管锚点（吸附结果），内层管拖动偏移。
-    // constraints 只在 BoxWithConstraints 的 content 里可见，所以 pointerInput 放在内层 Box 上。
+    var scale by remember(node.path) { mutableFloatStateOf(1f) }
+    // 手势停下后吸附：detectTransformGestures 没有「松手」回调（它是个无限循环），
+    // 所以用 offset 变化后的静默期来判断「手已经离开」，再吸附并归零。
+    var pendingSnap by remember(node.path) { mutableStateOf(0) }
+    val boxSize = remember(node.path) { mutableStateOf(IntSize.Zero) }
+
+    LaunchedEffect(offset, scale) {
+        if (offset == IntOffset.Zero) return@LaunchedEffect
+        delay(320)
+        val size = boxSize.value
+        if (node.snapTo == "grid9" && size.width > 0) {
+            anchor = snapAnchorTo(anchor, offset, size.width, size.height)
+        }
+        offset = IntOffset.Zero
+        pendingSnap++
+    }
+
+    // 外层管锚点（吸附结果），内层管实时偏移与缩放。
+    // constraints 只在 BoxWithConstraints 的 content 里可见，所以手势放在内层。
     BoxWithConstraints(Modifier.align(alignmentOf(anchor))) {
-        val boxWidth = constraints.maxWidth
-        val boxHeight = constraints.maxHeight
+        boxSize.value = IntSize(constraints.maxWidth, constraints.maxHeight)
         Box(
             Modifier
                 .offset { offset }
-                .pointerInput(node.path, node.snapTo) {
-                    detectDragGestures(
-                        onDrag = { change, dragAmount ->
-                            change.consume()
+                // 缩放围绕中心：graphicsLayer 的 transformOrigin 默认就是中心。
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .pointerInput(node.path, node.snapTo, node.scaleable) {
+                    // detectTransformGestures 同时给平移（单指拖 / 双指拖）和缩放（双指捏合），
+                    // 一个识别器覆盖两种手势，比叠两个 pointerInput 更稳（不会互相抢事件）。
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        // 缩放与平移互斥：正在捏合时不要再叠平移。
+                        // 否则两指稍微同向移动就会把整块内容拖走（实测捏合完时钟跑到底部去了）。
+                        if (node.scaleable && zoom != 1f) {
+                            // 0.5×..3×：再小看不清，再大一块字糊满屏。
+                            scale = (scale * zoom).coerceIn(0.5f, 3f)
+                        } else if (pan != Offset.Zero) {
                             offset = IntOffset(
-                                (offset.x + dragAmount.x).roundToInt(),
-                                (offset.y + dragAmount.y).roundToInt(),
+                                (offset.x + pan.x).roundToInt(),
+                                (offset.y + pan.y).roundToInt(),
                             )
-                        },
-                        onDragEnd = {
-                            if (node.snapTo == "grid9") {
-                                anchor = snapAnchorTo(anchor, offset, boxWidth, boxHeight)
-                            }
-                            offset = IntOffset.Zero
-                        },
-                    )
+                        }
+                    }
                 },
         ) {
             PaintNode(node, paint.withAlign(anchor.horizontalAlign()))

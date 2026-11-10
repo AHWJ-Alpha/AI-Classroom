@@ -84,7 +84,7 @@ object PluginUiParser {
         "width", "height", "visibleWhen", "background", "radius", "animation",
         "onTap", "onLongPress", "onDoubleTap",
         // 自由摆放：可拖动 + 松手吸附到九宫格（位置即对齐）。
-        "draggable", "snapTo",
+        "draggable", "snapTo", "scaleable",
     )
 
     /** 每种组件允许的字段：多写一个未知字段会报错，避免拼错的字段静默失效。 */
@@ -338,6 +338,7 @@ object PluginUiParser {
             },
             // 可拖动 + 吸附：只认 grid9（吸附到九宫格最近一格），写别的值直接报错。
             draggable = booleanField(node, "draggable", path, errors) ?: false,
+            scaleable = booleanField(node, "scaleable", path, errors) ?: false,
             snapTo = node.fields["snapTo"]?.asStringOrNull?.trim()?.let { raw ->
                 when (raw) {
                     "" -> null
@@ -356,6 +357,9 @@ object PluginUiParser {
         // 吸附必须配合拖动：只写 snapTo 不写 draggable 等于什么都没发生，早点报错。
         if (node.snapTo != null && !node.draggable) {
             errors += path + ".snapTo 需要同时设置 draggable: true"
+        }
+        if (node.scaleable && !node.draggable) {
+            errors += path + ".scaleable 需要同时设置 draggable: true（两者共用同一套手势）"
         }
         when (node.type) {
             UiNodeType.TEXT -> {

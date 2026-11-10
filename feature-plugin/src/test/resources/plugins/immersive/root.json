@@ -33,7 +33,8 @@
       ],
       "draggable": true,
       "snapTo": "grid9",
-      "padding": 20
+      "padding": 20,
+      "scaleable": true
     },
     {
       "type": "column",

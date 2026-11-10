@@ -307,6 +307,14 @@ data class UiNode(
      * 于是「位置即对齐」—— 文字的左/中/右对齐不需要额外配置项，落在哪边就按哪边排。
      */
     val snapTo: String? = null,
+
+    /**
+     * 允许双指捏合缩放（0.5×..3×，围绕节点中心）。
+     *
+     * 与 [draggable] 共用同一套手势识别（detectTransformGestures 同时给平移和缩放），
+     * 所以只写 scaleable 不写 draggable 时解析会报错。
+     */
+    val scaleable: Boolean = false,
     val padding: Int? = null,
     val gap: Int? = null,
     val width: UiLength? = null,
