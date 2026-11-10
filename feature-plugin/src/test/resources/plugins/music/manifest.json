@@ -1,8 +1,8 @@
 {
   "id": "music",
   "name": "音乐",
-  "version": "1.0.0",
-  "description": "平时是小悬浮窗：封面 + 歌名 + 进度；点一下展开成胶囊，可以直接播放 / 暂停 / 上一首 / 下一首",
+  "version": "1.1.0",
+  "description": "三态悬浮窗：最小圆（仅封面/音符，播放时自转）+ 小悬浮窗（封面+歌名+进度）+ 胶囊（封面+waveform+控制键）。单击逐级展开/收回，长按收成最小圆",
   "author": "AI Classroom",
   "minApiVersion": 1,
   "permissions": [

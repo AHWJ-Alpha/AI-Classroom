@@ -6,6 +6,34 @@
   "visibleWhen": "state.shown",
   "children": [
     {
+      "type": "box",
+      "anchor": "bottom_right",
+      "offsetY": -108,
+      "width": 40,
+      "height": 40,
+      "radius": "full",
+      "visibleWhen": "state.circle",
+      "onTap": "onCircleTap",
+      "onLongPress": "onCompact",
+      "children": [
+        {
+          "type": "disk",
+          "size": 40,
+          "coverFrom": "state.artworkPath",
+          "spinningFrom": "state.playing",
+          "color": "surfaceVariant"
+        },
+        {
+          "type": "icon",
+          "name": "music",
+          "size": 18,
+          "color": "primary",
+          "anchor": "center",
+          "visibleWhen": "state.noArt"
+        }
+      ]
+    },
+    {
       "type": "card",
       "anchor": "bottom_right",
       "width": 220,
@@ -14,6 +42,7 @@
       "gap": 8,
       "visibleWhen": "state.collapsed",
       "onTap": "onExpand",
+      "onLongPress": "onCompact",
       "children": [
         {
           "type": "row",
@@ -101,6 +130,7 @@
       "gap": 10,
       "visibleWhen": "state.expanded",
       "onTap": "onCollapse",
+      "onLongPress": "onCompact",
       "children": [
         {
           "type": "row",

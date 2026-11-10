@@ -10,13 +10,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 三个示例插件既是「自由度」的证据，也是回归样本：
+ * 示例插件既是「自由度」的证据，也是回归样本：
  * 它们必须始终通过 manifest 校验、ui.json 解析、入口函数静态检查，打包成 .aip 之后还要能直接导入。
+ *
+ * top_quick（顶栏「考试」按钮）已随功能下沉删除：考试改由 AI 发起、历史进记忆页，
+ * 顶栏不再需要这个示例按钮。
  */
 class SamplePluginTest {
 
-    /** 有预打包 .aip 的三个示例（导入路径的回归样本）。 */
-    private val sampleIds = listOf("pet_cat", "msg_badge", "top_quick")
+    /** 有预打包 .aip 的示例（导入路径的回归样本）。 */
+    private val sampleIds = listOf("pet_cat", "msg_badge")
 
     /** 全部示例插件：只用源文件（manifest.json + logic.js 等）也必须通过校验。 */
     private val allSampleIds = sampleIds + listOf("nightmare", "time_flow")
@@ -33,7 +36,6 @@ class SamplePluginTest {
         val extra = when (pluginId) {
             "pet_cat" -> listOf("pet.json")
             "msg_badge" -> listOf("badge.json")
-            "top_quick" -> listOf("btn.json")
             else -> emptyList()
         }
         for (file in extra) text[file] = readTestResource("plugins/$pluginId/$file")
@@ -60,7 +62,6 @@ class SamplePluginTest {
         val cases = mapOf(
             "pet_cat" to "pet.json",
             "msg_badge" to "badge.json",
-            "top_quick" to "btn.json",
         )
         for ((pluginId, file) in cases) {
             val result = PluginUiParser.parse(readTestResource("plugins/$pluginId/$file"))
@@ -70,7 +71,7 @@ class SamplePluginTest {
     }
 
     @Test
-    fun `示例插件覆盖三种截然不同的插槽形态`() {
+    fun `示例插件覆盖两种截然不同的插槽形态`() {
         assertEquals(
             listOf("GLOBAL_OVERLAY"),
             packageOf("pet_cat").validate().manifest!!.extensionsOf(PluginExtensionType.UI_OVERLAY).map { it.slot },
@@ -78,10 +79,6 @@ class SamplePluginTest {
         assertEquals(
             listOf("MESSAGE_BODY_TAIL"),
             packageOf("msg_badge").validate().manifest!!.extensionsOf(PluginExtensionType.MESSAGE_DECORATOR).map { it.slot },
-        )
-        assertEquals(
-            listOf("TOP_BAR_ACTIONS"),
-            packageOf("top_quick").validate().manifest!!.extensionsOf(PluginExtensionType.BAR_BUTTON).map { it.slot },
         )
     }
 
@@ -151,25 +148,10 @@ class SamplePluginTest {
         } finally {
             badge.close()
         }
-
-        // top_quick：exam.read + dialog.insert
-        val quickHost = RecordingHostApi()
-        quickHost.examResult = PluginResult.Success(
-            "{\"title\":\"第一次小测\",\"questions\":[{\"question\":\"1+1=?\"}],\"questionCount\":1}",
-        )
-        val quick = PluginRuntime.create(packageOf("top_quick"), quickHost, InMemoryStateStore())
-        try {
-            quick.runUiEvent("onInsertExam", "tap", null)
-            val inserted = quickHost.calls.firstOrNull { it.startsWith("insertDialog:") }.orEmpty()
-            assertTrue(inserted, inserted.contains("第一次小测"))
-            assertTrue(inserted, inserted.contains("1+1=?"))
-        } finally {
-            quick.close()
-        }
     }
 
     @Test
-    fun `三个 aip 包可以直接导入`() {
+    fun `示例 aip 包可以直接导入`() {
         for (pluginId in sampleIds) {
             val pkg = PluginPackage.read(bytesOf("aip/$pluginId.aip"), "$pluginId.aip")
             val validation = pkg.validate()

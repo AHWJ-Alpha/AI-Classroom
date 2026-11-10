@@ -3,6 +3,7 @@ package com.aiclassroom.app
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.util.LruCache
+import com.aiclassroom.app.media.MusicLauncher
 import com.aiclassroom.app.media.NowPlaying
 import com.aiclassroom.app.web.WebCaptureEngine
 import com.aiclassroom.app.web.WebConsentBroker
@@ -425,6 +426,27 @@ internal data class ClassroomConfig(
     fun visionBaseUrlOrMain(): String = visionBaseUrl.ifBlank { baseUrl }
 }
 
+/** 记忆页只回看最近这些次考试；再多的历史没人翻，还会把整份存档撑大。 */
+private const val EXAM_RECORD_LIMIT = 50
+
+/**
+ * 一次考试的历史记录。
+ *
+ * [Classroom.exam] 只存「当前这份」考试，提交后会被覆盖，所以历史必须单独留一份。
+ * [questions] 一并留档：只记题数的话，记忆页点开记录就看不出考了什么、当时怎么答的、参考解析是什么。
+ * 时间戳是毫秒；[startedAt] 在会话刚出现时打点，[submittedAt] 是提交那一刻。
+ */
+private data class ExamRecord(
+    val id: String,
+    val title: String,
+    val startedAt: Long,
+    val submittedAt: Long,
+    val questionCount: Int,
+    val answeredCount: Int,
+    val submitted: Boolean,
+    val questions: List<ExamQuestion> = emptyList()
+)
+
 private data class Classroom(
     val name: String,
     val topic: String,
@@ -438,7 +460,9 @@ private data class Classroom(
     val files: MutableList<KnowledgeFile>,
     val config: ClassroomConfig,
     /** 该课堂的考试存档（未提交 / 已提交都留在这里），随课堂一起持久化；旧存档没有该字段时为 null。 */
-    val exam: ExamSession? = null
+    val exam: ExamSession? = null,
+    /** 历次考试记录，最新的在最后；旧存档没有该字段 → 空列表。 */
+    val examRecords: List<ExamRecord> = emptyList()
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -453,6 +477,9 @@ private fun AIClassroomApp() {
     var classMenuOpen by remember { mutableStateOf(false) }
     var jumpToMessageIndex by remember { mutableStateOf<Int?>(null) }
     var examSession by remember { mutableStateOf<ExamSession?>(null) }
+    // 这份考试的起始时刻：会话在多处被创建（AI 触发 / 考试工具 / 存档恢复），
+    // 没法塞进 ExamSession（不在本模块），所以在它刚出现时打一次点，提交时写进记录。
+    var examStartedAt by remember { mutableStateOf(0L) }
     var showNewDialog by remember { mutableStateOf(!store.hasSeenReleaseNotes(APP_VERSION)) }
     var activeBranchIndex by remember { mutableIntStateOf(-1) }
     var branchInput by remember { mutableStateOf("") }
@@ -489,6 +516,40 @@ private fun AIClassroomApp() {
     // 考试存档：exam 字段随课堂一起写进 ai_classroom_14_classes.json，退出考试 / 重建 Activity 都不丢。
     // 作答与草稿是逐字输入的，走 300ms 防抖落盘；工具调用、标记不会、退出与提交属于结构性改动，立即写盘。
     var examSaveJob by remember { mutableStateOf<Job?>(null) }
+    // 只盯「有没有考试」这个布尔量：作答每敲一个字都会换一份 ExamSession，
+    // 用它当 key 会把起始时间一直往后推。
+    LaunchedEffect(examSession == null) {
+        examStartedAt = if (examSession == null) 0L else System.currentTimeMillis()
+    }
+
+    /**
+     * 提交考试：exam 保留一份 submitted 存档（回看用），同时往 examRecords 追加一条历史。
+     * 一次落盘，避免「历史写了 / 当前考试没写」这种半截状态。
+     */
+    fun archiveSubmittedExam(session: ExamSession) {
+        examSaveJob?.cancel()
+        examSaveJob = null
+        val index = classIndex
+        if (index in classes.indices) {
+            val record = ExamRecord(
+                id = java.util.UUID.randomUUID().toString(),
+                title = session.title.ifBlank { "AI 随堂考试" },
+                startedAt = if (examStartedAt > 0L) examStartedAt else System.currentTimeMillis(),
+                submittedAt = System.currentTimeMillis(),
+                questionCount = session.questions.size,
+                answeredCount = session.questions.count { it.answer.isNotBlank() || it.unknown },
+                submitted = true,
+                questions = session.questions.toList(),
+            )
+            classes[index] = classes[index].copy(
+                exam = session,
+                examRecords = (classes[index].examRecords + record).takeLast(EXAM_RECORD_LIMIT),
+            )
+        }
+        examStartedAt = 0L
+        persist("考试已提交并保存")
+    }
+
     fun saveExam(session: ExamSession?, message: String = "考试已保存", immediate: Boolean = true) {
         val index = classIndex
         if (index in classes.indices) classes[index] = classes[index].copy(exam = session)
@@ -921,6 +982,20 @@ private fun AIClassroomApp() {
                 val track = NowPlaying.current()
                 when {
                     !mediaToolsEnabled -> PluginResult.Failure("media_disabled", MEDIA_DISABLED_HINT)
+                    // 一键播放：会话在不在都要处理，所以排在 track == null 之前。
+                    // 权限仍是 media.control，不新开权限。
+                    normalized == "playorshow" -> {
+                        val outcome = MusicLauncher.playOrLaunch(context)
+                        PluginResult.Success(
+                            JSONObject()
+                                .put("state", outcome.state)
+                                .put("packageName", outcome.packageName ?: "")
+                                .put("playing", outcome.playing)
+                                .put("message", outcome.message ?: "")
+                                .toString(),
+                        )
+                    }
+
                     track == null -> PluginResult.Failure("media_no_session", MEDIA_NO_SESSION_HINT)
                     normalized == "play" || normalized == "pause" ||
                         normalized == "next" || normalized == "prev" -> {
@@ -950,7 +1025,7 @@ private fun AIClassroomApp() {
 
                     else -> PluginResult.Failure(
                         "invalid_argument",
-                        "action 只能是 play|pause|next|prev|seek:<毫秒>，实际 '" + action + "'",
+                        "action 只能是 play|pause|next|prev|playOrShow|seek:<毫秒>，实际 '" + action + "'",
                     )
                 }
             },
@@ -2147,7 +2222,7 @@ private fun AIClassroomApp() {
                         tab = Tab.Branch
                     }
                     Tab.Branch -> BranchScreen(current.branches, activeBranchIndex, branchInput, { branchInput = it }, branchLoading, palette, current.config.mentorName, onSelect = { activeBranchIndex = it }, onBack = { activeBranchIndex = -1 }, onSend = { sendBranchMessage(activeBranchIndex) })
-                    Tab.Memory -> MemoryScreen(current.chapters, current.messages) { index ->
+                    Tab.Memory -> MemoryScreen(current.chapters, current.messages, current.examRecords) { index ->
                         jumpToMessageIndex = index
                         tab = Tab.Class
                     }
@@ -2314,7 +2389,7 @@ private fun AIClassroomApp() {
                         val submitted = examSession?.copy(submitted = true)
                         examSession = null
                         immersiveMode = false
-                        saveExam(submitted, "考试已提交并保存")
+                        if (submitted != null) archiveSubmittedExam(submitted)
                         // exam_submitted：先落盘再分发，插件读到的考试已经是 submitted 状态。
                         dispatchPluginEvent(
                             PluginEventNames.EXAM_SUBMITTED,
@@ -4231,10 +4306,11 @@ private fun SimpleMessageCard(message: ChatMessage, palette: AppPalette, mentorN
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<ChatMessage>, onJump: (Int) -> Unit) {
+private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<ChatMessage>, examRecords: List<ExamRecord>, onJump: (Int) -> Unit) {
     val visibleChapters = chapters.ifEmpty { fallbackChapters(messages) }
     var overview by remember { mutableStateOf(true) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 0.dp, end = 0.dp, top = 10.dp, bottom = 10.dp + LocalBottomBarLift.current), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { ExamRecordSection(examRecords) }
         item {
             InfoCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -4270,6 +4346,120 @@ private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<Cha
                     }
                 }
             }
+        }
+    }
+}
+
+/** 记录的显示时间：优先提交时刻，没有就用起始时刻；格式与记忆页其它位置一致（月-日 时:分）。 */
+private val EXAM_RECORD_TIME = java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm")
+
+private fun examRecordTime(record: ExamRecord): String {
+    val at = if (record.submittedAt > 0L) record.submittedAt else record.startedAt
+    if (at <= 0L) return "--"
+    return java.time.Instant.ofEpochMilli(at).atZone(java.time.ZoneId.systemDefault()).format(EXAM_RECORD_TIME)
+}
+
+/** 折叠态那一行：最近一次考的是什么、几道题。 */
+private fun examRecordSummary(record: ExamRecord): String =
+    record.title.ifBlank { "AI 随堂考试" } + " · " + record.questionCount + " 题"
+
+/**
+ * 记忆页顶部的「考试记录」区块。
+ *
+ * 折叠态只给总数和最近一次；展开后逐条列出，点某一条再展开那一次的题目、作答与参考解析（只读）。
+ * 折叠 / 展开 / 点开哪一条都是页面级 state：不持久化，离开记忆页就复位。
+ */
+@Composable
+private fun ExamRecordSection(records: List<ExamRecord>) {
+    var expanded by remember { mutableStateOf(false) }
+    var openId by remember { mutableStateOf<String?>(null) }
+    InfoCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("📋 考试记录 · ${records.size} 次", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(if (expanded) "收起" else "展开", color = MaterialTheme.colorScheme.primary)
+            }
+        }
+        val latest = records.lastOrNull()
+        when {
+            latest == null -> Text("还没有考试记录。让 AI 出一套题试试。", color = Muted, fontSize = DesignTokens.Type.Body)
+            !expanded -> Text("最近：" + examRecordSummary(latest), color = Muted, fontSize = DesignTokens.Type.Body)
+            else -> records.asReversed().forEach { record ->
+                ExamRecordRow(record, openId == record.id) {
+                    openId = if (openId == record.id) null else record.id
+                }
+            }
+        }
+    }
+}
+
+/** 一条记录：标题 + 时间 + 题数 / 已答 / 是否提交；点开显示题目（只读）。 */
+@Composable
+private fun ExamRecordRow(record: ExamRecord, open: Boolean, onToggle: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(DesignTokens.Radius.Tile))
+            .clickable(onClick = onToggle)
+            .padding(vertical = DesignTokens.Spacing.Xs)
+    ) {
+        HorizontalDivider(thickness = DesignTokens.Border.Hairline, color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+        Spacer(Modifier.height(DesignTokens.Spacing.Xs))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                record.title.ifBlank { "AI 随堂考试" },
+                fontWeight = FontWeight.SemiBold,
+                fontSize = DesignTokens.Type.Body,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Text(examRecordTime(record), color = Muted, fontSize = DesignTokens.Type.Small)
+        }
+        Text(
+            record.questionCount.toString() + " 题 · 已答 " + record.answeredCount + "/" + record.questionCount +
+                " · " + (if (record.submitted) "已提交" else "未提交"),
+            color = Muted,
+            fontSize = DesignTokens.Type.Small
+        )
+        if (!open) return@Column
+        Spacer(Modifier.height(DesignTokens.Spacing.Sm))
+        if (record.questions.isEmpty()) {
+            Text("这次考试没有留下题目内容。", color = Muted, fontSize = DesignTokens.Type.Body)
+        } else {
+            record.questions.forEachIndexed { index, question -> ExamRecordQuestion(index, question) }
+        }
+    }
+}
+
+/** 题目明细：题干 + 考生作答 + 参考解析，全部只读。 */
+@Composable
+private fun ExamRecordQuestion(index: Int, question: ExamQuestion) {
+    Column(Modifier.fillMaxWidth().padding(vertical = DesignTokens.Spacing.Xs)) {
+        Text(
+            (index + 1).toString() + ". " + question.premise.ifBlank { question.question },
+            fontWeight = FontWeight.SemiBold,
+            fontSize = DesignTokens.Type.Body
+        )
+        if (question.premise.isNotBlank() && question.question.isNotBlank()) {
+            Text(question.question, fontSize = DesignTokens.Type.Body, lineHeight = DesignTokens.Type.LineBody)
+        }
+        Text(
+            "作答：" + when {
+                question.unknown -> "标记不会"
+                question.answer.isBlank() -> "未作答"
+                else -> question.answer
+            },
+            color = Muted,
+            fontSize = DesignTokens.Type.Small
+        )
+        if (question.referenceAnswer.isNotBlank()) {
+            Text(
+                "解析：" + question.referenceAnswer,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = DesignTokens.Type.Small,
+                lineHeight = DesignTokens.Type.LineSnug
+            )
         }
     }
 }
@@ -4576,8 +4766,11 @@ private fun ModelScreen(
     var imageSaveStatus by remember { mutableStateOf("") }
     var imageDetailExpanded by remember { mutableStateOf(false) }
     // 插件配置的展开状态挂在列表外层：放在行内部的话，LazyColumn 滚动回收该行时会被重置。
-    // 默认全部收起。
+    // 默认全部收起：插件行只留「图标 + 名称·工具数 + 开关」，描述与提示收进折叠。
     var expandedPluginConfigs by remember { mutableStateOf(emptySet<String>()) }
+    var expandedPluginRows by remember { mutableStateOf(emptySet<String>()) }
+    var expandedPluginCards by remember { mutableStateOf(emptySet<String>()) }
+    var expandedCustomPlugins by remember { mutableStateOf(emptySet<String>()) }
     var themeMode by remember(config.themeMode) { mutableStateOf(normalizeThemeMode(config.themeMode)) }
     var interfaceMode by remember(config.interfaceMode) { mutableStateOf(normalizeInterfaceMode(config.interfaceMode)) }
     var primaryColor by remember(config.primaryColor) { mutableStateOf(config.primaryColor) }
@@ -4869,19 +5062,57 @@ private fun ModelScreen(
                 Text("已启用 " + enabledPlugins + " / 6 个插件 · 共 19 个工具", fontWeight = FontWeight.Bold)
                 Text("插件就是 AI 可以自己决定要不要调用的工具。关掉某个插件后，对应工具会在本地直接拒绝并回一条错误给模型，不产生任何副作用。开关对所有课堂生效。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
                 Spacer(Modifier.height(DesignTokens.Spacing.Md))
-                PluginRow(Icons.Default.School, "考试工具", 7, "创建/编辑考试并保存到课堂", examToolsEnabled, onExamToolsEnabledChange)
-                PluginRow(Icons.Default.Folder, "文件工具", 4, "读写应用私有目录内的文件", fsToolsEnabled, onFsToolsEnabledChange)
-                PluginRow(Icons.Default.Public, "网络工具", 1, "调用任意 http/https 地址", netToolsEnabled, onNetToolsEnabledChange)
-                Text("关闭后 net_request 在本地直接拒绝，不发起任何网络请求。http:// 为明文传输，建议只填本地或可信局域网地址。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
-                Text("网页工具（web_capture 截图、web_search 搜索、web_act 代操作）同样受这个开关约束：关掉后 AI 打不开任何网页。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
-                Spacer(Modifier.height(DesignTokens.Spacing.Sm))
-                WebActWhitelistSection(webActDomains, onWebActDomainsChange)
-                PluginRow(Icons.Default.Tune, "配置工具", 5, "让 AI 修改模型/BaseURL/温度（密钥不可写）", configToolsEnabled, onConfigToolsEnabledChange)
-                PluginRow(Icons.Default.Image, "生图", 2, "调用云端或本地生图服务生成图片，并把图片发到对话里", imageToolsEnabled, onImageToolsEnabledChange)
-                PluginRow(Icons.Default.PlayArrow, "音乐", 3, "读取正在播放的歌名/歌手/封面，并控制播放", mediaToolsEnabled, onMediaToolsEnabledChange)
-                Text("与网络、生图是三个独立开关：音乐只读系统「正在播放」并转发播放/暂停，不发任何网络请求。关闭后 media.* 在本地直接拒绝，插件拿不到任何播放信息。需要系统「通知使用权」，在系统设置 → 通知使用权里给 AI Classroom 打开。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
-                PluginRow(Icons.Default.Movie, "视频工具", 1, "从本地视频按画面变化自适应抽帧，交给视觉模型理解", videoToolsEnabled, onVideoToolsEnabledChange)
-                Text("video_frames 只读设备本地的视频文件：网页流媒体（HLS / m3u8）无法按帧解码，会直接报错。自适应抽帧会先按 1 秒扫一遍缩略图算画面变化，所以比较吃 CPU；不想让 AI 碰视频就关掉这个开关。限制：文件 ≤ 500MB、单次 ≤ 10 分钟。", color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                PluginRow(
+                    Icons.Default.School, "考试工具", 7, "创建/编辑考试并保存到课堂",
+                    examToolsEnabled, onExamToolsEnabledChange,
+                    expanded = "考试工具" in expandedPluginRows,
+                    onToggleExpanded = { expandedPluginRows = togglePluginConfig(expandedPluginRows, "考试工具") }
+                )
+                PluginRow(
+                    Icons.Default.Folder, "文件工具", 4, "读写应用私有目录内的文件",
+                    fsToolsEnabled, onFsToolsEnabledChange,
+                    expanded = "文件工具" in expandedPluginRows,
+                    onToggleExpanded = { expandedPluginRows = togglePluginConfig(expandedPluginRows, "文件工具") }
+                )
+                PluginRow(
+                    Icons.Default.Public, "网络工具", 1, "调用任意 http/https 地址",
+                    netToolsEnabled, onNetToolsEnabledChange,
+                    expanded = "网络工具" in expandedPluginRows,
+                    onToggleExpanded = { expandedPluginRows = togglePluginConfig(expandedPluginRows, "网络工具") },
+                    notes = listOf(
+                        "关闭后 net_request 在本地直接拒绝，不发起任何网络请求。http:// 为明文传输，建议只填本地或可信局域网地址。",
+                        "网页工具（web_capture 截图、web_search 搜索、web_act 代操作）同样受这个开关约束：关掉后 AI 打不开任何网页。"
+                    )
+                ) {
+                    Spacer(Modifier.height(DesignTokens.Spacing.Sm))
+                    WebActWhitelistSection(webActDomains, onWebActDomainsChange)
+                }
+                PluginRow(
+                    Icons.Default.Tune, "配置工具", 5, "让 AI 修改模型/BaseURL/温度（密钥不可写）",
+                    configToolsEnabled, onConfigToolsEnabledChange,
+                    expanded = "配置工具" in expandedPluginRows,
+                    onToggleExpanded = { expandedPluginRows = togglePluginConfig(expandedPluginRows, "配置工具") }
+                )
+                PluginRow(
+                    Icons.Default.Image, "生图", 2, "调用云端或本地生图服务生成图片，并把图片发到对话里",
+                    imageToolsEnabled, onImageToolsEnabledChange,
+                    expanded = "生图" in expandedPluginRows,
+                    onToggleExpanded = { expandedPluginRows = togglePluginConfig(expandedPluginRows, "生图") }
+                )
+                PluginRow(
+                    Icons.Default.PlayArrow, "音乐", 3, "读取正在播放的歌名/歌手/封面，并控制播放",
+                    mediaToolsEnabled, onMediaToolsEnabledChange,
+                    expanded = "音乐" in expandedPluginRows,
+                    onToggleExpanded = { expandedPluginRows = togglePluginConfig(expandedPluginRows, "音乐") },
+                    notes = listOf("与网络、生图是三个独立开关：音乐只读系统「正在播放」并转发播放/暂停，不发任何网络请求。关闭后 media.* 在本地直接拒绝，插件拿不到任何播放信息。需要系统「通知使用权」，在系统设置 → 通知使用权里给 AI Classroom 打开。")
+                )
+                PluginRow(
+                    Icons.Default.Movie, "视频工具", 1, "从本地视频按画面变化自适应抽帧，交给视觉模型理解",
+                    videoToolsEnabled, onVideoToolsEnabledChange,
+                    expanded = "视频工具" in expandedPluginRows,
+                    onToggleExpanded = { expandedPluginRows = togglePluginConfig(expandedPluginRows, "视频工具") },
+                    notes = listOf("video_frames 只读设备本地的视频文件：网页流媒体（HLS / m3u8）无法按帧解码，会直接报错。自适应抽帧会先按 1 秒扫一遍缩略图算画面变化，所以比较吃 CPU；不想让 AI 碰视频就关掉这个开关。限制：文件 ≤ 500MB、单次 ≤ 10 分钟。")
+                )
                 TextButton(onClick = { imageDetailExpanded = !imageDetailExpanded }) {
                     Text(if (imageDetailExpanded) "收起生图配置" else "生图详细配置（运营商 / Key / 模型 / 尺寸）", color = MaterialTheme.colorScheme.primary)
                 }
@@ -4964,6 +5195,8 @@ private fun ModelScreen(
                     specs = customTools,
                     existingToolNames = existingToolNames,
                     imageSink = imageSink,
+                    expandedNames = expandedCustomPlugins,
+                    onToggleExpanded = { name -> expandedCustomPlugins = togglePluginConfig(expandedCustomPlugins, name) },
                     onSpecsChange = { onCustomToolsJson(CustomToolSpec.encodeList(it)) }
                 )
                 Spacer(Modifier.height(DesignTokens.Spacing.Md))
@@ -4976,6 +5209,8 @@ private fun ModelScreen(
                 pluginInfos.forEach { info ->
                     PluginPackageRow(
                         info = info,
+                        rowExpanded = info.id in expandedPluginCards,
+                        onToggleRow = { expandedPluginCards = togglePluginConfig(expandedPluginCards, info.id) },
                         expanded = info.id in expandedPluginConfigs,
                         onToggleExpanded = { expandedPluginConfigs = togglePluginConfig(expandedPluginConfigs, info.id) },
                         onEnabledChange = { onPluginEnabledChange(info.id, it) },
@@ -5057,6 +5292,9 @@ private fun CustomToolSection(
     specs: List<CustomToolSpec>,
     existingToolNames: () -> List<String>,
     imageSink: ImageSink,
+    /** 折叠状态由设置页持有（列表回收不该把展开态重置掉），键是插件名。 */
+    expandedNames: Set<String>,
+    onToggleExpanded: (String) -> Unit,
     onSpecsChange: (List<CustomToolSpec>) -> Unit
 ) {
     // null = 表单关闭；-1 = 新增；>=0 = 编辑第几条。用 specs 做 key：保存后列表变了，表单自动收起。
@@ -5078,43 +5316,67 @@ private fun CustomToolSection(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
         ) {
             Column(Modifier.padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                // 默认只有一行：名称 + 开关 + ▸。用途描述、执行地址、编辑/删除都收进折叠里。
+                val rowExpanded = spec.name in expandedNames
+                Row(
+                    Modifier.fillMaxWidth().clickable { onToggleExpanded(spec.name) },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Icon(Icons.Default.Tune, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(spec.name, fontWeight = FontWeight.Bold, fontSize = DesignTokens.Type.Small)
-                        Text(
-                            spec.description.ifBlank { "（没有用途描述，AI 不会调用）" },
-                            color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 16.sp,
-                            maxLines = 2, overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    IconButton(onClick = { editorIndex = index }, modifier = Modifier.size(34.dp)) {
-                        Icon(Icons.Default.Edit, "编辑", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                    }
-                    IconButton(
-                        onClick = { onSpecsChange(specs.filterIndexed { i, _ -> i != index }) },
-                        modifier = Modifier.size(34.dp)
-                    ) {
-                        Icon(Icons.Default.Delete, "删除", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
-                    }
+                    Text(
+                        spec.name,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = DesignTokens.Type.Small,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                     Switch(
                         checked = spec.enabled,
                         onCheckedChange = { enabled ->
                             onSpecsChange(specs.mapIndexed { i, item -> if (i == index) item.copy(enabled = enabled) else item })
                         }
                     )
+                    Text(
+                        if (rowExpanded) "▾" else "▸",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = DesignTokens.Type.Small,
+                        modifier = Modifier.padding(start = DesignTokens.Spacing.Xs)
+                    )
                 }
-                Text(
-                    if (spec.enabled) {
-                        spec.profile.request.method + " " + spec.profile.baseUrl.trimEnd('/') + "/" +
-                            spec.profile.request.path.trimStart('/') + " · " + responseModeLabel(spec.profile.response.type)
-                    } else {
-                        "已关闭：AI 调用这个工具会被直接拒绝"
-                    },
-                    color = if (spec.enabled) Muted else MaterialTheme.colorScheme.error,
-                    fontSize = DesignTokens.Type.Small
-                )
+                AnimatedVisibility(rowExpanded) {
+                    Column(Modifier.fillMaxWidth()) {
+                        Text(
+                            spec.description.ifBlank { "（没有用途描述，AI 不会调用）" },
+                            color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 16.sp
+                        )
+                        Text(
+                            if (spec.enabled) {
+                                spec.profile.request.method + " " + spec.profile.baseUrl.trimEnd('/') + "/" +
+                                    spec.profile.request.path.trimStart('/') + " · " + responseModeLabel(spec.profile.response.type)
+                            } else {
+                                "已关闭：AI 调用这个工具会被直接拒绝"
+                            },
+                            color = if (spec.enabled) Muted else MaterialTheme.colorScheme.error,
+                            fontSize = DesignTokens.Type.Small
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = { editorIndex = index },
+                                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+                            ) {
+                                Text("编辑", color = MaterialTheme.colorScheme.primary, fontSize = DesignTokens.Type.Small)
+                            }
+                            TextButton(
+                                onClick = { onSpecsChange(specs.filterIndexed { i, _ -> i != index }) },
+                                contentPadding = PaddingValues(start = 16.dp, end = 0.dp, top = 2.dp, bottom = 2.dp),
+                            ) {
+                                Text("删除", color = MaterialTheme.colorScheme.error, fontSize = DesignTokens.Type.Small)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -5437,7 +5699,8 @@ private fun CustomToolEditorDialog(
 }
 
 /**
- * 「插件包」列表里的一项：三行结构 —— 标题行（名字 + 开关 + 卸载）、权限行、可折叠的配置行。
+ * 「插件包」列表里的一项：默认只有一行（名字 · 版本 + 开关 + ▸），点开才看到权限摘要、
+ * 可折叠的配置行和卸载按钮。
  *
  * 开关的语义与原生插件（考试/文件/网络/配置/生图）一致：关掉后该插件的一切能力
  * （prompt 钩子、事件、定时器、界面插槽、工具）立即失效，状态存 prefs plugin_enabled_<id>。
@@ -5446,6 +5709,8 @@ private fun CustomToolEditorDialog(
 @Composable
 private fun PluginPackageRow(
     info: LoadedPluginInfo,
+    rowExpanded: Boolean,
+    onToggleRow: () -> Unit,
     expanded: Boolean,
     onToggleExpanded: () -> Unit,
     onEnabledChange: (Boolean) -> Unit,
@@ -5460,51 +5725,71 @@ private fun PluginPackageRow(
             .fillMaxWidth()
             .padding(vertical = DesignTokens.Spacing.Xs)
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        // 默认只有这一行：名字 · 版本 + 开关 + ▸。摘要（含权限）、配置、卸载都收进折叠里。
+        Row(
+            Modifier.fillMaxWidth().clickable(onClick = onToggleRow),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text(
                 info.name + " · v" + info.version,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Switch(info.enabled, onEnabledChange)
-            TextButton(onClick = onUninstall) {
-                Text("卸载", color = MaterialTheme.colorScheme.error)
-            }
-        }
-        Text(info.summary, color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp)
-        if (info.settings.isEmpty()) return@Column
-        TextButton(
-            onClick = onToggleExpanded,
-            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
-        ) {
             Text(
-                (if (expanded) "▾ " else "▸ ") + "配置（" + info.settings.size + " 项" +
-                    (if (unfinished > 0) "，未完成 " + unfinished + " 项" else "") + "）",
-                color = if (unfinished > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                if (rowExpanded) "▾" else "▸",
+                color = MaterialTheme.colorScheme.primary,
                 fontSize = DesignTokens.Type.Small,
-                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = DesignTokens.Spacing.Xs),
             )
         }
-        AnimatedVisibility(expanded) {
+        AnimatedVisibility(rowExpanded) {
             Column(Modifier.fillMaxWidth().padding(start = 4.dp)) {
-                info.settings.forEach { setting ->
-                    PluginSettingField(
-                        setting = setting,
-                        value = info.settingValues[setting.key].orEmpty(),
-                        fit = info.settingValues[setting.key + PluginManager.FIT_SUFFIX].orEmpty(),
-                        locked = !info.enabled,
-                        onValueChange = { onSettingChange(setting.key, it) },
-                        onPickImage = { onImagePick(setting.key) },
-                        onClearImage = { onImageClear(setting.key) },
-                        onFitChange = { onSettingChange(setting.key + PluginManager.FIT_SUFFIX, it) },
-                    )
+                Text(info.summary, color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 17.sp)
+                if (info.settings.isNotEmpty()) {
+                    TextButton(
+                        onClick = onToggleExpanded,
+                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            (if (expanded) "▾ " else "▸ ") + "配置（" + info.settings.size + " 项" +
+                                (if (unfinished > 0) "，未完成 " + unfinished + " 项" else "") + "）",
+                            color = if (unfinished > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                            fontSize = DesignTokens.Type.Small,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
                 }
-                Text(
-                    "改完立即生效，插件下一次被调用就能读到新值。",
-                    color = Muted,
-                    fontSize = DesignTokens.Type.Caption,
-                    lineHeight = 16.sp,
-                )
+                AnimatedVisibility(expanded) {
+                    Column(Modifier.fillMaxWidth()) {
+                        info.settings.forEach { setting ->
+                            PluginSettingField(
+                                setting = setting,
+                                value = info.settingValues[setting.key].orEmpty(),
+                                fit = info.settingValues[setting.key + PluginManager.FIT_SUFFIX].orEmpty(),
+                                locked = !info.enabled,
+                                onValueChange = { onSettingChange(setting.key, it) },
+                                onPickImage = { onImagePick(setting.key) },
+                                onClearImage = { onImageClear(setting.key) },
+                                onFitChange = { onSettingChange(setting.key + PluginManager.FIT_SUFFIX, it) },
+                            )
+                        }
+                        Text(
+                            "改完立即生效，插件下一次被调用就能读到新值。",
+                            color = Muted,
+                            fontSize = DesignTokens.Type.Caption,
+                            lineHeight = 16.sp,
+                        )
+                    }
+                }
+                TextButton(
+                    onClick = onUninstall,
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+                ) {
+                    Text("卸载", color = MaterialTheme.colorScheme.error, fontSize = DesignTokens.Type.Small)
+                }
             }
         }
     }
@@ -5757,7 +6042,12 @@ private fun PluginSelectField(
 }
 
 
-/** 设置页里的一行插件：图标 + 名称 + 工具数 + 一句话说明 + 开关。 */
+/**
+ * 设置页里的一行插件：默认只占一行（图标 + 名称·工具数 + 开关 + ▸）。
+ *
+ * 一句话说明、补充提示、行内附加内容（网络白名单）全部收进折叠里，
+ * 点整行（或右侧 ▸）展开。展开状态由设置页持有，滚动回收不会把它重置掉。
+ */
 @Composable
 private fun PluginRow(
     icon: ImageVector,
@@ -5765,16 +6055,45 @@ private fun PluginRow(
     toolCount: Int,
     description: String,
     enabled: Boolean,
-    onEnabledChange: (Boolean) -> Unit
+    onEnabledChange: (Boolean) -> Unit,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    /** 原来贴在行下面的几句提示小字，折叠后才显示。 */
+    notes: List<String> = emptyList(),
+    /** 行内附加的折叠内容（如网络工具的网页操作白名单）。 */
+    extra: @Composable ColumnScope.() -> Unit = {}
 ) {
     Column(Modifier.fillMaxWidth().padding(vertical = DesignTokens.Spacing.Xs)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.fillMaxWidth().clickable(onClick = onToggleExpanded),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
-            Text(title + " · " + toolCount + " 个工具", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Text(
+                title + " · " + toolCount + " 个工具",
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             Switch(enabled, onEnabledChange)
+            Text(
+                if (expanded) "▾" else "▸",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = DesignTokens.Type.Small,
+                modifier = Modifier.padding(start = DesignTokens.Spacing.Xs)
+            )
         }
-        Text(description, color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+        AnimatedVisibility(expanded) {
+            Column(Modifier.fillMaxWidth().padding(top = 2.dp)) {
+                Text(description, color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                notes.forEach { note ->
+                    Text(note, color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp)
+                }
+                extra()
+            }
+        }
     }
 }
 
@@ -6251,7 +6570,9 @@ private fun JSONObject.toClassroom(number: Int): Classroom {
             secondaryColor = configJson.optLong("secondaryColor", 0xFF667085)
         ),
         // 向后兼容：旧存档没有 exam 字段 → 读成 null；单份考试解析失败也只丢考试，不影响整份课堂。
-        exam = runCatching { this.optJSONObject("exam")?.toExamSession() }.getOrNull()
+        exam = runCatching { this.optJSONObject("exam")?.toExamSession() }.getOrNull(),
+        // 同理：旧存档没有 examRecords → 空列表，记忆页显示空态而不是报错。
+        examRecords = runCatching { toExamRecords() }.getOrDefault(emptyList())
     )
 }
 
@@ -6271,37 +6592,42 @@ private fun Classroom.toJson() = JSONObject().apply {
     put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("summary", it.summary).put("startIndex", it.startIndex).put("endIndex", it.endIndex) }))
     put("files", JSONArray(files.map { JSONObject().put("name", it.name).put("type", it.type).put("chars", it.chars).put("preview", it.preview).put("content", it.content).put("kind", it.kind) }))
     exam?.let { put("exam", it.toExamJson()) }
+    put("examRecords", JSONArray(examRecords.map { it.toExamRecordJson() }))
     put("config", JSONObject().put("provider", config.provider).put("apiKey", config.apiKey).put("baseUrl", config.baseUrl).put("selectedModel", config.selectedModel).put("customModel", config.customModel).put("modelChain", config.modelChain).put("deepThinkingEnabled", config.deepThinkingEnabled).put("deepThinkingModel", config.deepThinkingModel).put("reasoningEffort", config.reasoningEffort).put("activeChatModel", config.activeChatModel).put("visionProvider", config.visionProvider).put("visionApiKey", config.visionApiKey).put("visionBaseUrl", config.visionBaseUrl).put("visionModel", config.visionModel).put("ttsProvider", config.ttsProvider).put("ttsApiKey", config.ttsApiKey).put("ttsBaseUrl", config.ttsBaseUrl).put("ttsModel", config.ttsModel).put("ttsVoice", config.ttsVoice).put("ttsAutoRead", config.ttsAutoRead).put("mentorName", config.mentorName).put("userAlias", config.userAlias).put("mentorPrompt", config.mentorPrompt).put("worldBook", config.worldBook).put("efficientMode", config.efficientMode).put("reverseConversation", config.reverseConversation).put("themeMode", config.themeMode).put("interfaceMode", config.interfaceMode).put("primaryColor", config.primaryColor).put("secondaryColor", config.secondaryColor))
 }
 
-/** 考试存档的写入格式：answer = 考生作答，referenceAnswer = 参考解析，两者独立字段。 */
+/** 一道题的写入格式：answer = 考生作答，referenceAnswer = 参考解析，两者独立字段。 */
+private fun ExamQuestion.toExamQuestionJson(): JSONObject = JSONObject().apply {
+    put("premise", premise)
+    put("question", question)
+    put("answer", answer)
+    put("unknown", unknown)
+    put("referenceAnswer", referenceAnswer)
+}
+
+private fun JSONArray.toExamQuestions(): List<ExamQuestion> = List(length()) { index ->
+    optJSONObject(index)
+}.filterNotNull().map { item ->
+    ExamQuestion(
+        premise = item.optString("premise", ""),
+        question = item.optString("question", ""),
+        answer = item.optString("answer", ""),
+        unknown = item.optBoolean("unknown", false),
+        referenceAnswer = item.optString("referenceAnswer", "")
+    )
+}
+
+/** 考试存档的写入格式：题目格式与历史记录共用 [toExamQuestionJson]。 */
 private fun ExamSession.toExamJson(): JSONObject = JSONObject().apply {
     put("title", title)
     put("draft", draft)
     put("submitted", submitted)
-    put("questions", JSONArray(questions.map { question ->
-        JSONObject()
-            .put("premise", question.premise)
-            .put("question", question.question)
-            .put("answer", question.answer)
-            .put("unknown", question.unknown)
-            .put("referenceAnswer", question.referenceAnswer)
-    }))
+    put("questions", JSONArray(questions.map { it.toExamQuestionJson() }))
 }
 
 /** 旧存档没有 exam 字段 → null（不报错、不丢其它数据）；字段缺失一律走默认值。 */
 private fun JSONObject.toExamSession(): ExamSession? {
-    val items = optJSONArray("questions") ?: return null
-    val questions = List(items.length()) { index ->
-        val item = items.optJSONObject(index) ?: JSONObject()
-        ExamQuestion(
-            premise = item.optString("premise", ""),
-            question = item.optString("question", ""),
-            answer = item.optString("answer", ""),
-            unknown = item.optBoolean("unknown", false),
-            referenceAnswer = item.optString("referenceAnswer", "")
-        )
-    }
+    val questions = optJSONArray("questions")?.toExamQuestions().orEmpty()
     if (questions.isEmpty()) return null
     return ExamSession(
         title = optString("title", "AI 随堂考试"),
@@ -6309,6 +6635,37 @@ private fun JSONObject.toExamSession(): ExamSession? {
         draft = optString("draft", ""),
         submitted = optBoolean("submitted", false)
     )
+}
+
+/** 一条考试记录：题目与作答一起留档，否则记忆页点开只能看到数字。 */
+private fun ExamRecord.toExamRecordJson(): JSONObject = JSONObject().apply {
+    put("id", id)
+    put("title", title)
+    put("startedAt", startedAt)
+    put("submittedAt", submittedAt)
+    put("questionCount", questionCount)
+    put("answeredCount", answeredCount)
+    put("submitted", submitted)
+    put("questions", JSONArray(questions.map { it.toExamQuestionJson() }))
+}
+
+/** 旧存档没有 examRecords → 空列表；单条坏掉只丢那一条，不影响整份课堂。 */
+private fun JSONObject.toExamRecords(): List<ExamRecord> {
+    val items = optJSONArray("examRecords") ?: return emptyList()
+    return List(items.length()) { index -> items.optJSONObject(index) }
+        .filterNotNull()
+        .map { item ->
+            ExamRecord(
+                id = item.optString("id"),
+                title = item.optString("title", "AI 随堂考试"),
+                startedAt = item.optLong("startedAt", 0L),
+                submittedAt = item.optLong("submittedAt", 0L),
+                questionCount = item.optInt("questionCount", 0),
+                answeredCount = item.optInt("answeredCount", 0),
+                submitted = item.optBoolean("submitted", true),
+                questions = item.optJSONArray("questions")?.toExamQuestions().orEmpty()
+            )
+        }
 }
 
 /**

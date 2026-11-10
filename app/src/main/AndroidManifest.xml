@@ -2,6 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 一键播放要按包名拉起「上次用过的播放器」。Android 11+ 的包可见性默认查不到别的 App，
+         不声明这条 queries 的话 PackageManager.getLaunchIntentForPackage 会返回 null。 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
     <!-- Used by Android's system haptic feedback for key knowledge-base actions. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 

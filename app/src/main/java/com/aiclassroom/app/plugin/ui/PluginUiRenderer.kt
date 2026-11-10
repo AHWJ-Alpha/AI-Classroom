@@ -244,6 +244,7 @@ private fun snapAnchorTo(base: UiAnchor?, offset: IntOffset, width: Int, height:
  */
 @Composable
 private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
+    android.util.Log.i("PluginDrag", "DraggableChild 渲染 ${node.path} anchor=${node.anchor}")
     var anchor by remember(node.path) { mutableStateOf(node.anchor) }
     var offset by remember(node.path) { mutableStateOf(IntOffset(node.offsetX, node.offsetY)) }
     // 外层管锚点（吸附结果），内层管拖动偏移。
@@ -681,6 +682,7 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
                 // 子节点的 anchor 在 box 里同样有效：铺满背景的 image 没有 anchor，
                 // 保持左上角对齐；写了 anchor 的（居中时钟、底部按钮）按锚点摆。
                 val childPaint = childPaint(paint, node)
+                android.util.Log.i("PluginDrag", "BOX child type=${child.type} draggable=${child.draggable} anchor=${child.anchor} path=${child.path}")
                 if (child.draggable) {
                     // 可拖动子节点：位置由吸附出来的 anchor 决定，文字对齐跟着它走。
                     DraggableChild(child, childPaint)

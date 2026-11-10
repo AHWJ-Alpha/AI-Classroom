@@ -1,14 +1,16 @@
 {
   "id": "immersive",
   "name": "沉浸模式",
-  "version": "3.0.0",
-  "description": "全屏风景 / 息屏像素钟两种形态，一个键切换",
+  "version": "3.1.0",
+  "description": "全屏风景 / 息屏像素钟 / 音乐三种形态，一个键循环切换；有音乐在播时自动进音乐形态",
   "author": "",
   "minApiVersion": 1,
   "permissions": [
     "ui.fullscreen",
     "storage.readImage",
-    "storage"
+    "storage",
+    "media.read",
+    "media.control"
   ],
   "settings": [
     {

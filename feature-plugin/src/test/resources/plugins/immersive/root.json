@@ -67,7 +67,6 @@
       "anchor": "bottom_center",
       "offsetY": -60,
       "gap": 10,
-      "visibleWhen": "state.scene",
       "children": [
         {
           "type": "box",
@@ -83,6 +82,147 @@
               "size": 20,
               "color": "onSurface",
               "anchor": "center"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "box",
+      "visibleWhen": "state.music",
+      "children": [
+        {
+          "type": "glow",
+          "radius": 260,
+          "color": "accent",
+          "intensity": 0.18,
+          "anchor": "center"
+        },
+        {
+          "type": "column",
+          "anchor": "center",
+          "gap": 18,
+          "width": "fill",
+          "padding": 32,
+          "children": [
+            {
+              "type": "disk",
+              "size": 200,
+              "coverFrom": "state.artworkPath",
+              "spinningFrom": "state.playing",
+              "color": "surfaceVariant",
+              "anchor": "center"
+            },
+            {
+              "type": "text",
+              "textFrom": "state.title",
+              "size": "title",
+              "color": "onSurface",
+              "weight": "bold",
+              "maxLines": 1
+            },
+            {
+              "type": "text",
+              "textFrom": "state.artist",
+              "size": "caption",
+              "color": "muted",
+              "maxLines": 1
+            },
+            {
+              "type": "waveform",
+              "width": "fill",
+              "height": 40,
+              "bars": 20,
+              "amplitude": 0.32,
+              "color": "primary",
+              "accentAt": "edges",
+              "activeFrom": "state.playing"
+            },
+            {
+              "type": "row",
+              "anchor": "center",
+              "gap": 28,
+              "children": [
+                {
+                  "type": "box",
+                  "width": 44,
+                  "height": 44,
+                  "radius": "full",
+                  "background": "transparent",
+                  "onTap": "onPrev",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "name": "prev",
+                      "size": 26,
+                      "color": "muted",
+                      "anchor": "center"
+                    }
+                  ]
+                },
+                {
+                  "type": "box",
+                  "width": 64,
+                  "height": 64,
+                  "radius": "full",
+                  "background": "surfaceVariant",
+                  "onTap": "onPlayPause",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "name": "pause",
+                      "size": 30,
+                      "color": "accent",
+                      "anchor": "center",
+                      "visibleWhen": "state.playing"
+                    },
+                    {
+                      "type": "icon",
+                      "name": "play",
+                      "size": 30,
+                      "color": "accent",
+                      "anchor": "center",
+                      "visibleWhen": "state.paused"
+                    }
+                  ]
+                },
+                {
+                  "type": "box",
+                  "width": 44,
+                  "height": 44,
+                  "radius": "full",
+                  "background": "transparent",
+                  "onTap": "onNext",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "name": "next",
+                      "size": 26,
+                      "color": "muted",
+                      "anchor": "center"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "row",
+              "gap": 10,
+              "children": [
+                {
+                  "type": "progress",
+                  "valueFrom": "state.progress",
+                  "width": "fill",
+                  "height": 4,
+                  "color": "accent"
+                },
+                {
+                  "type": "text",
+                  "textFrom": "state.timeText",
+                  "size": "caption",
+                  "color": "muted"
+                }
+              ]
             }
           ]
         }

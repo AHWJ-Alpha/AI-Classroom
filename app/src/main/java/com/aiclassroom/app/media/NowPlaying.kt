@@ -35,6 +35,10 @@ object NowPlaying {
     /** 通知里没有 token 时的兜底扫描间隔。 */
     private const val SCAN_INTERVAL_MS = 3_000L
 
+    /** 「上次使用的播放器」落在 prefs：进程被杀、App 重启都还在。 */
+    private const val PREFS = "ai_classroom_now_playing"
+    private const val KEY_LAST_PACKAGE = "last_player_package"
+
     data class Track(
         val title: String,
         val artist: String,
@@ -63,6 +67,8 @@ object NowPlaying {
     @Volatile private var currentTrack: Track? = null
     private var lastLoggedSignature: String? = null
     @Volatile private var lastScanAt = 0L
+    /** 已写进 prefs 的包名，避免每次 publish 都写一次磁盘。 */
+    @Volatile private var rememberedPackage: String? = null
 
     // ---------------------------------------------------------------- 生命周期
 
@@ -70,6 +76,32 @@ object NowPlaying {
     fun init(context: Context) {
         if (appContext == null) appContext = context.applicationContext
     }
+
+    // ------------------------------------------------- 上次使用的播放器（prefs）
+
+    /**
+     * 「上次使用的播放器」：一键播放要拉起的就是它。
+     *
+     * 会话自己出现时（用户在别处放过歌）也会被记下来，用户不需要专门配置。
+     * 只有包名，不含曲目 —— 曲目每次都现问系统。
+     */
+    fun lastPlayerPackage(): String? =
+        appContext?.let { prefs(it).getString(KEY_LAST_PACKAGE, null)?.takeIf { pkg -> pkg.isNotBlank() } }
+
+    fun rememberPlayer(pkg: String) {
+        val name = pkg.trim()
+        if (name.isEmpty()) return
+        if (name == rememberedPackage) return
+        rememberedPackage = name
+        val context = appContext ?: return
+        try {
+            prefs(context).edit().putString(KEY_LAST_PACKAGE, name).apply()
+        } catch (t: Throwable) {
+            Log.w(TAG, "rememberPlayer($name) failed: ${t.message}")
+        }
+    }
+
+    private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     /** 当前曲目快照；没有可用会话时是 null。 */
     fun current(): Track? = currentTrack
@@ -280,6 +312,8 @@ object NowPlaying {
         val track = buildTrack(session)
         activePackage = session.packageName
         currentTrack = track
+        // 会话一出现就记住它：一键播放下次拉起的正是用户最近真正在用的那个播放器。
+        rememberPlayer(session.packageName)
         // 位置每帧都在变，日志签名里刻意不含它，否则回调会被刷屏。
         log(
             if (track == null) {

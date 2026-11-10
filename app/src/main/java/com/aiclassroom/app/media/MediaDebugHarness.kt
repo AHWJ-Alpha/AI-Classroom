@@ -12,7 +12,7 @@ import java.io.File
  * 再让监听服务收到任一通知（播放/暂停音乐本身就会触发），命令即执行并把结果打到 logcat：
  *   adb logcat -s NowPlayingTest
  *
- * 支持：dump / sessions / play / pause / next / prev / seek <ms> / toggle
+ * 支持：dump / sessions / play / pause / next / prev / seek <ms> / toggle / lastpkg / oneshot
  */
 internal object MediaDebugHarness {
 
@@ -71,6 +71,15 @@ internal object MediaDebugHarness {
             "list" -> {
                 NowPlaying.refresh()
                 "activePkg=${NowPlaying.currentPackage()} track=${describe(NowPlaying.current())}"
+            }
+            "lastpkg" -> "lastPlayerPackage=" + NowPlaying.lastPlayerPackage()
+            "oneshot" -> {
+                // 一键播放的完整路径：有会话就继续播，没有就拉起上次的播放器再播。
+                val outcome = kotlinx.coroutines.runBlocking { MusicLauncher.playOrLaunch(context) }
+                "playOrLaunch state=" + outcome.state +
+                    " pkg=" + outcome.packageName +
+                    " playing=" + outcome.playing +
+                    " message=" + (outcome.message ?: "")
             }
             "wait" -> {
                 Thread.sleep(argument.toLongOrNull() ?: 1000L)

@@ -1,6 +1,0 @@
-{
-  "type": "button",
-  "label": "考试",
-  "style": "secondary",
-  "onTap": "onInsertExam"
-}
