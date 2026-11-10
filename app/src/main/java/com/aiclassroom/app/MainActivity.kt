@@ -2913,10 +2913,15 @@ private fun ClassScreen(
         }
         return
     }
-    val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val lastItemIndex = room.messages.size + 1
     val bottomIndex = if (reverseConversation) 0 else lastItemIndex
+    // **首次进入直接落在最新一条**，不要「先渲染顶部、再动画滚到底」那一步 ——
+    // 长对话里那一步特别明显：眼睛会看到列表从顶往底滑一次。
+    // 反序布局（对话从下到上）的 0 就是底部，所以取 0。
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = if (reverseConversation) 0 else lastItemIndex,
+    )
     val topIndex = if (reverseConversation) lastItemIndex else 0
     val isAtBottom by remember {
         derivedStateOf {
@@ -4359,7 +4364,10 @@ private fun BranchChatScreen(
     onBack: () -> Unit,
     onSend: () -> Unit
 ) {
-    val listState = rememberLazyListState()
+    // 同上：分支课堂也直接落在最新一条，避免进入时滑一下。
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = if (branch.messages.isEmpty()) 0 else branch.messages.size + 1,
+    )
     LaunchedEffect(branch.messages.size) {
         if (branch.messages.isNotEmpty()) listState.animateScrollToItem(branch.messages.size + 1)
     }
