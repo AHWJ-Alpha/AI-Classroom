@@ -91,7 +91,7 @@ object PluginUiParser {
     private fun fieldsFor(type: UiNodeType): Set<String> = when (type) {
         UiNodeType.STACK, UiNodeType.ROW, UiNodeType.COLUMN, UiNodeType.BOX,
         UiNodeType.CARD, UiNodeType.BUBBLE,
-        -> COMMON_FIELDS + "children"
+        -> COMMON_FIELDS + setOf("children", "bordered")
 
         UiNodeType.TEXT -> COMMON_FIELDS + setOf("text", "textFrom", "size", "color", "weight", "maxLines")
         UiNodeType.IMAGE -> COMMON_FIELDS + "src"
@@ -204,6 +204,7 @@ object PluginUiParser {
             onTap = eventField(node, "onTap", path, errors),
             onLongPress = eventField(node, "onLongPress", path, errors),
             onDoubleTap = eventField(node, "onDoubleTap", path, errors),
+            bordered = booleanField(node, "bordered", path, errors),
             children = children,
             text = stringField(node, "text", path, errors),
             textFrom = expressionField(node, "textFrom", path, errors),

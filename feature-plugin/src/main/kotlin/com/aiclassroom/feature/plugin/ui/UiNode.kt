@@ -370,6 +370,15 @@ data class UiNode(
     /** 像素虚线边框；null 表示不画边框。 */
     val border: UiBorder? = null,
     val borderColor: UiColor? = null,
+
+    /**
+     * card / bubble 是否画那圈 hairline 描边。
+     *
+     * 不写 = true（保持既有观感：所有卡片都有细描边，靠它和底区分层）。
+     * 写 false = 不画 —— 用在「本身已经有投影/圆角就足够分层」的悬浮卡片上，
+     * 多这一圈会和阴影叠成双层边框，看着很重。
+     */
+    val bordered: Boolean? = null,
     // switch / slider / progress
     val checkedFrom: String? = null,
     val valueFrom: String? = null,

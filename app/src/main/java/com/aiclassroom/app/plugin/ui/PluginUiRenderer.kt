@@ -791,7 +791,13 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
             modifier = modifier,
             shape = shapeOf(node.radius ?: UiRadius.CONTROL),
             color = colorOf(node.background ?: UiColor.SURFACE_VARIANT, paint.palette, paint.aod),
-            border = BorderStroke(DesignTokens.Border.Hairline, paint.palette.outline),
+            // bordered = false 时不画描边：悬浮卡片本身有投影和圆角就够分层了，
+            // 再多一圈 hairline 会和阴影叠成「双层边框」，看着很重。
+            border = if (node.bordered == false) {
+                null
+            } else {
+                BorderStroke(DesignTokens.Border.Hairline, paint.palette.outline)
+            },
         ) {
             Column(
                 // fillMaxWidth 必须写：card 的 width 是给 Surface 的，内容层不加这条就会 wrap content，

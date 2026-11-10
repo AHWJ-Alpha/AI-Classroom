@@ -55,13 +55,13 @@
           "children": [
             {
               "type": "box",
-              "width": 64,
-              "height": 64,
+              "width": 80,
+              "height": 80,
               "radius": "full",
               "children": [
                 {
                   "type": "disk",
-                  "size": 64,
+                  "size": 80,
                   "coverFrom": "state.artworkPath",
                   "spinningFrom": "state.playing",
                   "color": "surfaceVariant",
@@ -70,7 +70,7 @@
                 {
                   "type": "icon",
                   "name": "music",
-                  "size": 26,
+                  "size": 30,
                   "color": "primary",
                   "anchor": "center",
                   "visibleWhen": "state.noArt"
@@ -106,77 +106,77 @@
                   "color": "primary",
                   "accentAt": "edges",
                   "activeFrom": "state.playing"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "type": "box",
-          "width": "fill",
-          "children": [
-            {
-              "type": "row",
-              "anchor": "center",
-              "gap": 20,
-              "children": [
-                {
-                  "type": "box",
-                  "width": 40,
-                  "height": 40,
-                  "radius": "full",
-                  "background": "transparent",
-                  "onTap": "onPrev",
-                  "children": [
-                    {
-                      "type": "icon",
-                      "name": "prev",
-                      "size": 24,
-                      "color": "muted",
-                      "anchor": "center"
-                    }
-                  ]
                 },
                 {
                   "type": "box",
-                  "width": 52,
-                  "height": 52,
-                  "radius": "full",
-                  "background": "surfaceVariant",
-                  "onTap": "onToggle",
+                  "width": "fill",
                   "children": [
                     {
-                      "type": "icon",
-                      "name": "pause",
-                      "size": 26,
-                      "color": "primary",
+                      "type": "row",
                       "anchor": "center",
-                      "visibleWhen": "state.playing"
-                    },
-                    {
-                      "type": "icon",
-                      "name": "play",
-                      "size": 26,
-                      "color": "primary",
-                      "anchor": "center",
-                      "visibleWhen": "state.paused"
-                    }
-                  ]
-                },
-                {
-                  "type": "box",
-                  "width": 40,
-                  "height": 40,
-                  "radius": "full",
-                  "background": "transparent",
-                  "onTap": "onNext",
-                  "children": [
-                    {
-                      "type": "icon",
-                      "name": "next",
-                      "size": 24,
-                      "color": "muted",
-                      "anchor": "center"
+                      "gap": 14,
+                      "children": [
+                        {
+                          "type": "box",
+                          "width": 36,
+                          "height": 36,
+                          "radius": "full",
+                          "background": "transparent",
+                          "onTap": "onPrev",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "name": "prev",
+                              "size": 22,
+                              "color": "muted",
+                              "anchor": "center"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "box",
+                          "width": 46,
+                          "height": 46,
+                          "radius": "full",
+                          "background": "surfaceVariant",
+                          "onTap": "onToggle",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "name": "pause",
+                              "size": 24,
+                              "color": "primary",
+                              "anchor": "center",
+                              "visibleWhen": "state.playing"
+                            },
+                            {
+                              "type": "icon",
+                              "name": "play",
+                              "size": 24,
+                              "color": "primary",
+                              "anchor": "center",
+                              "visibleWhen": "state.paused"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "box",
+                          "width": 36,
+                          "height": 36,
+                          "radius": "full",
+                          "background": "transparent",
+                          "onTap": "onNext",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "name": "next",
+                              "size": 22,
+                              "color": "muted",
+                              "anchor": "center"
+                            }
+                          ]
+                        }
+                      ]
                     }
                   ]
                 }
@@ -205,7 +205,8 @@
         }
       ],
       "onTap": "onCollapse",
-      "widthFrom": "state.panelWidth"
+      "widthFrom": "state.panelWidth",
+      "bordered": false
     }
   ],
   "draggable": false
