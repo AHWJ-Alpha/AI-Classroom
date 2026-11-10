@@ -37,6 +37,13 @@ object NowPlaying {
 
     /** 「上次使用的播放器」落在 prefs：进程被杀、App 重启都还在。 */
     private const val PREFS = "ai_classroom_now_playing"
+
+    // ---- 进度推算的锚点 ----
+    // 有些播放器（实测酷狗概念版）只在一开始报一次 position，之后时间戳变了但 position 不动。
+    // 所以「现在的进度」由我们自己算：记住看到 position 的那一刻，之后按流逝时间补。
+    private var positionAnchorMs = 0L
+    private var positionAnchorAt = 0L
+    private var positionAnchorKey = ""
     private const val KEY_LAST_PACKAGE = "last_player_package"
 
     data class Track(
@@ -360,11 +367,28 @@ object NowPlaying {
 
         val durationMs = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)?.takeIf { it > 0 } ?: 0L
         val isPlaying = state?.state == PlaybackState.STATE_PLAYING
-        var positionMs = state?.position ?: 0L
-        if (state != null && isPlaying && state.lastPositionUpdateTime > 0L) {
-            positionMs += SystemClock.elapsedRealtime() - state.lastPositionUpdateTime
+        // 进度推算：不能依赖 state.lastPositionUpdateTime。
+        //
+        // 实测酷狗（com.kugou.android.lite）每帧都给一个新时间戳，但 position **始终是同一个值**
+        // （收到过一次 4236 之后就不再变了）。拿时间戳做基准的话差值恒为 0，界面进度条永远停在 0:04。
+        //
+        // 改成自己维护锚点：记住「上次看到的 position」和「看到它的时刻」，
+        // 播放中就用 elapsedRealtime 补足流逝量；position 出现跳变（换歌、用户拖进度条）时重新锚定。
+        val rawPosition = state?.position ?: 0L
+        val now = SystemClock.elapsedRealtime()
+        val trackKey = session.packageName + "|" + title + "|" + album
+        if (trackKey != positionAnchorKey || kotlin.math.abs(rawPosition - positionAnchorMs) > 1500L) {
+            positionAnchorKey = trackKey
+            positionAnchorMs = rawPosition
+            positionAnchorAt = now
+        }
+        var positionMs = if (isPlaying) {
+            positionAnchorMs + (now - positionAnchorAt)
+        } else {
+            rawPosition
         }
         positionMs = if (durationMs > 0) positionMs.coerceIn(0L, durationMs) else positionMs.coerceAtLeast(0L)
+
 
         return Track(
             title = title,

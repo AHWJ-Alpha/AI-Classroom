@@ -122,6 +122,8 @@ function onTick(ctx) {
   // 音乐形态下进度要每秒走，所以 tick 里也刷一次媒体。
   refreshMedia(ctx);
   ctx.storage.set('dbg', media.dbg);
+  // 同上：ui_ticker 不自动刷新界面，必须显式请求，否则音乐形态的进度条不会动。
+  host.requestUiRefresh();
 }
 
 function provideState(ctx) {

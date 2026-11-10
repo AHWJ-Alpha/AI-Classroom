@@ -130,6 +130,10 @@ function provideState(ctx) {
  * 所以进度条是「每秒被问一次」，而不是在脚本里堆 timer。
  */
 function onTick(ctx) {
+  // ui_ticker 只负责「按时叫醒插件」，**不会自动刷新界面**。
+  // 不在这里显式请求重组的话：进度条永远停在打开那一刻的值（实测酷狗 position 会变，
+  // 但界面读不到新值，看上去就是「进度不动」）。
+  host.requestUiRefresh();
   return 'ok';
 }
 
