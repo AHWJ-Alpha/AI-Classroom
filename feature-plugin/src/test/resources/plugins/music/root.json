@@ -63,7 +63,8 @@
                   "size": 64,
                   "coverFrom": "state.artworkPath",
                   "spinningFrom": "state.playing",
-                  "color": "surfaceVariant"
+                  "color": "surfaceVariant",
+                  "elevation": 0
                 },
                 {
                   "type": "icon",

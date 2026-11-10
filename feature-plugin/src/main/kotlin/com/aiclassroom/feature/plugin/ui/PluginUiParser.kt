@@ -112,7 +112,7 @@ object PluginUiParser {
         // 三个装饰组件：color 必须走语义色（FOREGROUNDS），数值参数一律有上下限。
         UiNodeType.WAVEFORM -> COMMON_FIELDS + setOf("bars", "color", "amplitude", "speed", "activeFrom", "accentAt")
         // disk 的直径用 size；半径 dp 的用户语义在 disk 上不成立，所以它没有 radius。
-        UiNodeType.DISK -> COMMON_FIELDS + setOf("size", "color", "coverFrom", "spinningFrom")
+        UiNodeType.DISK -> COMMON_FIELDS + setOf("size", "color", "coverFrom", "spinningFrom", "elevation")
         // glow 的 radius 是「光的半径 dp」，与公共字段里那个圆角 token 同名不同义：
         // 在 glow 上按数字解析（见 radiusField），圆角对它没有落点，因此这里不再接受
         // card|control|panel|full 这套取值。
@@ -315,6 +315,16 @@ object PluginUiParser {
                     node, "intensity", path, errors,
                     DEFAULT_GLOW_INTENSITY_PERMYRIAD, MAX_GLOW_INTENSITY_PERMYRIAD,
                 )
+            } else {
+                null
+            },
+            // 投影高度：只对 disk 有意义，0..12dp（再高就成了廉价阴影）。
+            // 不写 = 自动（小封面球 3dp / 大唱片 0），显式 0 = 强制不要。
+            elevationDp = if (type == UiNodeType.DISK) {
+                intField(
+                    node, "elevation", path, errors, Int.MIN_VALUE, 0,
+                    maxValue = 12, maxMessage = "elevation 最大 12 dp",
+                ).takeIf { it != Int.MIN_VALUE }
             } else {
                 null
             },

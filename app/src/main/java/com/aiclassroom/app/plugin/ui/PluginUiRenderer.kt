@@ -1062,9 +1062,13 @@ private fun Disk(node: UiNode, paint: Paint, modifier: Modifier) {
     // 1) 一层很淡的投影（ambient 6% / spot 10%），让它从背景上浮起来；
     // 2) 一圈画在封面**之上**的高光描边，边缘才有「玻璃球」的厚度感。
     // 投影只给 compact 封面球加：200dp 大唱片在深色沉浸底上，加投影反而显脏。
-    val bodyModifier = if (compact) {
+    // 投影高度：插件可显式指定（`elevation`），否则按尺寸自动（小封面球 3dp、大唱片 0）。
+    // 大浮窗里的封面要写 `elevation: 0` —— 它本来就贴在白卡片上，
+    // 再叠一层深色阴影会变成一圈灰晕，看着像又多了一层厚边。
+    val elevationDp = node.elevationDp ?: if (compact) 3 else 0
+    val bodyModifier = if (elevationDp > 0) {
         Modifier.shadow(
-            elevation = 3.dp,
+            elevation = elevationDp.dp,
             shape = CircleShape,
             clip = false,
             ambientColor = Color.Black.copy(alpha = 0.06f),

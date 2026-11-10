@@ -386,6 +386,15 @@ data class UiNode(
     val speedPermyriad: Int? = null,
     /** disk 直径 dp / glow 半径 dp。 */
     val sizeDp: Int? = null,
+
+    /**
+     * 投影高度 dp（目前只对 disk 生效）。
+     *
+     * 不写 = 自动：小尺寸封面球（<=80dp）给 3dp 让它从背景浮起来，大唱片给 0。
+     * 显式写 0 = 强制不要投影 —— 用在「本来就贴在卡片里的封面」上：
+     * 白卡片里的深色阴影会变成一圈灰晕，看起来像又多了一层厚边。
+     */
+    val elevationDp: Int? = null,
     /** glow 强度，万分比 0..10000（0.25 → 2500）。 */
     val intensityPermyriad: Int? = null,
     /** disk 的封面来源，与 image 的 src 同一套写法（包内相对路径 / user:<设置项>）。 */
