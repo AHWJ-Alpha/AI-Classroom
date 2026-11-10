@@ -12,7 +12,6 @@
       "width": 56,
       "height": 56,
       "radius": "full",
-      "onTap": "onPlayPause",
       "children": [
         {
           "type": "disk",
@@ -24,14 +23,182 @@
         {
           "type": "icon",
           "name": "music",
-          "size": 22,
+          "size": 24,
           "color": "primary",
           "anchor": "center",
           "visibleWhen": "state.noArt"
         }
       ],
       "draggable": true,
-      "snapTo": "free"
+      "snapTo": "free",
+      "onDoubleTap": "onExpand",
+      "onTap": "onExpand"
+    },
+    {
+      "type": "card",
+      "visibleWhen": "state.expanded",
+      "anchor": "bottom_right",
+      "offsetX": 0,
+      "offsetY": 0,
+      "width": 300,
+      "radius": "panel",
+      "background": "surface",
+      "padding": 14,
+      "gap": 10,
+      "draggable": true,
+      "snapTo": "free",
+      "onDoubleTap": "onCollapse",
+      "children": [
+        {
+          "type": "row",
+          "gap": 12,
+          "children": [
+            {
+              "type": "box",
+              "width": 64,
+              "height": 64,
+              "radius": "control",
+              "background": "surfaceVariant",
+              "children": [
+                {
+                  "type": "disk",
+                  "size": 64,
+                  "coverFrom": "state.artworkPath",
+                  "spinningFrom": "state.playing",
+                  "color": "surfaceVariant"
+                },
+                {
+                  "type": "icon",
+                  "name": "music",
+                  "size": 26,
+                  "color": "primary",
+                  "anchor": "center",
+                  "visibleWhen": "state.noArt"
+                }
+              ]
+            },
+            {
+              "type": "column",
+              "width": "fill",
+              "gap": 4,
+              "children": [
+                {
+                  "type": "text",
+                  "textFrom": "state.title",
+                  "size": "body",
+                  "color": "onSurface",
+                  "weight": "bold",
+                  "maxLines": 1
+                },
+                {
+                  "type": "text",
+                  "textFrom": "state.artist",
+                  "size": "caption",
+                  "color": "muted",
+                  "maxLines": 1
+                },
+                {
+                  "type": "waveform",
+                  "width": "fill",
+                  "height": 26,
+                  "bars": 14,
+                  "amplitude": 0.3,
+                  "color": "primary",
+                  "accentAt": "edges",
+                  "activeFrom": "state.playing"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "anchor": "center",
+          "gap": 20,
+          "children": [
+            {
+              "type": "box",
+              "width": 40,
+              "height": 40,
+              "radius": "full",
+              "background": "transparent",
+              "onTap": "onPrev",
+              "children": [
+                {
+                  "type": "icon",
+                  "name": "prev",
+                  "size": 24,
+                  "color": "muted",
+                  "anchor": "center"
+                }
+              ]
+            },
+            {
+              "type": "box",
+              "width": 52,
+              "height": 52,
+              "radius": "full",
+              "background": "surfaceVariant",
+              "onTap": "onToggle",
+              "children": [
+                {
+                  "type": "icon",
+                  "name": "pause",
+                  "size": 26,
+                  "color": "primary",
+                  "anchor": "center",
+                  "visibleWhen": "state.playing"
+                },
+                {
+                  "type": "icon",
+                  "name": "play",
+                  "size": 26,
+                  "color": "primary",
+                  "anchor": "center",
+                  "visibleWhen": "state.paused"
+                }
+              ]
+            },
+            {
+              "type": "box",
+              "width": 40,
+              "height": 40,
+              "radius": "full",
+              "background": "transparent",
+              "onTap": "onNext",
+              "children": [
+                {
+                  "type": "icon",
+                  "name": "next",
+                  "size": 24,
+                  "color": "muted",
+                  "anchor": "center"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "gap": 8,
+          "children": [
+            {
+              "type": "progress",
+              "valueFrom": "state.progress",
+              "width": "fill",
+              "height": 3,
+              "color": "primary"
+            },
+            {
+              "type": "text",
+              "textFrom": "state.timeText",
+              "size": "caption",
+              "color": "muted"
+            }
+          ]
+        }
+      ],
+      "onTap": "onCollapse"
     }
   ],
   "draggable": false

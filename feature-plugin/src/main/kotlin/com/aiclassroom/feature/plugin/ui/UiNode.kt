@@ -325,6 +325,15 @@ data class UiNode(
     val animation: UiAnimation? = null,
     val onTap: String? = null,
     val onLongPress: String? = null,
+
+    /**
+     * 双击回调。
+     *
+     * 与 [onTap] 同时存在时，单击会延迟到「双击超时」之后才触发（Compose 的 detectTapGestures
+     * 内建这个行为）。所以不要在同一节点上又挂单击又挂双击，除非确实需要两种语义 ——
+     * 那会带来 300ms 的点击延迟。
+     */
+    val onDoubleTap: String? = null,
     val children: List<UiNode> = emptyList(),
     // text
     val text: String? = null,

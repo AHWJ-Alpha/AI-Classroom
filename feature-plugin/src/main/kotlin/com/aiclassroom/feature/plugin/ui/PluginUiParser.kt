@@ -201,6 +201,7 @@ object PluginUiParser {
             animation = animationField(node, path, errors),
             onTap = eventField(node, "onTap", path, errors),
             onLongPress = eventField(node, "onLongPress", path, errors),
+            onDoubleTap = eventField(node, "onDoubleTap", path, errors),
             children = children,
             text = stringField(node, "text", path, errors),
             textFrom = expressionField(node, "textFrom", path, errors),

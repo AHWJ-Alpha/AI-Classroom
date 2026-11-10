@@ -137,9 +137,9 @@ function onTick(ctx) {
 }
 
 /** 展开成胶囊：点形态 A 时调用。 */
+/** 双击小圆：展开成大浮窗（完整播放控制都在那里）。 */
 function onExpand(ctx) {
   state.expanded = true;
-  ctx.storage.set('compact', 'false');
   ctx.storage.set('expanded', 'true');
   host.requestUiRefresh();
 }
@@ -153,23 +153,10 @@ function onCollapse(ctx) {
 }
 
 /**
- * 收成最小圆：任意形态上长按。
- *
- * 用长按而不是单击：单击已经被「逐级展开 / 收回」占满了，再加一层单击没人猜得到。
- */
-/** 点最小圆：先回到形态 A，而不是一步跳到胶囊（手滑一下就全展开太跳）。 */
-function onCircleTap(ctx) {
-  // 点小圆 → 直接展开成胶囊（两态，没有中间的方卡了）。
-  state.expanded = true;
-  ctx.storage.set('expanded', 'true');
-  host.requestUiRefresh();
-}
-
-/**
  * 顶栏「音乐」：一键播放 + 显示悬浮窗；已经在显示时收起。
  *
- * 播放的事全交给宿主的 playOrShow：
- * 有会话在播只显示浮窗，暂停就继续，没会话就拉起上次用过的播放器（宿主负责等会话出现再发 play）。
+ * 播放的事全交给宿主的 playOrShow：有会话在播只显示浮窗，暂停就继续，
+ * 没会话就拉起上次用过的播放器（宿主负责等会话出现再发 play）。
  */
 function onToggleShow(ctx) {
   if (state.shown) {
@@ -250,10 +237,13 @@ function snapshot() {
   // 两态：展开 → 胶囊；否则 → 小圆。
   // 原来的第三个「方卡」形态已按用户要求删掉 —— 它要靠长按才能变回小圆，
   // 而长按小圆会崩（两个手势识别器同时抢事件），三态切换本身也是多余复杂度。
+  // 两态互斥必须在 snapshot 里算成两个布尔：
+  // ui.json 的 visibleWhen 只做单层取值，**返回 undefined 时会被当成「可见」** ——
+  // 之前漏了 expanded，结果大浮窗和小圆同时画出来，大浮窗盖住了小圆（用户看到的就是「没有图标」）。
   return {
     shown: state.shown,
-    // 只剩一个形态：永远画小圆。
-    circle: true,
+    circle: !state.expanded,
+    expanded: state.expanded,
     playing: state.playing,
     paused: !state.playing,
     title: state.title,

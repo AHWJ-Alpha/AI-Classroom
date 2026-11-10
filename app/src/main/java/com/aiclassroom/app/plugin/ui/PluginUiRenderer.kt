@@ -308,10 +308,19 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
                 scaleY = scale
             }
             // 点击 / 长按：独立识别器，手指一移动它自己取消。
-            .pointerInput(node.path) {
+            .pointerInput(node.path, node.onDoubleTap) {
                 detectTapGestures(
-                    onTap = { node.onTap?.let { paint.onEvent(PluginUiEvent(paint.pluginId, it, "tap")) } },
-                    onLongPress = { node.onLongPress?.let { paint.onEvent(PluginUiEvent(paint.pluginId, it, "longPress")) } },
+                    // 同时挂单击与双击时，单击会被延迟到双击超时之后才触发（Compose 内建行为）——
+                    // 所以插件里「双击展开」的节点不要再挂 onTap，否则点击会有 300ms 延迟。
+                    onDoubleTap = node.onDoubleTap?.let { entry ->
+                        { paint.onEvent(PluginUiEvent(paint.pluginId, entry, "doubleTap")) }
+                    },
+                    onTap = node.onTap?.let { entry ->
+                        { paint.onEvent(PluginUiEvent(paint.pluginId, entry, "tap")) }
+                    },
+                    onLongPress = node.onLongPress?.let { entry ->
+                        { paint.onEvent(PluginUiEvent(paint.pluginId, entry, "longPress")) }
+                    },
                 )
             }
             // 拖动 + 双指缩放：一个识别器同时给平移和 zoom。
