@@ -115,6 +115,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
@@ -268,6 +269,11 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
     var scale by remember(positionKey) { mutableFloatStateOf(1f) }
     val boxSize = remember(positionKey) { mutableStateOf(IntSize.Zero) }
     val snapToGrid = node.snapTo == "grid9"
+    // 屏幕尺寸（px）：拖动时用来夹住 offset，避免把内容拖出可视区。
+    val screenDensity = LocalDensity.current
+    val screenConfig = LocalConfiguration.current
+    val screenW = with(screenDensity) { screenConfig.screenWidthDp.dp.toPx() }
+    val screenH = with(screenDensity) { screenConfig.screenHeightDp.dp.toPx() }
 
     // grid9 的吸附：detectTransformGestures 没有「松手」回调（它是个无限循环），
     // 所以用位移后的静默期判断手已离开。free 模式不做这一步（offset 本身就是位置）。
@@ -330,14 +336,26 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
                 )
             }
             // 拖动 + 双指缩放：一个识别器同时给平移和 zoom。
-            .pointerInput(node.path, node.snapTo, node.scaleable) {
+            .pointerInput(node.path, node.snapTo, node.scaleable, screenW, screenH) {
                 detectTransformGestures { _, pan, zoom, _ ->
                     if (node.scaleable && zoom != 1f) {
                         scale = (scale * zoom).coerceIn(0.5f, 3f)
                     } else if (pan != Offset.Zero) {
+                        // **必须有边界**：offset 是无脑累加的，不夹住就能一路拖出屏幕，
+                        // 用户实测「放大之后往左挪，时间直接飞出去了」。
+                        //
+                        // 上界按**内容实际尺寸**算，而不是拍一个屏幕比例：
+                        // 固定比例（试过 0.5 和 0.38）会让宽内容贴着屏幕边缘被裁掉
+                        // （实测时钟文字左沿卡在 x0）。
+                        // 现在用「屏幕能容纳这个内容的居中余量」× 0.85：内容永远完整可见，
+                        // 放大后余量自动变小 —— 放大越多能拖的范围越小，符合直觉。
+                        val contentW = boxSize.value.width * scale
+                        val contentH = boxSize.value.height * scale
+                        val limitX = ((screenW - contentW) / 2f * 0.85f).coerceAtLeast(0f).roundToInt()
+                        val limitY = ((screenH - contentH) / 2f * 0.85f).coerceAtLeast(0f).roundToInt()
                         offset = IntOffset(
-                            (offset.x + pan.x).roundToInt(),
-                            (offset.y + pan.y).roundToInt(),
+                            (offset.x + pan.x).roundToInt().coerceIn(-limitX, limitX),
+                            (offset.y + pan.y).roundToInt().coerceIn(-limitY, limitY),
                         )
                     }
                 }
