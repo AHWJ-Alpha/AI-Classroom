@@ -683,7 +683,7 @@ private fun PaintNode(
     // 背景压在 padding 外面，写了 padding 的整屏容器（息屏钟）才会连边都铺满颜色，
     // 而不是在四周留一圈主题白的边。
     val sized = modifier
-        .then(sizeModifier(node, includePadding = false))
+        .then(sizeModifier(node, paint, includePadding = false))
         .then(backgroundModifier(node, paint))
         .then(paddingModifier(node))
         .then(offsetModifier(node))
@@ -1014,7 +1014,9 @@ private fun waveformPhases(path: String, bars: Int): FloatArray {
  */
 @Composable
 private fun Disk(node: UiNode, paint: Paint, modifier: Modifier) {
-    val diameter = (node.sizeDp ?: PluginUiParser.DEFAULT_DISK_SIZE).dp
+    // 直径也支持从 state 取：用户在设置里拖滑条改大小，这里每次都重新读。
+    val dynSize = node.widthFrom?.let { numberOf(it, paint)?.toFloat()?.takeIf { v -> v > 0f } }
+    val diameter = (dynSize ?: (node.sizeDp ?: PluginUiParser.DEFAULT_DISK_SIZE).toFloat()).dp
     val spinning = booleanOf(node.activeFrom, paint) ?: true
     // 封面来源既可以是静态图，也可以是 state.artworkPath 这种运行期取值（宿主刚落盘的封面）。
     val coverPath = node.coverFrom?.let { source ->
@@ -1783,17 +1785,28 @@ private fun paddingModifier(node: UiNode): Modifier {
     return Modifier.padding(padding.dp)
 }
 
-private fun sizeModifier(node: UiNode, includePadding: Boolean = true): Modifier {
+private fun sizeModifier(node: UiNode, paint: Paint, includePadding: Boolean = true): Modifier {
     var modifier: Modifier = Modifier
-    when (val length = node.width) {
-        UiLength.Fill -> modifier = modifier.fillMaxWidth()
-        UiLength.Wrap, null -> Unit
-        is UiLength.Fixed -> modifier = modifier.width(length.dp.dp)
+    // 动态尺寸优先：插件把「用户在设置里调的大小」塞进 state，这里每次重组都重新取。
+    val dynWidth = node.widthFrom?.let { numberOf(it, paint)?.toFloat()?.takeIf { v -> v > 0f } }
+    val dynHeight = node.heightFrom?.let { numberOf(it, paint)?.toFloat()?.takeIf { v -> v > 0f } }
+    if (dynWidth != null) {
+        modifier = modifier.width(dynWidth.dp)
+    } else {
+        when (val length = node.width) {
+            UiLength.Fill -> modifier = modifier.fillMaxWidth()
+            UiLength.Wrap, null -> Unit
+            is UiLength.Fixed -> modifier = modifier.width(length.dp.dp)
+        }
     }
-    when (val length = node.height) {
-        UiLength.Fill -> modifier = modifier.fillMaxHeight()
-        UiLength.Wrap, null -> Unit
-        is UiLength.Fixed -> modifier = modifier.height(length.dp.dp)
+    if (dynHeight != null) {
+        modifier = modifier.height(dynHeight.dp)
+    } else {
+        when (val length = node.height) {
+            UiLength.Fill -> modifier = modifier.fillMaxHeight()
+            UiLength.Wrap, null -> Unit
+            is UiLength.Fixed -> modifier = modifier.height(length.dp.dp)
+        }
     }
     if (includePadding) node.padding?.let { modifier = modifier.padding(it.dp) }
     return modifier

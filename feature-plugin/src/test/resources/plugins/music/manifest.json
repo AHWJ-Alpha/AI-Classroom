@@ -1,7 +1,7 @@
 {
   "id": "music",
   "name": "音乐",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "三态悬浮窗：最小圆（仅封面/音符，播放时自转）+ 小悬浮窗（封面+歌名+进度）+ 胶囊（封面+waveform+控制键）。单击逐级展开/收回，长按收成最小圆",
   "author": "AI Classroom",
   "minApiVersion": 1,
@@ -28,6 +28,28 @@
       "type": "ui_ticker",
       "intervalMs": 1000,
       "entry": "onTick"
+    }
+  ],
+  "settings": [
+    {
+      "key": "circleSize",
+      "label": "小圆大小",
+      "type": "number",
+      "slider": true,
+      "min": 40,
+      "max": 96,
+      "default": 56,
+      "description": "收起状态的封面圆直径（dp）。拖动即时生效。"
+    },
+    {
+      "key": "panelWidth",
+      "label": "大浮窗宽度",
+      "type": "number",
+      "slider": true,
+      "min": 240,
+      "max": 420,
+      "default": 300,
+      "description": "展开后的播放面板宽度（dp）。拖动即时生效。"
     }
   ]
 }

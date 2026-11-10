@@ -56,6 +56,14 @@ data class PluginSetting(
     val min: Double? = null,
     /** 仅 number 有效。 */
     val max: Double? = null,
+    /**
+     * number 用滑条而不是输入框呈现（manifest 写 `"slider": true`）。
+     *
+     * 拖动时立刻写回设置并重建 runtime —— 插件在 provideState 里读 `ctx.settings`，
+     * 所以「拖一下就变」是自动成立的，不需要额外的实时通道。
+     * 需要同时给出 [min] / [max]，否则滑条没有意义。
+     */
+    val slider: Boolean = false,
     /** 仅 select 有效，非空。 */
     val options: List<String> = emptyList(),
 ) {

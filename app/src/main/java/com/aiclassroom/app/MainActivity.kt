@@ -6157,6 +6157,15 @@ private fun PluginSettingField(
                 onFitChange = onFitChange,
             )
 
+            // number + slider：用滑条而不是输入框。拖动时每动一下就写回设置，
+            // 宿主保存后会重建插件 runtime，插件下一次 provideState 读到新的 ctx.settings，
+            // 于是「拖一下就变」是自动成立的（不需要额外的实时通道）。
+            PluginSettingType.NUMBER -> if (setting.slider && setting.min != null && setting.max != null) {
+                PluginSliderField(setting, draft, locked, update)
+            } else {
+                PluginTextField(setting, draft, locked, numberProblem != null, update)
+            }
+
             else -> PluginTextField(setting, draft, locked, numberProblem != null, update)
         }
         // 说明与错误各占一行：填错时说明仍然看得见，用户才知道这一项该去哪儿拿。
@@ -6182,6 +6191,44 @@ private fun PluginSettingField(
                 lineHeight = 16.sp,
             )
         }
+    }
+}
+
+/**
+ * number 用滑条呈现（manifest 写 `"slider": true` + min/max）。
+ *
+ * 右侧实时显示当前值，用户拖的时候能看见数字在变；
+ * 拖动过程中就调 onValueChange —— 设置页保存后会重建插件 runtime，
+ * 所以悬浮窗会跟着一起变，不需要重启。
+ */
+@Composable
+private fun PluginSliderField(
+    setting: PluginSetting,
+    value: String,
+    locked: Boolean,
+    onValueChange: (String) -> Unit,
+) {
+    val min = (setting.min ?: 0.0).toFloat()
+    val max = (setting.max ?: 100.0).toFloat()
+    val current = value.toFloatOrNull()?.coerceIn(min, max) ?: min
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Slider(
+            value = current,
+            onValueChange = { v ->
+                // 整数化：尺寸这类参数没必要拖出小数。
+                onValueChange(v.roundToInt().toString())
+            },
+            valueRange = min..max,
+            enabled = !locked,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(DesignTokens.Spacing.Md))
+        Text(
+            text = current.roundToInt().toString(),
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = DesignTokens.Type.Caption,
+            modifier = Modifier.width(40.dp),
+        )
     }
 }
 

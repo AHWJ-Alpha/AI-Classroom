@@ -18,6 +18,10 @@ var state = {
 };
 
 // 封面按「哪一首歌」缓存：provider 每秒都会被问一次，同一首歌重复落盘既慢又把磁盘写满。
+// 用户在设置里调的两个尺寸（manifest 里是 number + slider）。
+// snapshot() 拿不到 ctx，所以在 provideState(ctx) 里读好存这里。
+var sizes = { circleSize: 56, panelWidth: 300 };
+
 var artKey = '';
 var artPath = '';
 var artTries = 0;
@@ -92,6 +96,14 @@ function coverPathOf(track) {
 
 /** 宿主每次刷新界面都会调它：读一次媒体状态，把 ui.json 要的扁平字段一次给全。 */
 function provideState(ctx) {
+  // 每次刷新都重读设置：宿主保存设置后会重建 runtime 重新装载，所以这里拿到的一定是最新值。
+  // 于是「拖滑条 → 浮窗立刻变大小」不需要任何额外的实时通道。
+  var cfg = ctx.settings || {};
+  var cs = Number(cfg.circleSize);
+  sizes.circleSize = (cs > 0) ? cs : 56;
+  var pw = Number(cfg.panelWidth);
+  sizes.panelWidth = (pw > 0) ? pw : 300;
+
   var now = readTrack();
   if (!now.ok) {
     applyError(now.code, now.message);
@@ -242,6 +254,8 @@ function snapshot() {
   // 之前漏了 expanded，结果大浮窗和小圆同时画出来，大浮窗盖住了小圆（用户看到的就是「没有图标」）。
   return {
     shown: state.shown,
+    circleSize: sizes.circleSize,
+    panelWidth: sizes.panelWidth,
     circle: !state.expanded,
     expanded: state.expanded,
     playing: state.playing,

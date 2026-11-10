@@ -9,16 +9,14 @@
       "type": "box",
       "anchor": "bottom_right",
       "offsetY": 0,
-      "width": 56,
-      "height": 56,
       "radius": "full",
       "children": [
         {
           "type": "disk",
-          "size": 56,
           "coverFrom": "state.artworkPath",
           "spinningFrom": "state.playing",
-          "color": "surfaceVariant"
+          "color": "surfaceVariant",
+          "widthFrom": "state.circleSize"
         },
         {
           "type": "icon",
@@ -32,7 +30,9 @@
       "draggable": true,
       "snapTo": "free",
       "onDoubleTap": "onExpand",
-      "onTap": "onExpand"
+      "onTap": "onExpand",
+      "widthFrom": "state.circleSize",
+      "heightFrom": "state.circleSize"
     },
     {
       "type": "card",
@@ -40,7 +40,6 @@
       "anchor": "bottom_right",
       "offsetX": 0,
       "offsetY": 0,
-      "width": 300,
       "radius": "panel",
       "background": "surface",
       "padding": 14,
@@ -198,7 +197,8 @@
           ]
         }
       ],
-      "onTap": "onCollapse"
+      "onTap": "onCollapse",
+      "widthFrom": "state.panelWidth"
     }
   ],
   "draggable": false

@@ -81,7 +81,7 @@ object PluginUiParser {
 
     private val COMMON_FIELDS: Set<String> = setOf(
         "type", "anchor", "offsetX", "offsetY", "padding", "gap",
-        "width", "height", "visibleWhen", "background", "radius", "animation",
+        "width", "height", "widthFrom", "heightFrom", "visibleWhen", "background", "radius", "animation",
         "onTap", "onLongPress", "onDoubleTap",
         // 自由摆放：可拖动 + 松手吸附到九宫格（位置即对齐）。
         "draggable", "snapTo", "scaleable",
@@ -190,6 +190,8 @@ object PluginUiParser {
             gap = intField(node, "gap", path, errors, null, 0),
             width = lengthField(node, "width", path, errors),
             height = lengthField(node, "height", path, errors),
+            widthFrom = expressionField(node, "widthFrom", path, errors),
+            heightFrom = expressionField(node, "heightFrom", path, errors),
             visibleWhen = expressionField(node, "visibleWhen", path, errors),
             background = colorField(node, "background", path, errors, UiColor.BACKGROUNDS),
             // glow 的 radius 是「光的半径 dp」，不是圆角 token；其余组件照旧按枚举解析。

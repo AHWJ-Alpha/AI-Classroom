@@ -319,6 +319,17 @@ data class UiNode(
     val gap: Int? = null,
     val width: UiLength? = null,
     val height: UiLength? = null,
+
+    /**
+     * 从 state 取动态尺寸（单位 dp），优先级高于 [width]。
+     *
+     * 用在「用户能在设置里调大小」的组件上：manifest 声明一个 number 滑条，
+     * logic.js 把它塞进 state，这里写 `widthFrom: "state.circleSize"` 就能实时跟着变。
+     * 取不到值或不是正数时回落到 [width]。
+     */
+    val widthFrom: String? = null,
+    /** 同 [widthFrom]，作用于高度。 */
+    val heightFrom: String? = null,
     val visibleWhen: String? = null,
     val background: UiColor? = null,
     val radius: UiRadius? = null,

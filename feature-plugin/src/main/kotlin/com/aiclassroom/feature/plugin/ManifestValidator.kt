@@ -537,6 +537,20 @@ object ManifestValidator {
                 options.joinToString(", ") + "）"
         }
 
+        // slider 只对 number 有意义；写了但不给 min/max 时给一条提示（滑条没有范围等于坏 UI）。
+        val sliderRaw = setting.fields["slider"]
+        val slider = when (sliderRaw) {
+            null, is JsonNode.Null -> false
+            is JsonNode.Bool -> sliderRaw.value
+            else -> {
+                errors += prefix + ".slider 必须是布尔值"
+                false
+            }
+        }
+        if (slider && type == PluginSettingType.NUMBER && (min == null || max == null)) {
+            errors += prefix + ".slider 需要同时提供 min 与 max"
+        }
+
         return PluginSetting(
             key = key.orEmpty(),
             label = label.orEmpty(),
@@ -547,6 +561,7 @@ object ManifestValidator {
             defaultValue = defaultValue,
             min = min,
             max = max,
+            slider = slider,
             options = options,
         )
     }
