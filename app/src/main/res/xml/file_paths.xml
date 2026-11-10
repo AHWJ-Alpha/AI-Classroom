@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 只暴露考试答案图片目录：相机拍照落盘到 filesDir/images/ 时，
+     系统相机 App 需要一个可写的 content:// uri，不能直接给 file:// 路径。 -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path
+        name="exam_images"
+        path="images/" />
+</paths>

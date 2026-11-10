@@ -58,13 +58,21 @@ fun fallbackExamFromText(text: String): ExamSession {
 }
 
 fun packExamAnswers(session: ExamSession): String = buildString {
-    appendLine("以下是用户在沉浸式考试工具中的作答，请批改并给出讲解：")
+    appendLine("以下是用户在沉浸式考试工具中的作答，请批改并给出讲解。部分题目的答案以手写或拍照的图片形式附在后面，请先看清图片内容再批改。")
     session.questions.forEachIndexed { index, q ->
         appendLine("题目 ${index + 1}")
         appendLine("前提：${q.premise}")
         appendLine("问题：${q.question}")
-        appendLine("状态：${if (q.unknown) "不会" else if (q.answer.isBlank()) "未作答" else "已作答"}")
-        appendLine("考生作答：${q.answer.ifBlank { "（空）" }}")
+        val hasImages = q.answerImages.isNotEmpty()
+        appendLine(
+            "状态：" + when {
+                q.unknown -> "不会"
+                q.answer.isBlank() && !hasImages -> "未作答"
+                else -> "已作答"
+            }
+        )
+        appendLine("考生作答：${q.answer.ifBlank { if (hasImages) "（见附图）" else "（空）" }}")
+        if (hasImages) appendLine("（第 ${index + 1} 题另有手写/拍照答案 ${q.answerImages.size} 张，见附图）")
         if (q.referenceAnswer.isNotBlank()) appendLine("参考解析：${q.referenceAnswer}")
     }
     if (session.draft.isNotBlank()) appendLine("草稿：${session.draft}")

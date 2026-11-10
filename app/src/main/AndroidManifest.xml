@@ -35,6 +35,18 @@
             </intent-filter>
         </activity>
 
+        <!-- 考试拍照作答：TakePicture 要往一个 content:// uri 里写，FileProvider 把
+             filesDir/images/ 暴露给系统相机 App（authority 固定 ${applicationId}.fileprovider）。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <service
             android:name=".media.MediaNotificationListener"
             android:exported="false"

@@ -1,0 +1,14 @@
+{
+  "id": "msg_badge",
+  "name": "回复徽章",
+  "version": "1.0.0",
+  "description": "在每条 AI 回复正文下方显示「字数 · 用时」，并按 assistant_replied 累计统计",
+  "author": "AI Classroom",
+  "minApiVersion": 1,
+  "permissions": ["storage"],
+  "extensions": [
+    { "type": "message_decorator", "slot": "MESSAGE_BODY_TAIL", "config": "badge.json" },
+    { "type": "event", "event": "message_sent", "entry": "onSent" },
+    { "type": "event", "event": "assistant_replied", "entry": "onReplied" }
+  ]
+}

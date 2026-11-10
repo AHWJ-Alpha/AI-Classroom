@@ -22,6 +22,14 @@ import android.content.SharedPreferences
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.os.Bundle
+import android.widget.Toast
+import androidx.core.content.FileProvider
+import com.aiclassroom.app.exam.HandwritingPadDialog
+import com.aiclassroom.app.exam.deleteExamImage
+import com.aiclassroom.app.exam.examImageExists
+import com.aiclassroom.app.exam.importExamImage
+import com.aiclassroom.app.exam.newExamPhotoFile
+import com.aiclassroom.app.exam.normalizeExamImage
 import android.view.HapticFeedbackConstants
 import android.media.MediaPlayer
 import androidx.activity.ComponentActivity
@@ -87,6 +95,8 @@ import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Folder
@@ -151,6 +161,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -235,6 +246,7 @@ import com.aiclassroom.feature.exam.tool.universal.registerUniversalTools
 import com.aiclassroom.feature.fs.FileTools
 import com.aiclassroom.feature.net.NetRequestTool
 import com.aiclassroom.feature.net.registerNetTools
+import com.aiclassroom.app.plugin.BuiltinPlugins
 import com.aiclassroom.app.plugin.AppPluginHost
 import com.aiclassroom.app.plugin.LoadedPluginInfo
 import com.aiclassroom.app.plugin.MediaArtworkCache
@@ -537,7 +549,8 @@ private fun AIClassroomApp() {
                 startedAt = if (examStartedAt > 0L) examStartedAt else System.currentTimeMillis(),
                 submittedAt = System.currentTimeMillis(),
                 questionCount = session.questions.size,
-                answeredCount = session.questions.count { it.answer.isNotBlank() || it.unknown },
+                // 只交了图片答案的题也算已答，否则记忆页会显示「0/2」而明显有作答。
+                answeredCount = session.questions.count { it.answer.isNotBlank() || it.unknown || it.answerImages.isNotEmpty() },
                 submitted = true,
                 questions = session.questions.toList(),
             )
@@ -1053,6 +1066,12 @@ private fun AIClassroomApp() {
     }
     // 插件包的配置与总开关都落在 prefs：装载时读一次，设置页保存后 reload 重建 runtime。
     val pluginManager = remember {
+        // 先把随 APK 发布的内置插件释放到插件目录。
+        // 之前它们只存在于 feature-plugin 的测试资源里，从没打进 APK ——
+        // 结果每台新设备装完插件列表都是空的，必须手动 adb push 才有得用。
+        runCatching {
+            BuiltinPlugins.install(context, java.io.File(context.filesDir, "plugins"))
+        }.onFailure { Log.w("BuiltinPlugins", "释放内置插件失败：" + it.message) }
         PluginManager(
             context = context,
             host = pluginHost,
@@ -1637,14 +1656,16 @@ private fun AIClassroomApp() {
         }
     }
 
-    fun sendMessage(seed: String? = null, allowExamTrigger: Boolean = true) {
+    fun sendMessage(seed: String? = null, allowExamTrigger: Boolean = true, images: List<String> = emptyList()) {
         val text = (seed ?: input).trim()
         if (text.isBlank() || isLoading) return
         val room = current
         val roomIndex = classIndex
         val isFirstConversation = room.messages.isEmpty()
         input = ""
-        room.messages.add(ChatMessage("user", filterNsfw(text, room.config.efficientMode)))
+        // images 用与消息气泡相同的条目格式（绝对路径 + '\u0001' + 说明），
+        // 所以图片答案既能在气泡里显示，也能被识图链路取出路径重发。
+        room.messages.add(ChatMessage("user", filterNsfw(text, room.config.efficientMode), images = images))
         persist("对话已保存")
         // message_sent：用户消息落进课堂之后立刻分发（钩子只改 prompt，这里给插件一个「刚发生」的时机）。
         dispatchPluginEvent(
@@ -1699,8 +1720,22 @@ private fun AIClassroomApp() {
                 streamed += delta
                 room.messages[assistantIndex] = ChatMessage("assistant", filterNsfw(stripExamBlock(streamed), room.config.efficientMode))
             }
-            // toolsJson 为空时走的仍是原来那条纯聊天通路，请求体与响应解析一字不改。
-            val result = if (requestToolsJson == null) {
+            // 带图片的提交（考试手写 / 拍照答案）：图片挂在最后一条 user 消息上，走识图链路一次出结果。
+            // 识图不可用（模型不支持视觉 / 图片读不出来）时退化成纯文字批改，绝不让整场考试因为图片而失败。
+            val result = if (images.isNotEmpty()) {
+                val visionPaths = images.map { imagePathOf(it) }.filter { it.isNotBlank() }
+                val visionHistory = promptMessagesForRoom(room, room.messages.dropLast(2).toList())
+                val vision = if (visionPaths.isEmpty()) "" else {
+                    callVisionWithFallback(room.config, room.config.visionModels(), sendSystemPrompt, text, visionPaths, visionHistory)
+                }
+                if (visionPaths.isNotEmpty() && vision.isNotBlank() && !isApiFailure(vision)) {
+                    vision
+                } else {
+                    val plain = callChatStreamWithFallback(room.config, activeModelChain, sendSystemPrompt, promptMessagesForRoom(room, room.messages.dropLast(1).toList()), onDelta = onDelta)
+                    if (visionPaths.isNotEmpty()) "（图片答案未能识别，以下按文字作答批改）\n" + plain else plain
+                }
+            } else if (requestToolsJson == null) {
+                // toolsJson 为空时走的仍是原来那条纯聊天通路，请求体与响应解析一字不改。
                 callChatStreamWithFallback(room.config, activeModelChain, sendSystemPrompt, promptMessagesForRoom(room, room.messages.dropLast(1).toList()), onDelta = onDelta)
             } else {
                 runToolLoop(room, sendSystemPrompt, requestToolsJson, onDelta)
@@ -2400,7 +2435,12 @@ private fun AIClassroomApp() {
                                 "unknownCount" to (submitted?.questions?.count { it.unknown } ?: 0).toString(),
                             ),
                         )
-                        sendMessage(packed, allowExamTrigger = false)
+                        // 图片答案跟着这次提交一起发：每题的手写 / 拍照图排在自己的文字答案后面，
+                        // 说明里带上题号，模型看图时能和题目对上号。
+                        val answerImages = submitted?.questions.orEmpty().flatMapIndexed { index, question ->
+                            question.answerImages.map { path -> imageEntry(path, "第" + (index + 1) + "题答案") }
+                        }
+                        sendMessage(packed, allowExamTrigger = false, images = answerImages)
                     }, onUnknown = { questionIndex, question ->
                         val branchText = "考试不会题：\n前提：${question.premise}\n问题：${question.question}\n请讲解这道题的思路。"
                         current.branches.add(BranchClass("考试不会题 ${questionIndex + 1}", "考试工具", mutableStateListOf(ChatMessage("user", branchText), ChatMessage("assistant", "正在生成讲解，可返回主课堂继续同步查看。")), summarize("考试不会题", listOf(ChatMessage("user", branchText)))))
@@ -2746,7 +2786,7 @@ private fun EditClassroomSummaryDialog(initial: String, onClose: () -> Unit, onS
 @Composable
 private fun ExamResumeBanner(session: ExamSession, palette: AppPalette, onResume: () -> Unit, modifier: Modifier = Modifier) {
     val total = session.questions.size
-    val answered = session.questions.count { it.unknown || it.answer.isNotBlank() }
+    val answered = session.questions.count { it.unknown || it.answer.isNotBlank() || it.answerImages.isNotEmpty() }
     Surface(
         modifier = modifier.fillMaxWidth().padding(horizontal = DesignTokens.Spacing.Md, vertical = DesignTokens.Spacing.Md),
         shape = AppShapes.control,
@@ -3890,9 +3930,72 @@ private fun ExamQuestionList(
     onUnknown: (Int, ExamQuestion) -> Unit
 ) {
     val total = session.questions.size
-    // 已答口径：只有考生真写了作答、或标了「不会」的题才算；AI 给的参考解析（referenceAnswer）不计入。
-    val answered = session.questions.count { it.unknown || it.answer.isNotBlank() }
+    // 已答口径：考生真写了作答、交了手写/拍照图片、或标了「不会」的题才算；AI 给的参考解析（referenceAnswer）不计入。
+    val answered = session.questions.count { it.unknown || it.answer.isNotBlank() || it.answerImages.isNotEmpty() }
     val answeredFraction = if (total == 0) 0f else answered.toFloat() / total.toFloat()
+    // 图片答案的四个入口共用一套 launcher：拍照 / 相册的回调只能注册在稳定的位置上，
+    // 放进 LazyColumn 的每一项里会在滚动时被回收，结果就回不来。
+    val examContext = LocalContext.current
+    val examScope = rememberCoroutineScope()
+    val liveSession by rememberUpdatedState(session)
+    val liveUpdate by rememberUpdatedState(onUpdate)
+    var cameraTarget by remember { mutableIntStateOf(-1) }
+    var galleryTarget by remember { mutableIntStateOf(-1) }
+    var pendingPhotoPath by remember { mutableStateOf<String?>(null) }
+    var handwritingIndex by remember { mutableIntStateOf(-1) }
+    var previewPath by remember { mutableStateOf<String?>(null) }
+
+    fun notice(text: String) {
+        Toast.makeText(examContext, text, Toast.LENGTH_SHORT).show()
+    }
+
+    // 图片答案挂在题目上：改一张就整份回写一次，和文字作答走同一条存档通路。
+    fun applyAnswerImages(index: Int, transform: (List<String>) -> List<String>) {
+        val live = liveSession
+        val question = live.questions.getOrNull(index) ?: return
+        live.questions[index] = question.copy(answerImages = transform(question.answerImages))
+        liveUpdate(live.copy(questions = live.questions))
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { saved ->
+        val path = pendingPhotoPath
+        val index = cameraTarget
+        pendingPhotoPath = null
+        cameraTarget = -1
+        if (path == null) {
+            notice("拍照失败，请重试")
+        } else if (!saved) {
+            // 用户在相机里取消：把占位文件删掉，不留下垃圾图。
+            deleteExamImage(path)
+        } else {
+            examScope.launch {
+                val ok = withContext(Dispatchers.IO) { runCatching { normalizeExamImage(File(path)) }.getOrDefault(false) }
+                if (ok) {
+                    applyAnswerImages(index) { it + path }
+                    notice("照片已添加")
+                } else {
+                    deleteExamImage(path)
+                    notice("照片处理失败，请重拍")
+                }
+            }
+        }
+    }
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        val index = galleryTarget
+        galleryTarget = -1
+        // uri == null 是用户取消选择，什么都不做，不弹提示。
+        if (uri != null && index >= 0) {
+            examScope.launch {
+                val file = withContext(Dispatchers.IO) { importExamImage(examContext, uri) }
+                if (file != null) {
+                    applyAnswerImages(index) { it + file.absolutePath }
+                    notice("照片已添加")
+                } else {
+                    notice("图片读取失败，请重新选择")
+                }
+            }
+        }
+    }
     // 横屏高度吃紧：卡片纵向内边距从 13dp 收到 8dp，两张卡就能省出约 55px 给题卡正文。
     val examCardPadding = PaddingValues(
         horizontal = DesignTokens.Spacing.CardHorizontal,
@@ -4041,6 +4144,32 @@ private fun ExamQuestionList(
                         session.questions[i] = q.copy(answer = it)
                         onUpdate(session.copy(questions = session.questions))
                     }, Modifier.fillMaxWidth(), enabled = !q.unknown, minLines = 3, placeholder = { Text(if (q.unknown) "已标记不会" else "在这里作答") })
+                    Spacer(Modifier.height(DesignTokens.Spacing.Xs))
+                    ExamAnswerImageBar(
+                        images = q.answerImages,
+                        palette = palette,
+                        enabled = !q.unknown,
+                        onHandwriting = { handwritingIndex = i },
+                        onCamera = {
+                            val target = newExamPhotoFile(examContext)
+                            pendingPhotoPath = target.absolutePath
+                            cameraTarget = i
+                            runCatching {
+                                cameraLauncher.launch(FileProvider.getUriForFile(examContext, examContext.packageName + ".fileprovider", target))
+                            }.onFailure { error ->
+                                pendingPhotoPath = null
+                                cameraTarget = -1
+                                target.delete()
+                                notice("相机启动失败：" + (error.message ?: "未知错误"))
+                            }
+                        },
+                        onGallery = { galleryTarget = i; galleryLauncher.launch("image/*") },
+                        onPreview = { previewPath = it },
+                        onRemove = { path ->
+                            applyAnswerImages(i) { list -> list - path }
+                            deleteExamImage(path)
+                        }
+                    )
                     if (q.referenceAnswer.isNotBlank()) {
                         // 解析单独折叠在作答框下方，默认收起，交卷前后都能看，不污染作答区。
                         var showReference by remember(q.question, q.referenceAnswer) { mutableStateOf(false) }
@@ -4053,6 +4182,21 @@ private fun ExamQuestionList(
                     }
                 }
             }
+        }
+        // 手写板 / 全屏看图都是 Dialog：放在列表外层只保留一份，避免每道题各挂一个。
+        val padTarget = handwritingIndex
+        if (padTarget >= 0) {
+            HandwritingPadDialog(
+                onDismiss = { handwritingIndex = -1 },
+                onSaved = { path ->
+                    applyAnswerImages(padTarget) { it + path }
+                    handwritingIndex = -1
+                    notice("手写答案已添加")
+                }
+            )
+        }
+        previewPath?.let { path ->
+            ImageFullScreenDialog(path = path, palette = palette, onClose = { previewPath = null })
         }
         // 提交条固定在底部并占据布局空间（不是浮层），保证题目内容不被遮挡。
         // 横屏可视高度仍偏紧，但可用右下悬浮键切沉浸模式，一键收起顶栏/底栏/提交条。
@@ -4432,6 +4576,136 @@ private fun ExamRecordRow(record: ExamRecord, open: Boolean, onToggle: () -> Uni
     }
 }
 
+/**
+ * 一道题的图片答案区：两个入口（手写 / 拍照，外加相册直选），已添加的图排成一行缩略图。
+ * 打字作答与手写/拍照互不影响，可以叠加（比如手写两步 + 拍一张草稿纸）。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ExamAnswerImageBar(
+    images: List<String>,
+    palette: AppPalette,
+    enabled: Boolean,
+    onHandwriting: () -> Unit,
+    onCamera: () -> Unit,
+    onGallery: () -> Unit,
+    onPreview: (String) -> Unit,
+    onRemove: (String) -> Unit
+) {
+    var pendingRemove by remember { mutableStateOf<String?>(null) }
+    Column(Modifier.fillMaxWidth()) {
+        // 三个入口用胶囊 + Material 图标，不用 emoji：
+        // emoji 的字体、基线、色彩都不受宿主控制，和本项目「全局限定 DesignTokens」的视觉语言是两个世界；
+        // 而且不同 ROM 的 emoji 字形差异极大（有的甚至渲染成方块）。
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Sm),
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+        ) {
+            ExamAnswerAction(Icons.Default.Edit, "手写", palette, enabled, onHandwriting)
+            ExamAnswerAction(Icons.Default.PhotoCamera, "拍照", palette, enabled, onCamera)
+            ExamAnswerAction(Icons.Default.PhotoLibrary, "相册", palette, enabled, onGallery)
+            if (images.isNotEmpty()) {
+                Text(
+                    "已添加 " + images.size + " 张",
+                    color = palette.muted,
+                    fontSize = DesignTokens.Type.Small,
+                    modifier = Modifier.padding(start = DesignTokens.Spacing.Xs),
+                )
+            }
+        }
+        if (images.isNotEmpty()) {
+            Spacer(Modifier.height(DesignTokens.Spacing.Xs))
+            Row(horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Xs)) {
+                images.forEach { path ->
+                    ExamAnswerThumb(
+                        path = path,
+                        palette = palette,
+                        modifier = Modifier.size(64.dp),
+                        onClick = { onPreview(path) },
+                        onLongClick = { pendingRemove = path }
+                    )
+                }
+            }
+            Text("点开可放大，长按移除", color = palette.muted, fontSize = DesignTokens.Type.Small)
+        }
+    }
+    pendingRemove?.let { path ->
+        AlertDialog(
+            onDismissRequest = { pendingRemove = null },
+            title = { Text("移除这张图片？") },
+            text = { Text("移除后它不会再跟着答案提交给 AI 批改。") },
+            confirmButton = { TextButton(onClick = { onRemove(path); pendingRemove = null }) { Text("移除") } },
+            dismissButton = { TextButton(onClick = { pendingRemove = null }) { Text("取消") } }
+        )
+    }
+}
+
+/**
+ * 答题图片入口的胶囊按钮：细边框 + 图标 + 文字。
+ *
+ * 与设置页的 chip、顶栏按钮同一套语言（Radius.Pill + Hairline + IconSm）。
+ * 禁用时整体降到 muted，不用 Material 的 38% alpha —— 那个透明度和本主题的浅底叠起来几乎看不见。
+ */
+@Composable
+private fun ExamAnswerAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    palette: AppPalette,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val tint = if (enabled) palette.ink else palette.muted
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(DesignTokens.Radius.Pill))
+            .background(if (enabled) palette.surface else palette.card)
+            .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Pill))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = DesignTokens.Spacing.Lg, vertical = DesignTokens.Spacing.Sm),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(DesignTokens.Size.IconSm), tint = tint)
+        Spacer(Modifier.width(DesignTokens.Spacing.Xs))
+        Text(label, color = tint, fontSize = DesignTokens.Type.Small)
+    }
+}
+
+/** 答案图片缩略图：文件被删 / 读不出来时显示占位，不崩也不留白。 */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ExamAnswerThumb(
+    path: String,
+    palette: AppPalette,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    val exists = remember(path) { examImageExists(path) }
+    val bitmap by produceState<ImageBitmap?>(initialValue = MessageImageLoader.cached(path), path) {
+        value = if (path.isBlank()) null else withContext(Dispatchers.IO) { MessageImageLoader.load(path, MESSAGE_IMAGE_MAX_SIDE) }
+    }
+    val image = bitmap
+    Box(
+        modifier
+            .clip(RoundedCornerShape(DesignTokens.Radius.Card))
+            .background(palette.card)
+            .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Card))
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        contentAlignment = Alignment.Center
+    ) {
+        if (image != null) {
+            Image(bitmap = image, contentDescription = "答案图片", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+        } else {
+            Text(
+                if (exists) "加载中" else "图片已不存在",
+                color = palette.muted,
+                fontSize = DesignTokens.Type.Small
+            )
+        }
+    }
+}
+
 /** 题目明细：题干 + 考生作答 + 参考解析，全部只读。 */
 @Composable
 private fun ExamRecordQuestion(index: Int, question: ExamQuestion) {
@@ -4447,12 +4721,20 @@ private fun ExamRecordQuestion(index: Int, question: ExamQuestion) {
         Text(
             "作答：" + when {
                 question.unknown -> "标记不会"
-                question.answer.isBlank() -> "未作答"
-                else -> question.answer
+                question.answer.isNotBlank() -> question.answer
+                question.answerImages.isNotEmpty() -> "见附图"
+                else -> "未作答"
             },
             color = Muted,
             fontSize = DesignTokens.Type.Small
         )
+        if (question.answerImages.isNotEmpty()) {
+            // 历史记录里的手写/拍照答案：只读缩略图，点不开全屏（记忆页没有全屏看图容器）。
+            Text("附 " + question.answerImages.size + " 张手写/拍照答案", color = Muted, fontSize = DesignTokens.Type.Small)
+            Row(horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Xs)) {
+                question.answerImages.forEach { path -> ExamRecordAnswerThumb(path) }
+            }
+        }
         if (question.referenceAnswer.isNotBlank()) {
             Text(
                 "解析：" + question.referenceAnswer,
@@ -4460,6 +4742,28 @@ private fun ExamRecordQuestion(index: Int, question: ExamQuestion) {
                 fontSize = DesignTokens.Type.Small,
                 lineHeight = DesignTokens.Type.LineSnug
             )
+        }
+    }
+}
+
+/** 记忆页里的答案图片缩略图：不依赖主题调色板，颜色走 MaterialTheme，避免多传一层参数。 */
+@Composable
+private fun ExamRecordAnswerThumb(path: String) {
+    val bitmap by produceState<ImageBitmap?>(initialValue = MessageImageLoader.cached(path), path) {
+        value = withContext(Dispatchers.IO) { MessageImageLoader.load(path, MESSAGE_IMAGE_MAX_SIDE) }
+    }
+    val image = bitmap
+    Box(
+        Modifier
+            .size(56.dp)
+            .clip(RoundedCornerShape(DesignTokens.Radius.Card))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center
+    ) {
+        if (image != null) {
+            Image(bitmap = image, contentDescription = "答案图片", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+        } else {
+            Text("图片已不存在", color = Muted, fontSize = DesignTokens.Type.Small)
         }
     }
 }
@@ -6599,6 +6903,8 @@ private fun ExamQuestion.toExamQuestionJson(): JSONObject = JSONObject().apply {
     put("answer", answer)
     put("unknown", unknown)
     put("referenceAnswer", referenceAnswer)
+    // 图片答案：只在真有图时才写这个字段，纯文字考试的存档格式与改造前逐字节一致。
+    if (answerImages.isNotEmpty()) put("answerImages", JSONArray(answerImages))
 }
 
 private fun JSONArray.toExamQuestions(): List<ExamQuestion> = List(length()) { index ->
@@ -6609,7 +6915,15 @@ private fun JSONArray.toExamQuestions(): List<ExamQuestion> = List(length()) { i
         question = item.optString("question", ""),
         answer = item.optString("answer", ""),
         unknown = item.optBoolean("unknown", false),
-        referenceAnswer = item.optString("referenceAnswer", "")
+        referenceAnswer = item.optString("referenceAnswer", ""),
+        // 旧存档没有 answerImages → 空列表（不报错）；条目坏掉只丢那一张。
+        answerImages = runCatching {
+            item.optJSONArray("answerImages")?.let { array ->
+                List(array.length()) { index -> array.optString(index, "") }
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+            }.orEmpty()
+        }.getOrDefault(emptyList())
     )
 }
 

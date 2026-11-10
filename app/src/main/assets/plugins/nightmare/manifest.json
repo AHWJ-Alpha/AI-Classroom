@@ -1,0 +1,52 @@
+{
+  "id": "nightmare",
+  "name": "夜梦画室",
+  "version": "1.0.0",
+  "description": "示例：需要 Bearer token 的第三方服务。演示 manifest.settings 的五种配置类型与必填/默认值规则",
+  "author": "AI Classroom",
+  "minApiVersion": 1,
+  "permissions": ["storage"],
+  "settings": [
+    {
+      "key": "token",
+      "label": "访问令牌",
+      "type": "secret",
+      "required": true,
+      "description": "nightmare → 设置 → API → Copy token",
+      "placeholder": "粘贴 token"
+    },
+    {
+      "key": "base_url",
+      "label": "服务地址",
+      "type": "text",
+      "required": false,
+      "default": "https://api.nightmare.example/v1",
+      "description": "自建服务时改成自己的地址"
+    },
+    {
+      "key": "audio_enabled",
+      "label": "启用音频",
+      "type": "boolean",
+      "default": true
+    },
+    {
+      "key": "steps",
+      "label": "步数",
+      "type": "number",
+      "default": 20,
+      "min": 1,
+      "max": 150,
+      "description": "采样步数，越大越慢越细"
+    },
+    {
+      "key": "quality",
+      "label": "画质",
+      "type": "select",
+      "options": ["low", "medium", "high"],
+      "default": "medium"
+    }
+  ],
+  "extensions": [
+    { "type": "prompt_hook", "stage": "before_send", "config": "logic.js", "entry": "onBeforePrompt" }
+  ]
+}

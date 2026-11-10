@@ -10,7 +10,10 @@ data class ExamQuestion(
     val question: String,
     val answer: String = "",
     val unknown: Boolean = false,
-    val referenceAnswer: String = ""
+    val referenceAnswer: String = "",
+    // 手写 / 拍照的答案图片（本地绝对路径，落在 filesDir/images/ 下）。
+    // 放在参数表末尾：历史上所有位置参数调用语义不变；旧存档没有这个字段 → 空列表。
+    val answerImages: List<String> = emptyList()
 )
 
 data class ExamSession(val title: String, val questions: MutableList<ExamQuestion>, val draft: String = "", val submitted: Boolean = false)

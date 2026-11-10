@@ -1,0 +1,33 @@
+{
+  "id": "music",
+  "name": "音乐",
+  "version": "1.1.0",
+  "description": "三态悬浮窗：最小圆（仅封面/音符，播放时自转）+ 小悬浮窗（封面+歌名+进度）+ 胶囊（封面+waveform+控制键）。单击逐级展开/收回，长按收成最小圆",
+  "author": "AI Classroom",
+  "minApiVersion": 1,
+  "permissions": [
+    "media.read",
+    "media.control",
+    "storage",
+    "ui.fullscreen"
+  ],
+  "extensions": [
+    {
+      "type": "bar_button",
+      "slot": "TOP_BAR_ACTIONS",
+      "label": "音乐",
+      "config": "btn.json"
+    },
+    {
+      "type": "ui_overlay",
+      "slot": "GLOBAL_OVERLAY",
+      "config": "root.json",
+      "provider": "provideState"
+    },
+    {
+      "type": "ui_ticker",
+      "intervalMs": 1000,
+      "entry": "onTick"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "time_flow",
+  "name": "时间流动",
+  "version": "1.1.0",
+  "description": "每次发送前把宿主时间推进若干分钟，并把「当前时间」补进提示词",
+  "author": "AI Classroom",
+  "minApiVersion": 1,
+  "permissions": ["storage"],
+  "settings": [
+    {
+      "key": "stepMinutes",
+      "label": "每次推进（分钟）",
+      "type": "number",
+      "required": false,
+      "default": 30,
+      "min": 1,
+      "max": 1440,
+      "description": "每发一条消息，插件里的时间往前走多少分钟"
+    }
+  ],
+  "extensions": [
+    { "type": "prompt_hook", "stage": "before_send", "config": "logic.js", "entry": "onBeforePrompt" }
+  ]
+}
