@@ -56,8 +56,7 @@
               "type": "box",
               "width": 64,
               "height": 64,
-              "radius": "control",
-              "background": "surfaceVariant",
+              "radius": "full",
               "children": [
                 {
                   "type": "disk",

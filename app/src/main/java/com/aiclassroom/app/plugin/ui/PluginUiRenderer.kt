@@ -258,10 +258,15 @@ private fun snapAnchorTo(base: UiAnchor?, offset: IntOffset, width: Int, height:
  */
 @Composable
 private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
-    var anchor by remember(node.path) { mutableStateOf(node.anchor) }
-    var offset by remember(node.path) { mutableStateOf(IntOffset(node.offsetX, node.offsetY)) }
-    var scale by remember(node.path) { mutableFloatStateOf(1f) }
-    val boxSize = remember(node.path) { mutableStateOf(IntSize.Zero) }
+    // **位置按插件共享，不按节点路径**：
+    // 浮窗在小圆 ↔ 大浮窗之间切换时，两个形态是不同的节点（visibleWhen 互斥），
+    // 如果各自 remember 自己的位置，切过去就会出现「跑到另一个位置」的现象 ——
+    // 用户要的是「新形态在原来的位置出现」。用 pluginId 做 key 就共享同一份位置状态。
+    val positionKey = paint.pluginId
+    var anchor by remember(positionKey) { mutableStateOf(node.anchor) }
+    var offset by remember(positionKey) { mutableStateOf(IntOffset(node.offsetX, node.offsetY)) }
+    var scale by remember(positionKey) { mutableFloatStateOf(1f) }
+    val boxSize = remember(positionKey) { mutableStateOf(IntSize.Zero) }
     val snapToGrid = node.snapTo == "grid9"
 
     // grid9 的吸附：detectTransformGestures 没有「松手」回调（它是个无限循环），
