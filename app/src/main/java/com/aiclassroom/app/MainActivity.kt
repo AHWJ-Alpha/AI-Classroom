@@ -1582,6 +1582,16 @@ private fun AIClassroomApp(splashDone: Boolean = true) {
                 appendLine("以下角色卡用于保持人物设定、关系、口吻、动机、行为边界和情绪反应连续。不要机械复述角色卡；角色只能根据自身可见事实和已知信息行动。角色卡与最近连续对话已发生的事实冲突时，以最近连续对话为准并自然协调。角色卡中的私密内容不能变成其他角色的知识。")
                 appendLine(characterCards)
             }
+            // 网页工具的使用策略：登录墙是最常见的卡点，明确教模型怎么把二维码递到用户手里。
+            // 只写「你打不开这个页」没有用 —— 用户要的是能扫码登录后继续。
+            appendLine()
+            appendLine("[网页工具的用法]")
+            appendLine("遇到需要登录才能看的页面时，按这个顺序做：")
+            appendLine("1. 先用 web_capture 截整页，看清登录区在页面的哪个位置；")
+            appendLine("2. 再用 clipX / clipY / clipW / clipH 只截二维码那一块（坐标是截图自身像素，不是网页 CSS 像素）；")
+            appendLine("3. 用 send_image 把这张截图发给用户，说明「请用手机扫码登录，登录后告诉我」；")
+            appendLine("4. 等用户确认后再继续，不要反复截图。")
+            appendLine("绝对不要把二维码描述成文字或链接 —— 用户扫不出来。")
             if (safety.isNotBlank()) {
                 appendLine()
                 appendLine(safety)

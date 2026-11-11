@@ -77,6 +77,10 @@ class WebCaptureTool(deps: WebToolDeps) : WebToolBase(deps) {
             "height": {"type": "integer", "description": "截图高度像素，默认 1920，范围 240-4000"},
             "scrollY": {"type": "integer", "description": "截图前滚动到的纵向位置，默认 0（页面顶部）；看长页面下半部分时设大"},
             "waitMillis": {"type": "integer", "description": "页面加载完后再等多久让 JS 渲染，默认 2500，上限 15000"},
+            "clipX": {"type": "integer", "description": "只截这块区域：左边界（截图自身像素）。要单独截登录二维码这种小目标时填"},
+            "clipY": {"type": "integer", "description": "只截这块区域：上边界（截图自身像素）"},
+            "clipW": {"type": "integer", "description": "只截这块区域：宽度（截图自身像素）。与 clipH 同时 > 0 才生效"},
+            "clipH": {"type": "integer", "description": "只截这块区域：高度（截图自身像素）"},
             "analyze": {"type": "boolean", "description": "是否把截图交给视觉模型分析，默认 false"},
             "question": {"type": "string", "description": "analyze=true 时要问视觉模型的问题，例如「登录入口在哪」"}
           },
@@ -92,9 +96,15 @@ class WebCaptureTool(deps: WebToolDeps) : WebToolBase(deps) {
         val height = args.optInt("height", WebCaptureEngine.DEFAULT_HEIGHT)
         val scrollY = args.optInt("scrollY", 0).coerceAtLeast(0)
         val waitMillis = args.optLong("waitMillis", WebCaptureEngine.DEFAULT_WAIT_MILLIS)
+        // 裁剪区域（可选）：用来单独截登录二维码这种小目标 ——
+        // 整页截图里二维码只有几十像素，用户手机上根本扫不出来。
+        val clipX = args.optInt("clipX", 0)
+        val clipY = args.optInt("clipY", 0)
+        val clipW = args.optInt("clipW", 0)
+        val clipH = args.optInt("clipH", 0)
 
         val started = System.currentTimeMillis()
-        val captured = deps.engine.capture(url, width, height, waitMillis, scrollY)
+        val captured = deps.engine.capture(url, width, height, waitMillis, scrollY, clipX, clipY, clipW, clipH)
         val bitmap = captured.getOrElse { error ->
             return fail("网页截图失败：" + (error.message ?: error.javaClass.simpleName))
         }

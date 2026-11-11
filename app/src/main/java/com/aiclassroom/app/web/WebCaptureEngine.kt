@@ -135,17 +135,37 @@ class WebCaptureEngine(private val context: Context) {
         outcome ?: Result.failure(IllegalStateException("页面处理超时（" + (timeoutMs / 1000) + " 秒）：" + target))
     }
 
-    /** 只截图不操作的便捷入口。 */
+    /**
+     * 只截图不操作的便捷入口。
+     *
+     * [clipX] / [clipY] / [clipW] / [clipH] 用来只截画面的一块区域（单位是**截图自身的像素**，
+     * 不是 CSS 像素 —— 截图已经按 width/height 缩放过了）。
+     *
+     * 为什么需要它：登录二维码常常只占页面一小块，整页截图后在手机上缩到看不清，
+     * 扫都扫不出来。有裁剪之后 AI 可以先整页看一眼定位坐标，再单独截二维码那块发给用户。
+     * 四个值不全为正时退化为整页截图。
+     */
     suspend fun capture(
         url: String,
         width: Int = DEFAULT_WIDTH,
         height: Int = DEFAULT_HEIGHT,
         waitMillis: Long = DEFAULT_WAIT_MILLIS,
         scrollY: Int = 0,
+        clipX: Int = 0,
+        clipY: Int = 0,
+        clipW: Int = 0,
+        clipH: Int = 0,
         timeoutMs: Long = CAPTURE_TIMEOUT_MS,
     ): Result<Bitmap> = withPage(url, width, height, waitMillis, timeoutMs) { page ->
         if (scrollY > 0) page.scrollTo(scrollY)
-        page.snapshot()
+        val full = page.snapshot()
+        if (clipW <= 0 || clipH <= 0) return@withPage full
+        // 夹到界内：越界的坐标不会让 createBitmap 抛异常，而是自动收窄
+        val x = clipX.coerceIn(0, (full.width - 1).coerceAtLeast(0))
+        val y = clipY.coerceIn(0, (full.height - 1).coerceAtLeast(0))
+        val w = clipW.coerceAtMost(full.width - x).coerceAtLeast(1)
+        val h = clipH.coerceAtMost(full.height - y).coerceAtLeast(1)
+        Bitmap.createBitmap(full, x, y, w, h)
     }
 
     /** 一次 [withPage] 期间持有的活动页面。所有方法都必须在主线程调用，由 [withPage] 保证。 */
