@@ -433,20 +433,14 @@ class MainActivity : ComponentActivity() {
         NowPlaying.init(applicationContext)
         setContent {
             AIClassroomTheme {
-                // 开屏 CG：**只在版本号变化后的首次启动播放**（像更新公告那样）。
-                // 每次冷启动都播 3 秒会烦人，所以用 prefs 记住「这个版本已经看过」。
-                // 主界面同时开始组合（被 CG 盖住），CG 结束时不会有白屏跳变。
-                val splashPrefsLocal = remember { splashPrefs }
-                var showSplash by remember {
-                    mutableStateOf(willShowSplash)
-                }
+                // 开屏 CG：**每次进入应用都播**（用户要求）。
+                // 主界面同时开始组合、被 CG 盖住；CG 末段整体淡出时自然露出来。
+                // 点击屏幕任意位置可跳过。
+                var showSplash by remember { mutableStateOf(true) }
                 Box(Modifier.fillMaxSize()) {
                     AIClassroomApp()
                     if (showSplash) {
-                        SplashCg(onFinished = {
-                            splashPrefsLocal.edit().putString("seen", BuildConfig.VERSION_NAME).apply()
-                            showSplash = false
-                        })
+                        SplashCg(onFinished = { showSplash = false })
                     }
                 }
             }
@@ -498,10 +492,10 @@ private fun AIClassroomApp() {
     // （这就是为什么录屏怎么抓都只有 New! 那一屏。）现在先置 false，等 CG 播完再判断。
     var showNewDialog by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        val cgPrefs = context.getSharedPreferences("splash_cg", android.content.Context.MODE_PRIVATE)
-        val cgWillPlay = cgPrefs.getString("seen", "") != BuildConfig.VERSION_NAME
-        // 只有「这一版第一次启动」才需要等；平时秒开。留 0.6s 给动画收尾。
-        if (cgWillPlay) delay(5_600)
+        // CG 现在每次进入应用都播，所以这里恒定等它播完（5s 动画 + 0.5s 淡出）。
+        // 早先按 seen 标记判断是否要等 —— 而 seen 是历史遗留的 true，
+        // 于是这里直接跳过等待，白色对话框又盖在 CG 上了。
+        delay(5_600)
         showNewDialog = !store.hasSeenReleaseNotes(APP_VERSION)
     }
     var activeBranchIndex by remember { mutableIntStateOf(-1) }

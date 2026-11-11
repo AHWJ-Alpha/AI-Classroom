@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import kotlin.math.sin
 import kotlin.random.Random
+import androidx.compose.ui.graphics.graphicsLayer
 
 /**
  * 开屏动画：像素「3」消散 → 像素「4」重组。
@@ -122,6 +123,12 @@ private fun glyphPixels(glyph: List<String>, seed: Int): List<Pixel> {
     return out
 }
 
+// **必须预计算**：早先是在 DrawScope 里每帧调 glyphPixels()，
+// 相当于每秒构造上百次 Random、分配上千个 Pixel 对象 —— 实机上表现为明显掉帧。
+// Kotlin 顶层 val 是懒初始化的，只算一次，之后每帧只是读这个 List。
+private val PIXELS_3: List<Pixel> = glyphPixels(DIGIT_3, seed = 303)
+private val PIXELS_4: List<Pixel> = glyphPixels(DIGIT_4, seed = 404)
+
 /** 各阶段的归一化时间点（相对 [TOTAL_MS]）。 */
 // ---- 第一幕：「3」 ----
 // 总长从 6.4s 压到 5.0s 时**不能等比缩放**：等比会把原本就紧的段落压没。
@@ -148,7 +155,12 @@ private const val ICON_IN_END = 0.75f    // 地球图标浮现完成   (3.75s)
 // 现在给「收缩 + 三个字母落位 + 稳定停留」共 0.12（0.60s），最后才淡出。
 private const val SHRINK_END = 0.80f     // 方框收缩到最小     (4.00s)
 private const val NEW_IN_END = 0.92f     // 「NEW」逐个落位    (4.60s)
-private const val FADE_START = 0.97f     // 整体淡出           (4.85s)
+private const val FADE_START = 0.97f     // 文字淡出           (4.85s)
+
+// 整个画布的淡出：末段把深黑背景渐隐，露出下面的主界面。
+// 没有它的话，CG 一结束就是「黑 → 白」的硬切，浅色主题下尤其刺眼。
+// 有了它，无论主界面是浅色还是深色，都是平滑交叉过去的。
+private const val CANVAS_FADE_START = 0.92f
 
 /** 缓出：让「到位」这件事有刹车感。 */
 private fun easeOut(x: Float): Float = 1f - (1f - x) * (1f - x) * (1f - x)
@@ -172,9 +184,17 @@ fun SplashCg(
         if (skipped) onFinished()
     }
     val measurer = rememberTextMeasurer()
+    // 末段整体渐隐：graphicsLayer 的 alpha 会连同深黑背景一起淡掉，
+    // 于是底下的 AIClassroomApp() 自然露出来 —— 这就是「结束过渡」。
+    val canvasAlpha = run {
+        val t = clock.value
+        if (t <= CANVAS_FADE_START) 1f
+        else (1f - (t - CANVAS_FADE_START) / (1f - CANVAS_FADE_START)).coerceIn(0f, 1f)
+    }
     Box(
         modifier
             .fillMaxSize()
+            .graphicsLayer { alpha = canvasAlpha }
             .background(Backdrop)
             .pointerInput(Unit) {
                 detectTapGestures { skipped = true }
@@ -211,7 +231,7 @@ private fun DrawScope.drawOldThree(
     gap: Float,
 ) {
     if (t > T3_OUT_END) return
-    val pixels = glyphPixels(DIGIT_3, seed = 303)
+    val pixels = PIXELS_3
     pixels.forEach { p ->
         val appearAt = (p.col / 5f) * T3_IN_END * 0.7f + p.jitter * 0.04f
         // 消散从 HOLD 结束才开始 —— 保证「全部亮齐 → 完整停留 → 才散」。
@@ -263,7 +283,7 @@ private fun DrawScope.drawNewFour(
     // 淡出窗口取整段的 40%，5s 下约 0.2 秒 —— 不留突兀的硬切。
     val fadeWin = 0.05f
     val fadeOut = ((t - (T4_OUT_END - fadeWin)) / fadeWin).coerceIn(0f, 1f)
-    val pixels = glyphPixels(DIGIT_4, seed = 404)
+    val pixels = PIXELS_4
     val span = T4_IN_END - GAP_END
     pixels.forEach { p ->
         // 从外向内：越靠外的格子越晚到，形成「汇聚」而不是「齐刷刷出现」
