@@ -441,7 +441,7 @@ class MainActivity : ComponentActivity() {
                 // 点击屏幕任意位置可跳过。
                 var showSplash by remember { mutableStateOf(willShowSplash) }
                 Box(Modifier.fillMaxSize()) {
-                    AIClassroomApp()
+                    AIClassroomApp(splashDone = !showSplash)
                     if (showSplash) {
                         SplashCg(onFinished = {
                             splashPrefs.edit().putString("played", BuildConfig.VERSION_NAME).apply()
@@ -478,7 +478,7 @@ private val LocalBottomBarLift = compositionLocalOf { 0.dp }
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AIClassroomApp() {
+private fun AIClassroomApp(splashDone: Boolean = true) {
     val context = LocalContext.current
     val store = remember { ClassroomStore(context) }
     val initialClasses = remember { store.load() }
@@ -491,15 +491,14 @@ private fun AIClassroomApp() {
     // 这份考试的起始时刻：会话在多处被创建（AI 触发 / 考试工具 / 存档恢复），
     // 没法塞进 ExamSession（不在本模块），所以在它刚出现时打一次点，提交时写进记录。
     var examStartedAt by remember { mutableStateOf(0L) }
-    // NEW 介绍界面的显示时机要跟着开屏 CG 走。
-    // 同步取值会让白色 dialog 盖在 CG 上（之前踩过），所以先 false，等 CG 播完再判断。
+    // NEW 介绍界面的触发点：**CG 结束（或被点击跳过）之后**。
+    //
+    // 之前用固定 delay 等 5.6s —— 那是假设 CG 一定会播满。
+    // 现在 CG 会停在 NEW 上等点击，时长由用户决定，定时就不可靠了，
+    // 所以改成由 splashDone 驱动：splash 一收，这里立刻判断要不要弹。
     var showNewDialog by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        // 只有这一次真会播 CG 才需要等；平时启动秒开。
-        val cgPrefs2 = context.getSharedPreferences("splash_cg", android.content.Context.MODE_PRIVATE)
-        val cgWillPlay = cgPrefs2.getString("played", "") != BuildConfig.VERSION_NAME
-        if (cgWillPlay) delay(5_600)
-        showNewDialog = !store.hasSeenReleaseNotes(APP_VERSION)
+    LaunchedEffect(splashDone) {
+        if (splashDone) showNewDialog = !store.hasSeenReleaseNotes(APP_VERSION)
     }
     var activeBranchIndex by remember { mutableIntStateOf(-1) }
     var branchInput by remember { mutableStateOf("") }

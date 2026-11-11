@@ -34,6 +34,10 @@ import kotlin.math.abs
 import kotlin.math.sin
 import kotlin.random.Random
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.animateFloatAsState
+import kotlinx.coroutines.delay
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
 
 /**
  * 开屏动画：像素「3」消散 → 像素「4」重组。
@@ -174,30 +178,34 @@ fun SplashCg(
     modifier: Modifier = Modifier,
 ) {
     val clock = remember { Animatable(0f) }
-    var skipped by remember { mutableStateOf(false) }
+    // 播完之后**停在「NEW」上**，不自动进主界面 —— 用户要的是「看完点一下才走」。
+    var exiting by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         clock.animateTo(1f, tween(TOTAL_MS, easing = LinearEasing))
-        onFinished()
+        // 注意：这里**不再调 onFinished**，动画结束就停在最后一帧等点击。
     }
-    // 点一下就跳过：3 秒对熟客来说太长，但第一次看到值得看完。
-    LaunchedEffect(skipped) {
-        if (skipped) onFinished()
+    // 点击后先做 0.35s 淡出，再真正交给主界面 —— 这样退出也有过渡，不是硬切。
+    LaunchedEffect(exiting) {
+        if (exiting) {
+            delay(350)
+            onFinished()
+        }
     }
     val measurer = rememberTextMeasurer()
-    // 末段整体渐隐：graphicsLayer 的 alpha 会连同深黑背景一起淡掉，
-    // 于是底下的 AIClassroomApp() 自然露出来 —— 这就是「结束过渡」。
-    val canvasAlpha = run {
-        val t = clock.value
-        if (t <= CANVAS_FADE_START) 1f
-        else (1f - (t - CANVAS_FADE_START) / (1f - CANVAS_FADE_START)).coerceIn(0f, 1f)
-    }
+    // 只在「点击退出」时渐隐；CG 播放期间保持全不透明（要停在 NEW 上给人看）。
+    val canvasAlpha = if (exiting) 0f else 1f
+    val exitAnim by animateFloatAsState(
+        targetValue = canvasAlpha,
+        animationSpec = tween(350),
+        label = "splash-exit",
+    )
     Box(
         modifier
             .fillMaxSize()
-            .graphicsLayer { alpha = canvasAlpha }
+            .graphicsLayer { alpha = exitAnim }
             .background(Backdrop)
             .pointerInput(Unit) {
-                detectTapGestures { skipped = true }
+                detectTapGestures { exiting = true }
             },
         contentAlignment = Alignment.Center,
     ) {
@@ -218,6 +226,18 @@ fun SplashCg(
             drawFrameWithIcon(t, originX, originY, cell, gap)
             drawWordNew(t, originX, originY, cell, gap)
             drawCaption(t, measurer)
+        }
+        // 播完停住后给一句「点击继续」—— 否则画面静止，用户不知道该做什么。
+        if (clock.value >= 0.995f && !exiting) {
+            Text(
+                text = "点击继续",
+                color = MutedInk.copy(alpha = 0.85f),
+                fontSize = 13.sp,
+                letterSpacing = 6.sp,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 72.dp),
+            )
         }
     }
 }
