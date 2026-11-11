@@ -382,6 +382,39 @@ import com.aiclassroom.app.util.GITHUB_RELEASES_URL
 import com.aiclassroom.app.util.GITHUB_LATEST_RELEASE_API
 import com.aiclassroom.app.util.MESSAGE_IMAGE_MAX_SIDE
 import com.aiclassroom.app.util.FULLSCREEN_IMAGE_MAX_SIDE
+import com.aiclassroom.app.model.ChapterLink
+import com.aiclassroom.app.model.ToolCall
+import com.aiclassroom.app.model.ChatTurn
+import com.aiclassroom.app.util.defaultBaseUrl
+import com.aiclassroom.app.util.isRemoteVersionNewer
+import com.aiclassroom.app.util.isApiFailure
+import com.aiclassroom.app.util.parseStreamDelta
+import com.aiclassroom.app.util.parseToolCalls
+import com.aiclassroom.app.util.parseNonStreamTurn
+import com.aiclassroom.app.util.toolsJsonOf
+import com.aiclassroom.app.util.readBody
+import com.aiclassroom.app.util.buildJson
+import com.aiclassroom.app.util.buildVisionJson
+import com.aiclassroom.app.util.filterNsfw
+import com.aiclassroom.app.util.ToolCallSink
+import com.aiclassroom.app.util.escapeJson
+import com.aiclassroom.app.util.optNonNullString
+import com.aiclassroom.app.util.buildChapterLinks
+import com.aiclassroom.app.util.fallbackChapters
+import com.aiclassroom.app.util.localChapterSummary
+import com.aiclassroom.app.util.parseChapter
+import com.aiclassroom.app.util.displayNameOf
+import com.aiclassroom.app.util.mediaJson
+import com.aiclassroom.app.util.extensionOf
+import com.aiclassroom.app.util.saveUserImage
+import com.aiclassroom.app.util.imageDataUrl
+import com.aiclassroom.app.util.responseModeLabel
+import com.aiclassroom.app.util.togglePluginConfig
+import com.aiclassroom.app.util.todayDateText
+import com.aiclassroom.app.util.localStudyQuote
+import com.aiclassroom.app.util.examRecordTime
+import com.aiclassroom.app.util.examRecordSummary
+import com.aiclassroom.app.util.parseClassroomIdentity
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -4431,17 +4464,9 @@ private fun MemoryScreen(chapters: List<ConversationChapter>, messages: List<Cha
 }
 
 /** 记录的显示时间：优先提交时刻，没有就用起始时刻；格式与记忆页其它位置一致（月-日 时:分）。 */
-private val EXAM_RECORD_TIME = java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm")
 
-private fun examRecordTime(record: ExamRecord): String {
-    val at = if (record.submittedAt > 0L) record.submittedAt else record.startedAt
-    if (at <= 0L) return "--"
-    return java.time.Instant.ofEpochMilli(at).atZone(java.time.ZoneId.systemDefault()).format(EXAM_RECORD_TIME)
-}
 
 /** 折叠态那一行：最近一次考的是什么、几道题。 */
-private fun examRecordSummary(record: ExamRecord): String =
-    record.title.ifBlank { "AI 随堂考试" } + " · " + record.questionCount + " 题"
 
 /**
  * 记忆页顶部的「考试记录」区块。
@@ -4776,41 +4801,10 @@ private fun MemoryMindMap(chapters: List<ConversationChapter>, onJump: (Int) -> 
     }
 }
 
-private data class ChapterLink(val from: Int, val to: Int, val weight: Float)
 
-private fun buildChapterLinks(chapters: List<ConversationChapter>): List<ChapterLink> {
-    val vectors = chapters.map { chapterVector(it) }
-    val links = mutableListOf<ChapterLink>()
-    for (i in chapters.indices) {
-        if (i < chapters.lastIndex) links.add(ChapterLink(i, i + 1, 0.35f))
-        val best = chapters.indices.filter { it != i && kotlin.math.abs(it - i) > 1 }
-            .map { it to cosineSimilarity(vectors[i], vectors[it]) }
-            .filter { it.second > 0.08f }
-            .maxByOrNull { it.second }
-        best?.let { (target, score) ->
-            if (i < target) links.add(ChapterLink(i, target, score.coerceIn(0.12f, 1f)))
-        }
-    }
-    return links.distinctBy { minOf(it.from, it.to) to maxOf(it.from, it.to) }.take(32)
-}
 
-private fun chapterVector(chapter: ConversationChapter): Map<String, Float> =
-    Regex("[A-Za-z0-9_]+|[\\u4e00-\\u9fa5]{2,}").findAll(chapter.title + " " + chapter.summary)
-        .map { it.value.lowercase() }
-        .filter { it.length > 1 && it !in COMMON_MEMORY_WORDS }
-        .groupingBy { it }
-        .eachCount()
-        .mapValues { it.value.toFloat() }
 
-private fun cosineSimilarity(a: Map<String, Float>, b: Map<String, Float>): Float {
-    if (a.isEmpty() || b.isEmpty()) return 0f
-    val dot = a.entries.sumOf { (key, value) -> (value * (b[key] ?: 0f)).toDouble() }
-    val normA = kotlin.math.sqrt(a.values.sumOf { (it * it).toDouble() })
-    val normB = kotlin.math.sqrt(b.values.sumOf { (it * it).toDouble() })
-    return if (normA == 0.0 || normB == 0.0) 0f else (dot / (normA * normB)).toFloat()
-}
 
-private val COMMON_MEMORY_WORDS = setOf("用户", "课堂", "内容", "学习", "总结", "问题", "讲解", "the", "and", "for", "with", "this", "that")
 
 @Composable
 private fun KnowledgeScreen(files: MutableList<KnowledgeFile>, onSave: () -> Unit) {
@@ -5656,13 +5650,6 @@ private fun CustomToolSection(
 }
 
 /** 响应形态的人话标签：data 是「数据回给 AI」，其余是「结果存成文件，路径回给 AI」。 */
-private fun responseModeLabel(type: String): String = when (type) {
-    UniversalResponse.TYPE_JSON -> "数据回给 AI"
-    UniversalResponse.TYPE_JSON_URL -> "文件（URL 下载）"
-    UniversalResponse.TYPE_JSON_BASE64 -> "文件（base64 解码）"
-    UniversalResponse.TYPE_BINARY -> "文件（原始二进制）"
-    else -> type
-}
 
 /**
  * 新增 / 编辑表单。校验全部走 feature-exam 的 validateCustomTool + validateCustomToolExecution：
@@ -6045,8 +6032,6 @@ private fun PluginPackageRow(
 }
 
 /** 折叠 / 展开某个插件的配置行（展开集合是不可变的，直接换一个新集合）。 */
-private fun togglePluginConfig(current: Set<String>, pluginId: String): Set<String> =
-    if (pluginId in current) current - pluginId else current + pluginId
 
 /** 一个配置字段：按 type 渲染控件，必填未填 / number 越界时整行标红并给出原因。 */
 @Composable
@@ -6962,12 +6947,6 @@ private fun JSONArray?.toFiles(): List<KnowledgeFile> = if (this == null) emptyL
 } }
 private fun <T> List<T>.toMutableStateList() = mutableStateListOf<T>().also { it.addAll(this) }
 
-private fun defaultBaseUrl(provider: String) = when (provider) {
-    "OpenAI" -> "https://api.openai.com/v1"
-    "DeepSeek" -> "https://api.deepseek.com/v1"
-    "通义千问" -> "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    else -> "https://api.openai.com/v1"
-}
 
 private suspend fun fetchModels(baseUrl: String, apiKey: String): List<String> = withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) return@withContext emptyList()
@@ -7015,45 +6994,9 @@ private suspend fun checkGitHubUpdate(): UpdateInfo? = withContext(Dispatchers.I
     }.getOrNull()
 }
 
-private fun isRemoteVersionNewer(remote: String, local: String): Boolean {
-    val remoteParts = versionParts(remote)
-    val localParts = versionParts(local)
-    val size = maxOf(remoteParts.size, localParts.size, 3)
-    repeat(size) { index ->
-        val r = remoteParts.getOrElse(index) { 0 }
-        val l = localParts.getOrElse(index) { 0 }
-        if (r != l) return r > l
-    }
-    return false
-}
 
-private fun versionParts(value: String): List<Int> =
-    Regex("\\d+").findAll(value).map { it.value.toIntOrNull() ?: 0 }.toList()
 
-private fun todayDateText(): Pair<String, String> {
-    val today = LocalDate.now()
-    val week = when (today.dayOfWeek.value) {
-        1 -> "星期一"
-        2 -> "星期二"
-        3 -> "星期三"
-        4 -> "星期四"
-        5 -> "星期五"
-        6 -> "星期六"
-        else -> "星期日"
-    }
-    return today.format(DateTimeFormatter.ofPattern("M月d日", Locale.CHINA)) to week
-}
 
-private fun localStudyQuote(): String {
-    val quotes = listOf(
-        "把今天学透一点，明天就轻一点。",
-        "慢慢来，深一点，稳一点。",
-        "清晰的问题，会带来清晰的进步。",
-        "先进入状态，再交给时间。",
-        "每一轮理解，都会留下痕迹。"
-    )
-    return quotes[LocalDate.now().dayOfYear % quotes.size]
-}
 
 private suspend fun callChat(baseUrl: String, apiKey: String, model: String, system: String, messages: List<ChatMessage>, deepThinkingEnabled: Boolean = false, reasoningEffort: String = "medium", temperature: Double = 0.35): String = withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) return@withContext "请先填写 API Key。"
@@ -7169,32 +7112,7 @@ AI：$firstAssistantMessage
     return parseClassroomIdentity(raw, firstUserMessage)
 }
 
-private fun parseClassroomIdentity(raw: String, fallbackSource: String): Pair<String, String>? {
-    if (raw.isBlank() || isApiFailure(raw)) return localClassroomIdentity(fallbackSource)
-    val lines = raw.lines().map { it.trim().trim('"', '\'') }.filter { it.isNotBlank() }
-    fun valueFor(label: String): String? = lines.firstOrNull { it.startsWith(label) }
-        ?.let { line ->
-            when {
-                line.contains('：') -> line.substringAfter('：')
-                line.contains(':') -> line.substringAfter(':')
-                else -> ""
-            }
-        }?.trim()
-        ?.takeIf { it.isNotBlank() }
-    val name = valueFor("名称") ?: valueFor("名字")
-    val summary = valueFor("简介") ?: valueFor("摘要")
-    return if (name != null && summary != null) {
-        name.replace(Regex("[。.!！?？]+$"), "").take(24) to summary.replace(Regex("\\s+"), " ").take(80)
-    } else localClassroomIdentity(fallbackSource)
-}
 
-private fun localClassroomIdentity(source: String): Pair<String, String>? {
-    val clean = source.replace(Regex("\\s+"), " ").trim()
-    if (clean.isBlank()) return null
-    val phrase = clean.trimEnd('。', '！', '？', '.', '!', '?').take(16)
-    val summary = clean.trimEnd('。', '！', '？', '.', '!', '?').let { if (it.length > 38) it.take(38) + "…" else it } + "。"
-    return phrase to summary
-}
 
 private suspend fun callChatStreamWithFallback(
     config: ClassroomConfig,
@@ -7306,13 +7224,6 @@ private suspend fun callTts(config: ClassroomConfig, text: String): ByteArray = 
 
 
 /** SAF 选中的文件展示名：优先 DISPLAY_NAME，读不到再退回路径最后一段。 */
-private fun displayNameOf(context: Context, uri: Uri): String = runCatching {
-    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-        if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else null
-    }
-}.getOrNull()?.takeIf { it.isNotBlank() }
-    ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
-    ?: "plugin.zip"
 
 /**
  * 选中图片的后缀：先看 MIME（SAF 给的 displayName 常常没有后缀），再退回名字后缀。
@@ -7329,22 +7240,6 @@ private fun displayNameOf(context: Context, uri: Uri): String = runCatching {
  * 高频能力，在这里顺手把封面再编码一次就等于每秒写一个 PNG。真正的落盘只在换歌时由
  * mediaArtwork 做一次。
  */
-private fun mediaJson(context: Context, track: NowPlaying.Track?, cache: MediaArtworkCache): String {
-    val obj = JSONObject()
-    if (track == null) {
-        obj.put("playing", false)
-        return obj.toString()
-    }
-    obj.put("playing", track.isPlaying)
-    obj.put("title", track.title)
-    obj.put("artist", track.artist)
-    obj.put("album", track.album)
-    obj.put("durationMs", track.durationMs)
-    obj.put("positionMs", track.positionMs)
-    obj.put("packageName", track.packageName)
-    traceArtworkPath(obj, track, cache)
-    return obj.toString()
-}
 
 /**
  * 封面路径：缓存里已经存的是「当前这首」才回填。
@@ -7352,147 +7247,28 @@ private fun mediaJson(context: Context, track: NowPlaying.Track?, cache: MediaAr
  * 判据是缓存键（包名 + 歌名 + 专辑）—— 它只看歌，不看播放进度，
  * 所以暂停、拖动进度、每秒 tick 都不会让这张图失效。
  */
-private fun traceArtworkPath(obj: JSONObject, track: NowPlaying.Track, cache: MediaArtworkCache) {
-    val path = cache.existingPath()
-    if (path != null && cache.matches(MediaArtworkCache.keyOf(track.packageName, track.title, track.album))) {
-        obj.put("artworkPath", path)
-    }
-}
 
-private fun extensionOf(context: Context, uri: Uri): String? {
-    val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
-    val fromMime = when (mime) {
-        "image/png" -> "png"
-        "image/webp" -> "webp"
-        "image/gif" -> "gif"
-        "image/jpeg" -> "jpg"
-        else -> null
-    }
-    if (fromMime != null) return fromMime
-    return displayNameOf(context, uri)?.substringAfterLast('.', "")?.lowercase()?.takeIf { it.isNotBlank() }
-}
 
-private fun isApiFailure(result: String): Boolean {
-    val text = result.lowercase()
-    return result.startsWith("调用失败") || result.startsWith("请先") || text.contains("http 4") || text.contains("http 5") || text.contains("unauthorized") || text.contains("invalid api")
-}
 
-private fun parseStreamDelta(payload: String): String = runCatching {
-    val choice = JSONObject(payload).optJSONArray("choices")?.optJSONObject(0) ?: return@runCatching ""
-    choice.optJSONObject("delta")?.optNonNullString("content")
-        ?: choice.optJSONObject("message")?.optNonNullString("content")
-        ?: ""
-}.getOrDefault("")
 
-private fun JSONObject.optNonNullString(name: String): String? {
-    if (!has(name) || isNull(name)) return null
-    return optString(name).takeUnless { it == "null" }
-}
 // ---------- function calling 基础设施（阶段B 线①） ----------
 
 
 
 /** OpenAI 兼容 tool_calls 里的一条调用。 */
-private data class ToolCall(val id: String, val name: String, val argumentsJson: String)
 
 /** 一次带工具请求的结果：普通文本 + 归一化后的 tool_calls（没有调用时为 null）。 */
-private data class ChatTurn(val content: String, val toolCallsJson: String?)
 
 /**
  * 流式 tool_calls 累积器：delta.tool_calls 是按 index 分片下发的，
  * id / function.name 取后到的非空值，function.arguments 是字符串拼接。
  */
-private class ToolCallSink {
-    private val ids = LinkedHashMap<Int, String>()
-    private val names = LinkedHashMap<Int, String>()
-    private val arguments = LinkedHashMap<Int, StringBuilder>()
-    private var implicitSlot = 0
-    private var rawJson: String? = null
-
-    fun reset() {
-        ids.clear()
-        names.clear()
-        arguments.clear()
-        implicitSlot = 0
-        rawJson = null
-    }
-
-    /** 非流式响应：整包的 message.tool_calls 原样保留。 */
-    fun setRawJson(toolCallsJson: String?) {
-        rawJson = toolCallsJson
-    }
-
-    /** 合并一条 SSE data 分片里的 choices[0].delta.tool_calls。 */
-    fun mergeDelta(payload: String) {
-        val calls = runCatching {
-            JSONObject(payload).optJSONArray("choices")?.optJSONObject(0)
-                ?.optJSONObject("delta")?.optJSONArray("tool_calls")
-        }.getOrNull() ?: return
-        mergeCalls(calls)
-    }
-
-    fun mergeCalls(calls: JSONArray) {
-        for (position in 0 until calls.length()) {
-            val item = calls.optJSONObject(position) ?: continue
-            // 个别兼容实现省略 index：按出现顺序补位。
-            val slot = if (item.has("index") && !item.isNull("index")) item.optInt("index") else implicitSlot++
-            item.optNonNullString("id")?.takeIf { it.isNotBlank() }?.let { ids[slot] = it }
-            val function = item.optJSONObject("function")
-            function?.optNonNullString("name")?.takeIf { it.isNotBlank() }?.let { names[slot] = it }
-            function?.optNonNullString("arguments")?.let { arguments.getOrPut(slot) { StringBuilder() }.append(it) }
-        }
-    }
-
-    /** 归一化后的 tool_calls JSON 数组；没有调用时返回 null。 */
-    fun resultJson(): String? {
-        rawJson?.takeIf { it.isNotBlank() }?.let { return it }
-        val slots = (ids.keys + names.keys + arguments.keys).distinct().sorted()
-        if (slots.isEmpty()) return null
-        val array = JSONArray()
-        slots.forEach { slot ->
-            array.put(JSONObject().apply {
-                put("id", ids[slot] ?: "call_$slot")
-                put("type", "function")
-                put("function", JSONObject().apply {
-                    put("name", names[slot].orEmpty())
-                    put("arguments", arguments[slot]?.toString().orEmpty())
-                })
-            })
-        }
-        return array.toString()
-    }
-}
 
 /** 把 tool_calls JSON 解析成待执行的调用列表；名字为空的分片直接丢弃。 */
-private fun parseToolCalls(toolCallsJson: String?): List<ToolCall> {
-    if (toolCallsJson.isNullOrBlank()) return emptyList()
-    val array = runCatching { JSONArray(toolCallsJson) }.getOrNull() ?: return emptyList()
-    return List(array.length()) { position ->
-        val item = array.optJSONObject(position) ?: JSONObject()
-        val function = item.optJSONObject("function") ?: JSONObject()
-        ToolCall(
-            id = item.optNonNullString("id") ?: "call_$position",
-            name = function.optNonNullString("name").orEmpty(),
-            argumentsJson = function.optNonNullString("arguments").orEmpty().ifBlank { "{}" }
-        )
-    }.filter { it.name.isNotBlank() }
-}
 
 /** 非流式（服务端忽略 stream=true）响应解析：取 message.content 与 message.tool_calls。 */
-private fun parseNonStreamTurn(body: String): ChatTurn {
-    val choice = runCatching { JSONObject(body).optJSONArray("choices")?.optJSONObject(0) }.getOrNull()
-    val message = choice?.optJSONObject("message") ?: choice?.optJSONObject("delta")
-        ?: return ChatTurn("", null)
-    val sink = ToolCallSink()
-    message.optJSONArray("tool_calls")?.let { sink.mergeCalls(it) }
-    return ChatTurn(message.optNonNullString("content").orEmpty(), sink.resultJson())
-}
 
 /** 注册表 → OpenAI 兼容的 tools 数组（不含外层 "tools" 键）；空注册表返回 null。 */
-private fun toolsJsonOf(registry: ToolRegistry): String? =
-    registry.all().takeIf { it.isNotEmpty() }?.joinToString(",") { handler ->
-        "{\"type\":\"function\",\"function\":{\"name\":\"${handler.name.escapeJson()}\",\"description\":\"${handler.description.escapeJson()}\",\"parameters\":${handler.parametersJson.ifBlank { "{\"type\":\"object\",\"properties\":{}}" }}}}"
-    }
 
 
 
@@ -7548,60 +7324,12 @@ private suspend fun buildLearningMemoryPack(messages: List<ChatMessage>, config:
 // Compose 快照列表，保证作答时列表项写入能触发重绘，与迁移前 toMutableStateList 行为一致。
 private fun ExamSession.withComposeState(): ExamSession = copy(questions = questions.toMutableStateList())
 
-private fun fallbackChapters(messages: List<ChatMessage>): List<ConversationChapter> = messages.chunked(CHAPTER_SIZE).mapIndexed { index, chunk ->
-    val start = index * CHAPTER_SIZE
-    localChapterSummary(index, chunk, start, start + chunk.size - 1)
-}
 
-private fun localChapterSummary(index: Int, messages: List<ChatMessage>, start: Int, end: Int): ConversationChapter {
-    val firstUser = messages.firstOrNull { it.role == "user" }?.text?.replace(Regex("\\s+"), " ").orEmpty()
-    val title = if (firstUser.isBlank()) "章节 ${index + 1}" else firstUser.take(18)
-    val summary = messages.joinToString(" ") { it.text }.replace(Regex("\\s+"), " ").take(80).ifBlank { "本章暂无摘要。" }
-    return ConversationChapter(title, summary, start, end)
-}
 
-private fun parseChapter(raw: String, start: Int, end: Int): ConversationChapter? = runCatching {
-    val jsonText = Regex("\\{[\\s\\S]*\\}").find(raw)?.value ?: return@runCatching null
-    val json = JSONObject(jsonText)
-    val title = json.optString("title").ifBlank { return@runCatching null }
-    val summary = json.optString("summary").ifBlank { return@runCatching null }
-    val facts = json.optJSONArray("facts").toStrings().filter { it.isNotBlank() }.take(3)
-    val open = json.optJSONArray("open").toStrings().filter { it.isNotBlank() }.take(2)
-    val enriched = buildString {
-        append(summary)
-        if (facts.isNotEmpty()) append(" 明确事实：${facts.joinToString("；")}")
-        if (open.isNotEmpty()) append(" 待确认：${open.joinToString("；")}")
-    }
-    ConversationChapter(title.take(28), enriched.take(220), start, end)
-}.getOrNull()
 
-private fun readBody(connection: HttpURLConnection): String {
-    val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
-    return BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
-}
 
-private fun buildJson(model: String, system: String, messages: List<ChatMessage>, stream: Boolean = false, deepThinkingEnabled: Boolean = false, reasoningEffort: String = "medium", toolsJson: String? = null, temperature: Double = 0.35): String {
-    val all = listOf(ChatMessage("system", system)) + messages
-    val jsonMessages = all.joinToString(",") { messageJson(it) }
-    val normalizedEffort = reasoningEffort.lowercase()
-    val safeEffort = when (normalizedEffort) {
-        "low", "medium", "high" -> normalizedEffort
-        else -> "medium"
-    }
-    val reasoning = if (deepThinkingEnabled) ",\"reasoning_effort\":\"$safeEffort\"" else ""
-    // toolsJson 为空时这个片段是空串，请求体与改造前逐字节一致。
-    val tools = toolsJson?.takeIf { it.isNotBlank() }?.let { ",\"tools\":[$it],\"tool_choice\":\"auto\"" }.orEmpty()
-    val safeTemperature = temperature.coerceIn(0.0, 2.0)
-    return "{\"model\":\"${model.escapeJson()}\",\"messages\":[$jsonMessages],\"temperature\":$safeTemperature,\"stream\":$stream$reasoning$tools}"
-}
 
 /** 单条消息的 JSON：没有工具字段时就是老的 {"role":..,"content":..}。 */
-private fun messageJson(message: ChatMessage): String = buildString {
-    append("{\"role\":\"").append(message.role).append("\",\"content\":\"").append(message.text.escapeJson()).append('"')
-    message.toolCallId?.takeIf { it.isNotBlank() }?.let { append(",\"tool_call_id\":\"").append(it.escapeJson()).append('"') }
-    message.toolCallsJson?.takeIf { it.isNotBlank() }?.let { append(",\"tool_calls\":").append(it) }
-    append('}')
-}
 
 /**
  * 图片条目 → data URL。文件不存在 / 读不出来 / 超出体积上限一律返回 null（这一张就不发了），
@@ -7613,67 +7341,15 @@ private fun messageJson(message: ChatMessage): String = buildString {
  * 而消息里的图片要能长期回看（也在重启后能再次发给模型）。
  * 复制失败返回 null，由调用方提示「重新选择照片」。
  */
-private fun saveUserImage(context: Context, uri: Uri): File? = runCatching {
-    val directory = File(context.filesDir, "images")
-    if (!directory.isDirectory && !directory.mkdirs()) return@runCatching null
-    val extension = when (context.contentResolver.getType(uri)?.lowercase()) {
-        "image/jpeg" -> "jpg"
-        "image/webp" -> "webp"
-        "image/gif" -> "gif"
-        else -> "png"
-    }
-    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching null
-    if (bytes.isEmpty()) return@runCatching null
-    val target = File(directory, "user_image_" + System.currentTimeMillis() + "." + extension)
-    target.outputStream().use { it.write(bytes) }
-    target
-}.getOrNull()
 
-private fun imageDataUrl(entry: String): String? {
-    val path = imagePathOf(entry)
-    if (path.isBlank()) return null
-    return runCatching {
-        val file = File(path)
-        if (!file.isFile || file.length() <= 0L || file.length() > MAX_ATTACHED_IMAGE_BYTES) return@runCatching null
-        val bytes = file.readBytes()
-        val mime = when (file.extension.lowercase()) {
-            "jpg", "jpeg" -> "image/jpeg"
-            "webp" -> "image/webp"
-            "gif" -> "image/gif"
-            else -> "image/png"
-        }
-        "data:" + mime + ";base64," + Base64.getEncoder().encodeToString(bytes)
-    }.getOrNull()
-}
 
 /**
  * 识图请求体。history 为空、只有一张图时与改造前逐字节一致；
  * 有历史就按「system → 历史气泡 → 最后一条带图消息」的顺序拼，图片只在最后一条 user 消息上。
  */
-private fun buildVisionJson(model: String, system: String, prompt: String, dataUrls: List<String>, history: List<ChatMessage> = emptyList()): String {
-    val imageBlocks = dataUrls.joinToString(",") { url ->
-        "{\"type\":\"image_url\",\"image_url\":{\"url\":\"" + url.escapeJson() + "\"}}"
-    }
-    // 只带 user / assistant 气泡：history 里那条 system 是课堂状态包，已经有了自己的 system 槽位。
-    val historyBlocks = history.filter { it.role == "user" || it.role == "assistant" }
-        .joinToString("") { message ->
-            ",{\"role\":\"" + message.role + "\",\"content\":\"" + message.text.take(2000).escapeJson() + "\"}"
-        }
-    return "{\"model\":\"" + model.escapeJson() +
-        "\",\"messages\":[{\"role\":\"system\",\"content\":\"" + system.escapeJson() + "\"}" +
-        historyBlocks +
-        ",{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"" + prompt.escapeJson() + "\"}," +
-        imageBlocks + "]}],\"temperature\":0.7}"
-}
 
 
-private fun filterNsfw(text: String, enabled: Boolean): String {
-    if (!enabled) return text
-    val blocked = listOf("色情", "裸露", "约炮", "血腥", "自残", "自杀", "nsfw", "porn", "nude", "kill myself")
-    return if (blocked.any { text.contains(it, ignoreCase = true) }) "高效模式已过滤不适合学习场景的内容。" else text
-}
 
-private fun String.escapeJson(): String = replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "")
 private fun String.unescapeJson(): String = replace("\\n", "\n").replace("\\\"", "\"").replace("\\/", "/").replace("\\\\", "\\")
 
 @Composable

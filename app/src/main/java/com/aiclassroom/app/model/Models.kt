@@ -166,3 +166,9 @@ internal data class Classroom(
 internal const val DEFAULT_MENTOR_PROMPT = "你是一名耐心、结构清晰的 AI 讲师。默认使用中文教学，保持主线课程连续，并在必要时用 Markdown 和公式文本表达。"
 internal const val MEMORY_PROMPT_LIMIT = 24
 internal const val MEMORY_CONTEXT_LIMIT = 6000
+
+// ---- 以下从 MainActivity 陆续搬来 ----
+
+internal data class ChapterLink(val from: Int, val to: Int, val weight: Float)
+internal data class ToolCall(val id: String, val name: String, val argumentsJson: String)
+internal data class ChatTurn(val content: String, val toolCallsJson: String?)
