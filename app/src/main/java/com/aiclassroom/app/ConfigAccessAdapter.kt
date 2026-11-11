@@ -4,6 +4,7 @@ import android.util.Log
 import com.aiclassroom.feature.exam.tool.config.ConfigAccess
 import com.aiclassroom.feature.exam.tool.config.ConfigAuditEvent
 import com.aiclassroom.feature.exam.tool.config.ConfigKeys
+import com.aiclassroom.app.model.ClassroomConfig
 
 /**
  * 把 [ClassroomConfig] 接到 config_* 工具上的适配器。

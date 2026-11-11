@@ -6,6 +6,7 @@ import com.aiclassroom.feature.exam.tool.ToolHandler
 import com.aiclassroom.feature.exam.tool.ToolResult
 import org.json.JSONObject
 import java.io.File
+import com.aiclassroom.app.model.ChatMessage
 
 /** 一轮对话最多能附加的图片张数；超出的 send_image 直接回错，不会悄悄丢掉。 */
 internal const val MAX_ATTACHED_IMAGES = 4

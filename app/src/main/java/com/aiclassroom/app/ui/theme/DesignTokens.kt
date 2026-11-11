@@ -9,6 +9,8 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aiclassroom.app.R
+import com.aiclassroom.app.model.AppPalette
+import com.aiclassroom.app.model.Classroom
 
 /**
  * AI Classroom Design Tokens（阶段 1：设计系统建立）

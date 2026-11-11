@@ -107,7 +107,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.aiclassroom.app.AppPalette
 import com.aiclassroom.app.plugin.PluginUiBinding
 import com.aiclassroom.app.ui.theme.DesignTokens
 import androidx.compose.animation.core.Animatable
@@ -151,6 +150,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.util.Locale
+import com.aiclassroom.app.model.AppPalette
 
 /**
  * plugin ui.json → Compose 的渲染器。

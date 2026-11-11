@@ -10,6 +10,7 @@ import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
+import com.aiclassroom.app.model.Classroom
 
 /**
  * 通知使用权的检测与引导。读取其他 App 的播放信息必须由用户在系统设置里手动授权，
