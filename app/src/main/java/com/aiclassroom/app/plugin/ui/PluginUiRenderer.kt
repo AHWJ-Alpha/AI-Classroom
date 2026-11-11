@@ -429,20 +429,25 @@ internal fun PluginUiOverlay(
                 // 拖动/缩放/吸附全部交给 PaintNode 的 BOX 分支（DraggableChild），
                 // 因为 draggable 是标在子节点上的；这里再写一遍会和它叠成双重定位
                 // （实测音乐浮窗因此跑到了屏幕中间而不是右下角）。
-                Box(Modifier.align(alignmentOf(root.anchor)), contentAlignment = Alignment.TopStart) {
-                    PaintNode(
-                        root,
-                        Paint(
-                            pluginId = binding.pluginId,
-                            state = states[binding.pluginId],
-                            message = null,
-                            assets = binding.assets,
-                            palette = palette,
-                            onEvent = onEvent,
-                            userImages = userImages[binding.pluginId].orEmpty(),
-                            userImageFit = userImageFits[binding.pluginId].orEmpty(),
-                        ),
+                // Paint 是普通类（身份比较），每次重组都 new 一个的话，
+                // 任何一个插件刷新都会让**整棵 overlay 树**重组 —— 实测每秒两次、每次 100ms+ 的卡顿。
+                // 用 remember 按「本插件的 state 版本」缓存：别的插件刷新时它是同一个实例，
+                // Compose 直接跳过这棵子树。
+                val version = stateVersions[binding.pluginId] ?: 0
+                val paint = remember(binding.pluginId, version, palette, binding.assets, onEvent) {
+                    Paint(
+                        pluginId = binding.pluginId,
+                        state = states[binding.pluginId],
+                        message = null,
+                        assets = binding.assets,
+                        palette = palette,
+                        onEvent = onEvent,
+                        userImages = userImages[binding.pluginId].orEmpty(),
+                        userImageFit = userImageFits[binding.pluginId].orEmpty(),
                     )
+                }
+                Box(Modifier.align(alignmentOf(root.anchor)), contentAlignment = Alignment.TopStart) {
+                    PaintNode(root, paint)
                 }
             }
         }
@@ -467,8 +472,9 @@ internal fun PluginUiMessageTail(
         bindings.forEach { binding ->
             val root = binding.root ?: return@forEach
             key(binding.pluginId) {
-                PaintNode(
-                    root,
+                // 同 overlay：Paint 按版本缓存，避免别处刷新连累这棵子树重组。
+                val version = stateVersions[binding.pluginId] ?: 0
+                val paint = remember(binding.pluginId, version, palette, message, onEvent) {
                     Paint(
                         pluginId = binding.pluginId,
                         state = states[binding.pluginId],
@@ -478,8 +484,9 @@ internal fun PluginUiMessageTail(
                         onEvent = onEvent,
                         userImages = userImages[binding.pluginId].orEmpty(),
                         userImageFit = userImageFits[binding.pluginId].orEmpty(),
-                    ),
-                )
+                    )
+                }
+                PaintNode(root, paint)
             }
         }
     }
@@ -502,8 +509,8 @@ internal fun PluginUiTopBarActions(
         val entry = binding.entry
         when {
             root != null -> key(binding.pluginId) {
-                PaintNode(
-                    root,
+                val version = stateVersions[binding.pluginId] ?: 0
+                val paint = remember(binding.pluginId, version, palette, onEvent) {
                     Paint(
                         pluginId = binding.pluginId,
                         state = states[binding.pluginId],
@@ -513,8 +520,9 @@ internal fun PluginUiTopBarActions(
                         onEvent = onEvent,
                         userImages = userImages[binding.pluginId].orEmpty(),
                         userImageFit = userImageFits[binding.pluginId].orEmpty(),
-                    ),
-                )
+                    )
+                }
+                PaintNode(root, paint)
             }
 
             entry != null && !binding.label.isNullOrBlank() -> TopBarFallbackButton(binding, palette, onEvent)
@@ -1003,11 +1011,12 @@ private fun Waveform(node: UiNode, paint: Paint, modifier: Modifier) {
 
     // 相位随「真实时间」推进：暂停时把相位冻在当前值，恢复播放从原处接着走，
     // 不会因为暂停过一次就把整排竖线的节奏打乱。
-    val phase = remember(node.path) { Animatable(0f) }
+    // 同 Disk：逐帧驱动不能用 Animatable.snapTo（每帧一次 MutatorMutex），换成普通 Float 状态。
+    val phase = remember(node.path) { mutableFloatStateOf(0f) }
     LaunchedEffect(node.path, active, speed) {
         if (!active) return@LaunchedEffect
         val cycleMillis = UI_WAVEFORM_CYCLE_MS / speed
-        val start = phase.value
+        val start = phase.floatValue
         var startedAt = 0L
         withFrameNanos { startedAt = it }
         while (true) {
@@ -1015,7 +1024,7 @@ private fun Waveform(node: UiNode, paint: Paint, modifier: Modifier) {
             var now = startedAt
             withFrameNanos { now = it }
             // 用真实时钟算相位，而不是一帧加一个固定增量：掉帧时节奏不会越走越慢。
-            phase.snapTo(start + ((now - startedAt) / 1_000_000f) * TWO_PI / cycleMillis)
+            phase.floatValue = start + ((now - startedAt) / 1_000_000f) * TWO_PI / cycleMillis
         }
     }
 
@@ -1028,7 +1037,7 @@ private fun Waveform(node: UiNode, paint: Paint, modifier: Modifier) {
         // 暂停时压到 rest（比地板更低），于是「暂停 = 整排降下去并静止」看得出来但不过火。
         val floor = maxHeight * UI_WAVEFORM_FLOOR_RATIO
         val span = maxHeight * (1f - UI_WAVEFORM_FLOOR_RATIO) * amplitude
-        val t = phase.value
+        val t = phase.floatValue
         for (index in 0 until bars) {
             // h = floor + span * (0.5 + 0.5 * sin(t + phase_i))
             val wave = 0.5f + 0.5f * kotlin.math.sin(t + phases[index])
@@ -1091,18 +1100,23 @@ private fun Disk(node: UiNode, paint: Paint, modifier: Modifier) {
     val compact = diameter <= 80.dp
     val coverRatio = if (compact) 1f else DISK_COVER_RATIO
 
-    val angle = remember(node.path) { Animatable(0f) }
+    // 角度用**普通 Float 状态**，不用 Animatable。
+    //
+    // Animatable.snapTo 每调一次都要过 MutatorMutex（加锁 + 解锁 + 协程挂起/恢复），
+    // 而这里是逐帧驱动 —— 60~120fps 下每秒上百次锁操作，实机上就是「转起来一顿一顿」。
+    // 换成 mutableFloatStateOf 之后每帧只是一次普通状态写入，图形层直接读到新角度。
+    val angleState = remember(node.path) { mutableFloatStateOf(0f) }
     LaunchedEffect(node.path, spinning) {
         if (!spinning) return@LaunchedEffect
         // 从当前角度接着转：暂停再播放不会跳回 0 度。
-        val start = angle.value
+        val start = angleState.floatValue
         var startedAt = 0L
         withFrameNanos { startedAt = it }
         while (true) {
-            var now = startedAt
-            withFrameNanos { now = it }
-            val elapsed = (now - startedAt) / 1_000_000f
-            angle.snapTo((start + elapsed * 360f / UI_DISK_ROTATION_MS) % 360f)
+            withFrameNanos { now ->
+                val elapsed = (now - startedAt) / 1_000_000f
+                angleState.floatValue = (start + elapsed * 360f / UI_DISK_ROTATION_MS) % 360f
+            }
         }
     }
 
@@ -1131,7 +1145,7 @@ private fun Disk(node: UiNode, paint: Paint, modifier: Modifier) {
         modifier
             .size(diameter)
             .then(bodyModifier)
-            .graphicsLayer { rotationZ = angle.value },
+            .graphicsLayer { rotationZ = angleState.floatValue },
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.matchParentSize()) {
@@ -1188,20 +1202,21 @@ private fun Glow(node: UiNode, paint: Paint, modifier: Modifier) {
     val intensity = (node.intensityPermyriad ?: PluginUiParser.DEFAULT_GLOW_INTENSITY_PERMYRIAD) / 10000f
     val color = colorOf(node.textColor ?: UiColor.DECORATIVE, paint.palette, paint.aod)
 
-    val breath = remember(node.path) { Animatable(0f) }
+    // 同 Disk / waveform：逐帧驱动不用 Animatable.snapTo。
+    val breath = remember(node.path) { mutableFloatStateOf(0f) }
     LaunchedEffect(node.path) {
         var startedAt = 0L
         withFrameNanos { startedAt = it }
         while (true) {
-            var now = startedAt
-            withFrameNanos { now = it }
-            breath.snapTo(((now - startedAt) / 1_000_000f) / UI_GLOW_BREATH_MS)
+            withFrameNanos { now ->
+                breath.floatValue = ((now - startedAt) / 1_000_000f) / UI_GLOW_BREATH_MS
+            }
         }
     }
 
     Canvas(modifier.size(radius * 2)) {
         // 呼吸：半径 ±6%、透明度在 0.75~1.0 倍强度之间来回，幅度刻意很小。
-        val wave = 0.5f + 0.5f * kotlin.math.sin(breath.value * TWO_PI)
+        val wave = 0.5f + 0.5f * kotlin.math.sin(breath.floatValue * TWO_PI)
         val liveRadius = size.minDimension / 2f * (0.94f + 0.06f * wave)
         val alpha = intensity * (0.75f + 0.25f * wave)
         drawCircle(
