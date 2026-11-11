@@ -5428,7 +5428,12 @@ private fun ModelScreen(
                 // 系统插件（沉浸模式 / 音乐）不属于「用户装的插件包」，单独列一节。
                 // 它们只是不能卸载，但仍要能停用 —— 所以是分组，不是隐藏。
                 val systemPlugins = pluginInfos.filter { BuiltinPlugins.isSystem(it.id) }
-                val userPlugins = pluginInfos.filterNot { BuiltinPlugins.isSystem(it.id) }
+                val samplePlugins = pluginInfos.filter {
+                    !BuiltinPlugins.isSystem(it.id) && BuiltinPlugins.isSample(it.id)
+                }
+                val userPlugins = pluginInfos.filterNot {
+                    BuiltinPlugins.isSystem(it.id) || BuiltinPlugins.isSample(it.id)
+                }
                 if (systemPlugins.isNotEmpty()) {
                     Text("内置功能 · " + systemPlugins.size + " 个", fontWeight = FontWeight.Bold)
                     Text(
@@ -5452,7 +5457,39 @@ private fun ModelScreen(
                     }
                     Spacer(Modifier.height(DesignTokens.Spacing.Md))
                 }
-                Text("自定义插件 · " + userPlugins.size + " 个已装载", fontWeight = FontWeight.Bold)
+                if (samplePlugins.isNotEmpty()) {
+                    Text("示例插件 · " + samplePlugins.size + " 个", fontWeight = FontWeight.Bold)
+                    Text(
+                        "演示用，不是应用功能：界面插槽动画、以及 manifest.settings 各种配置类型的样例。可以直接卸载。",
+                        color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
+                    )
+                    samplePlugins.forEach { info ->
+                        PluginPackageRow(
+                            info = info,
+                            rowExpanded = info.id in expandedPluginCards,
+                            onToggleRow = { expandedPluginCards = togglePluginConfig(expandedPluginCards, info.id) },
+                            expanded = info.id in expandedPluginConfigs,
+                            onToggleExpanded = { expandedPluginConfigs = togglePluginConfig(expandedPluginConfigs, info.id) },
+                            onEnabledChange = { v -> onPluginEnabledChange(info.id, v) },
+                            onSettingChange = { k, v -> onPluginSettingChange(info.id, k, v) },
+                            onImagePick = { k -> onPluginImagePick(info.id, k) },
+                            onImageClear = { k -> onPluginImageClear(info.id, k) },
+                            onUninstall = { onUninstallPlugin(info.id) },
+                            system = false,
+                        )
+                    }
+                    Spacer(Modifier.height(DesignTokens.Spacing.Md))
+                }
+                                // 0 个时不要说「0 个」—— 那会让人以为坏了
+                if (userPlugins.isEmpty()) {
+                    Text("还没有导入过插件", fontWeight = FontWeight.Bold)
+                    Text(
+                        "用下面的「导入插件文件」添加 .zip 或 .aip。",
+                        color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
+                    )
+                } else {
+                    Text("已导入的插件 · " + userPlugins.size + " 个", fontWeight = FontWeight.Bold)
+                }
                 Text(
                     "插件包是一个 ZIP，里面是 manifest.json（权限与扩展点）加 logic.js（脚本）。支持 .zip 与 .aip 两种后缀 —— 自定义的 .aip 在部分系统的文件选择器里会被隐藏，通常直接用 .zip 更方便。" +
                         "导入后按 manifest 声明的能力工作。",
@@ -5555,7 +5592,7 @@ private fun CustomToolSection(
     Spacer(Modifier.height(DesignTokens.Spacing.Md))
     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
     Spacer(Modifier.height(DesignTokens.Spacing.Md))
-    Text("自定义插件 · " + specs.size + " 个", fontWeight = FontWeight.Bold)
+    Text("自定义工具 · " + specs.size + " 个", fontWeight = FontWeight.Bold)
     Text(
         "一个自定义插件 = 一个 AI 能调用的工具 + 一条 HTTP 执行配置。保存后立刻注册给模型，课堂对话里它就能自己决定调用；关掉开关后，当次调用会被本地直接拒绝、不发任何请求。",
         color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp

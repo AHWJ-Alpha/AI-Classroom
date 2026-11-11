@@ -37,8 +37,21 @@ internal object BuiltinPlugins {
      */
     val SYSTEM_IDS: Set<String> = setOf("immersive", "music")
 
+    /**
+     * **示例插件**：演示用，不是应用功能。
+     *
+     * - `pet_cat` / `time_flow` / `msg_badge`：界面插槽与动画的演示
+     * - `nightmare`：manifest.settings 五种配置类型的演示（权限只有 storage，没有任何业务能力）
+     *
+     * 它们可以正常卸载，列表里单列一组并注明「示例」，免得和用户自己导入的插件混在一起。
+     */
+    val SAMPLE_IDS: Set<String> = setOf("pet_cat", "time_flow", "msg_badge", "nightmare")
+
     /** 这个插件是不是系统自带（不可卸载）。 */
     fun isSystem(id: String): Boolean = id in SYSTEM_IDS
+
+    /** 这个插件是不是演示用示例。 */
+    fun isSample(id: String): Boolean = id in SAMPLE_IDS
 
     fun install(context: Context, pluginsDir: File) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
