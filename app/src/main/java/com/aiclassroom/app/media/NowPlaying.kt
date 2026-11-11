@@ -39,12 +39,90 @@ object NowPlaying {
     private const val PREFS = "ai_classroom_now_playing"
 
     // ---- 进度推算的锚点 ----
-    // 有些播放器（实测酷狗概念版）只在一开始报一次 position，之后时间戳变了但 position 不动。
-    // 所以「现在的进度」由我们自己算：记住看到 position 的那一刻，之后按流逝时间补。
+    //
+    // 背景：酷狗这类播放器要么只报一次 position 就不再更新，要么偶尔回一个 0 / 旧值。
+    // 所以「现在的进度」由我们自己按 elapsedRealtime 补足，播放器给的值只当**校准点**用。
+    //
+    // 之前反复出问题（进度归零 / 往回跳 / 卡住）的根因是「谁来当时间源」没有定死：
+    // 原来的规则是「raw 与锚点差超过 1.5 秒就重新锚定」，于是播放器每推一次异常值
+    // （0、或者比推算值小的旧位置）就被当成了一次 seek，进度条随之倒退或归零。
+    //
+    // 现在的三条规则：
+    //  1. **单调**：同一个锚点内进度只增不减 —— 异常值最多让进度「停一下」，不会倒退。
+    //  2. **连续两次才采信**：偏差很大的 raw 先记为 pending，下次读到同一个值才认作 seek。
+    //     一次性异常值（0、旧位置）下一秒就变，因此会被自然丢掉。
+    //  3. **换歌无条件重锚**，并清空单调水位。
     private var positionAnchorMs = 0L
     private var positionAnchorAt = 0L
     private var positionAnchorKey = ""
+    /** 同一锚点内已返回过的最大进度，用于保证单调不倒退。-1 表示刚重锚、可从头开始。 */
+    private var lastProjectedMs = -1L
+    /** 上一次被判定为「偏差很大」的 raw 值，用于识别真正的 seek。 */
+    private var pendingRawMs = -1L
     private const val KEY_LAST_PACKAGE = "last_player_package"
+
+    /** 正常进度更新的容差：播放器报的值与推算值差在这个范围内，就不重锚。 */
+    private const val DRIFT_TOLERANCE_MS = 1_500L
+
+    /** 纯计算：按锚点推算此刻的理论位置（无副作用）。 */
+    private fun expectedPosition(now: Long): Long =
+        positionAnchorMs + (now - positionAnchorAt).coerceAtLeast(0L)
+
+    /**
+     * 对外展示用的进度：在推算值基础上保证**同一锚点内单调递增**。
+     * 异常 raw 若被误采信，最多让进度停一帧，绝不会往回跳。
+     */
+    private fun projectPosition(now: Long, durationMs: Long): Long {
+        var pos = expectedPosition(now)
+        if (durationMs > 0L) pos = pos.coerceIn(0L, durationMs)
+        // 单调保护：**只有算出来比上次小才回退到上次**。
+        //
+        // 早先写成 `if (lastProjectedMs in 0..pos) pos = lastProjectedMs` —— 方向反了：
+        // 一旦 lastProjectedMs 变成 0，`0 in 0..pos` 恒成立，pos 就被永久钉死在 0，
+        // 于是进度条永远是 0:00（实测连续 12 次采样全是 0:00 就是它造成的）。
+        if (lastProjectedMs >= 0L && pos < lastProjectedMs) pos = lastProjectedMs
+        lastProjectedMs = pos
+        return pos
+    }
+
+    /** 换歌 / 确认 seek 后重新锚定，并清空单调水位。 */
+    private fun reanchor(trackKey: String, raw: Long, now: Long) {
+        positionAnchorKey = trackKey
+        positionAnchorMs = raw.coerceAtLeast(0L)
+        positionAnchorAt = now
+        lastProjectedMs = -1L
+        pendingRawMs = -1L
+    }
+
+    /**
+     * 这个 raw 值该不该拿来重锚？
+     *
+     * - 换歌：直接重锚
+     * - raw <= 0：只有「还没锚过」时才用（否则是播放器没准备好）
+     * - 偏差在容差内：不重锚（锚点比 raw 更准，raw 可能滞后）
+     * - 偏差很大：先记为 pending，**下次读到同一个值**才认作 seek
+     */
+    private fun shouldReanchor(trackKey: String, raw: Long, now: Long): Boolean {
+        if (trackKey != positionAnchorKey) {
+            pendingRawMs = -1L
+            return true
+        }
+        if (raw <= 0L) {
+            // 播放器没报有效位置（酷狗常见）。
+            // **只有「这首歌还没锚过」时才用 0 起步** —— 早先写成 `positionAnchorMs <= 0L`，
+            // 而锚点本身就是 0，于是每次扫描都判定「该重锚」，elapsed 被反复清零，
+            // 进度永远停在 0:00（实测连续 12 次采样全是 0:00/3:07 就是这么来的）。
+            return positionAnchorKey.isEmpty()
+        }
+        val drift = raw - expectedPosition(now)
+        if (kotlin.math.abs(drift) <= DRIFT_TOLERANCE_MS) {
+            pendingRawMs = -1L
+            return false
+        }
+        val stable = raw == pendingRawMs
+        pendingRawMs = raw
+        return stable
+    }
 
     data class Track(
         val title: String,
@@ -122,11 +200,7 @@ object NowPlaying {
     fun current(): Track? {
         val t = currentTrack ?: return null
         if (!t.isPlaying) return t
-        val elapsed = SystemClock.elapsedRealtime() - positionAnchorAt
-        if (elapsed <= 0L) return t
-        var pos = positionAnchorMs + elapsed
-        if (t.durationMs > 0) pos = pos.coerceIn(0L, t.durationMs)
-        return t.copy(positionMs = pos)
+        return t.copy(positionMs = projectPosition(SystemClock.elapsedRealtime(), t.durationMs))
     }
 
     /** 当前曲目来自哪个包（没有会话时为 null）。 */
@@ -393,17 +467,20 @@ object NowPlaying {
         val rawPosition = state?.position ?: 0L
         val now = SystemClock.elapsedRealtime()
         val trackKey = session.packageName + "|" + title + "|" + album
-        if (trackKey != positionAnchorKey || kotlin.math.abs(rawPosition - positionAnchorMs) > 1500L) {
-            positionAnchorKey = trackKey
-            positionAnchorMs = rawPosition
-            positionAnchorAt = now
+        if (shouldReanchor(trackKey, rawPosition, now)) {
+            reanchor(trackKey, rawPosition, now)
         }
-        var positionMs = if (isPlaying) {
-            positionAnchorMs + (now - positionAnchorAt)
+        // 播放中用推算值；暂停时**先推算再把锚点冻结在这个位置** ——
+        // 原来暂停分支直接用 rawPosition，而酷狗暂停时给的也是 0，
+        // 于是一暂停进度就跳到 0:00（歌明明播到一半）。
+        val positionMs = if (isPlaying) {
+            projectPosition(now, durationMs)
         } else {
-            rawPosition
+            val frozen = projectPosition(now, durationMs)
+            positionAnchorMs = frozen
+            positionAnchorAt = now
+            frozen
         }
-        positionMs = if (durationMs > 0) positionMs.coerceIn(0L, durationMs) else positionMs.coerceAtLeast(0L)
 
 
         return Track(
