@@ -99,6 +99,54 @@ object WebSelfTest {
             ),
         )
 
+
+        // js 场景要先放行站点，否则会被白名单拦掉，测不出 js 本身通不通
+        record("9-prep. 放行 example.com", dispatch("web_allow_domain", """{"domain":"example.com"}"""))
+
+        // 场景 9：js 动作能执行（读页面状态）
+        record(
+            "9. web_act js 读取 document.title",
+            dispatch(
+                "web_act",
+                """{"url":"https://example.com","actions":[{"type":"js","script":"return document.title"}]}""",
+            ),
+        )
+
+        // 场景 10：js 能改 DOM（视频进度条的实际用法是 currentTime，这里用不需要视频的等价验证）
+        record(
+            "10. web_act js 写入 DOM",
+            dispatch(
+                "web_act",
+                """{"url":"https://example.com","actions":[{"type":"js","script":"document.body.dataset.probe='ok'; return document.body.dataset.probe"}]}""",
+            ),
+        )
+
+        // 场景 11：js 抛异常要变成可读错误，而不是崩掉
+        record(
+            "11. web_act js 抛异常（应报错但不崩）",
+            dispatch(
+                "web_act",
+                """{"url":"https://example.com","actions":[{"type":"js","script":"throw new Error('boom')"}]}""",
+            ),
+        )
+
+        // 场景 12：web_allow_domain 自动放行
+        record(
+            "12. web_allow_domain 放行 example.org",
+            dispatch("web_allow_domain", """{"domain":"example.org"}"""),
+        )
+
+        // 场景 13：重复放行应返回 already=true
+        record(
+            "13. web_allow_domain 重复放行",
+            dispatch("web_allow_domain", """{"domain":"example.org"}"""),
+        )
+
+        // 场景 14：非法域名应被拒
+        record(
+            "14. web_allow_domain 非法域名（应被拒）",
+            dispatch("web_allow_domain", """{"domain":"not-a-domain"}"""),
+        )
         report.append("===== DONE =====\n")
         runCatching { output.writeText(report.toString(), Charsets.UTF_8) }
         log("[selftest] 全部场景执行完毕")

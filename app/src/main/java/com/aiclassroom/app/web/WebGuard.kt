@@ -59,6 +59,8 @@ object WebGuard {
     /**
      * 动作结构校验。返回 null 表示合法，否则返回可直接回填给模型的错误说明。
      */
+    /** js 动作的脚本长度上限：够写一句 currentTime 赋值，但塞不进一整个混淆库。 */
+    const val MAX_SCRIPT_CHARS = 2000
     fun validateActions(actions: List<Action>): String? {
         if (actions.isEmpty()) return "actions 不能为空：至少给一个 fill / click / wait 动作。"
         if (actions.size > MAX_ACTIONS) {
@@ -82,7 +84,16 @@ object WebGuard {
                     }
                     totalWait += action.ms
                 }
-                else -> return at + " 的类型是「" + action.type + "」，只支持 fill / click / wait 三种；" +
+                "js" -> {
+                    // 执行任意脚本：这是最强的一条能力，所以校验从严。
+                    // - 必须给 script
+                    // - 长度设上限，避免把整个库塞进来
+                    if (action.script.isBlank()) return at + "（js）缺少 script。"
+                    if (action.script.length > MAX_SCRIPT_CHARS) {
+                        return at + "（js）脚本 " + action.script.length + " 字符，超过上限 " + MAX_SCRIPT_CHARS + "。"
+                    }
+                }
+                else -> return at + " 的类型是「" + action.type + "」，只支持 fill / click / wait / js 四种；" +
                     "不接受裸 JavaScript 或其它动作。"
             }
         }
