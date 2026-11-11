@@ -441,7 +441,7 @@ class MainActivity : ComponentActivity() {
                 // 点击屏幕任意位置可跳过。
                 var showSplash by remember { mutableStateOf(willShowSplash) }
                 Box(Modifier.fillMaxSize()) {
-                    AIClassroomApp(splashDone = !showSplash)
+                    AIClassroomApp(splashDone = !showSplash, onReplaySplash = { showSplash = true })
                     if (showSplash) {
                         SplashCg(onFinished = {
                             splashPrefs.edit().putString("played", BuildConfig.VERSION_NAME).apply()
@@ -478,7 +478,11 @@ private val LocalBottomBarLift = compositionLocalOf { 0.dp }
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AIClassroomApp(splashDone: Boolean = true) {
+private fun AIClassroomApp(
+    splashDone: Boolean = true,
+    /** 彩蛋：设置页连击版本号 5 下时，让外层重放开屏 CG。 */
+    onReplaySplash: () -> Unit = {},
+) {
     val context = LocalContext.current
     val store = remember { ClassroomStore(context) }
     val initialClasses = remember { store.load() }
@@ -2426,6 +2430,9 @@ private fun AIClassroomApp(splashDone: Boolean = true) {
                             }
                         },
                         onOpenManual = { showManualDialog = true },
+                        // 彩蛋：设置页版本行连击 5 下重放开屏 CG
+                        onReplaySplash = onReplaySplash,
+                        onShowUpdate = { updateInfo = it },
                         onFetchModels = {
                             scope.launch {
                                 modelStatus = "获取中..."
@@ -4972,7 +4979,11 @@ private fun ModelScreen(
     /** 清除某个图片字段（文件 + prefs 一起删）。 */
     onPluginImageClear: (String, String) -> Unit,
     onOpenManual: () -> Unit,
-    onFetchModels: () -> Unit
+    onFetchModels: () -> Unit,
+    /** 彩蛋：连击版本号 5 下时重放开屏 CG。 */
+    onReplaySplash: () -> Unit = {},
+    /** 手动查到新版本时，把结果交给上层弹更新框。 */
+    onShowUpdate: (com.aiclassroom.app.model.UpdateInfo) -> Unit = {}
 ) {
     // 自定义插件库：json 是唯一真相，改一次就序列化回上层（写 prefs + 触发 registry 重建）。
     val customTools = remember(customToolsJson) { CustomToolSpec.listFromJson(customToolsJson) }
@@ -5540,6 +5551,59 @@ private fun ModelScreen(
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(onClick = onOpenManual) { Text("打开使用手册") }
             }
+        }
+        item {
+                    Spacer(Modifier.height(DesignTokens.Spacing.Lg))
+                    // 版本行：需要同时满足「单击检查更新」和「连击 5 下播彩蛋」。
+                    // 用 600ms 防抖区分：5 连击在计数到 5 时立刻触发，不等防抖；
+                    // 1~4 次点击则在停手 600ms 后才真正去查更新，避免连击时发五次请求。
+                    var tapCount by remember { mutableIntStateOf(0) }
+                    var checkState by remember { mutableStateOf<String?>(null) }
+                    val tapScope = rememberCoroutineScope()
+                    var pendingTap by remember { mutableStateOf<Job?>(null) }
+                    Column(Modifier.fillMaxWidth()) {
+                        Text(
+                            "版本 " + APP_VERSION,
+                            color = Muted,
+                            fontSize = DesignTokens.Type.Caption,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    tapCount++
+                                    pendingTap?.cancel()
+                                    if (tapCount >= 5) {
+                                        // 彩蛋：连击 5 下重放开屏 CG
+                                        tapCount = 0
+                                        checkState = null
+                                        onReplaySplash()
+                                    } else {
+                                        pendingTap = tapScope.launch {
+                                            delay(600)
+                                            tapCount = 0
+                                            // 1~4 次点击：查更新
+                                            checkState = "正在检查…"
+                                            val info = checkGitHubUpdate()
+                                            checkState = when {
+                                                info == null -> "检查失败：网络不通"
+                                                isRemoteVersionNewer(info.version, APP_VERSION) -> "发现新版本 " + info.version
+                                                else -> "已是最新版本"
+                                            }
+                                            if (info != null && isRemoteVersionNewer(info.version, APP_VERSION)) {
+                                                onShowUpdate(info)
+                                            }
+                                        }
+                                    }
+                                }
+                                .padding(vertical = DesignTokens.Spacing.Sm),
+                        )
+                        checkState?.let {
+                            Text(
+                                it,
+                                color = if (it.startsWith("发现") || it.startsWith("已是最新")) MaterialTheme.colorScheme.primary else Muted,
+                                fontSize = DesignTokens.Type.Caption,
+                            )
+                        }
+                    }
         }
         item { Text(saveNotice, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(4.dp)) }
     }
