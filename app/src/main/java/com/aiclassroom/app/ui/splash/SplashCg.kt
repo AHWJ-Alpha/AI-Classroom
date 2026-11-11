@@ -56,7 +56,7 @@ import kotlin.random.Random
  * 数字不是用字体画的，而是 5x7 点阵逐格铺方块 —— 每格之间留 1px 缝隙，
  * 放大后能清楚看到「格子」，这是像素风的关键，用字体缩放做不出来。
  */
-private const val TOTAL_MS = 3_800
+private const val TOTAL_MS = 6_400
 
 // ---- 调色：旧（3.0 二次元） ----
 private val OldMain = Color(0xFF6C63FF)
@@ -123,15 +123,30 @@ private fun glyphPixels(glyph: List<String>, seed: Int): List<Pixel> {
 }
 
 /** 各阶段的归一化时间点（相对 [TOTAL_MS]）。 */
-private const val T3_IN_END = 0.18f      // 「3」点亮完成
+// ---- 第一幕：「3」 ----
+private const val T3_IN_END = 0.12f      // 点亮完成
 // 完整停留：早先没有这一段，像素才刚亮齐就开始散，实测截到的都是「已经散了一半」的画面，
 // 谁也看不出那是个 3。加这一段之后形状能被认出来，消散才有对比。
-private const val T3_HOLD_END = 0.34f    // 「3」完整停留结束，开始消散
-private const val T3_OUT_END = 0.56f     // 「3」散尽
-private const val GAP_END = 0.60f        // 留白结束
-private const val T4_IN_END = 0.84f      // 「4」成型
-private const val FLARE_END = 0.94f      // 辉光扫过
-private const val FADE_START = 0.94f
+private const val T3_HOLD_END = 0.23f    // 完整停留结束，开始消散
+private const val T3_OUT_END = 0.40f     // 散尽
+
+// ---- 第二幕：「4」 ----
+private const val GAP_END = 0.43f        // 留白结束
+private const val T4_IN_END = 0.63f      // 「4」成型
+private const val FLARE_END = 0.69f      // 辉光扫过
+private const val T4_OUT_END = 0.75f     // 「4」隐去
+
+// ---- 第三幕：方框 + 沉浸图标 ----
+private const val FRAME_IN_START = 0.74f // 方框开始描边
+private const val FRAME_IN_END = 0.79f   // 方框画完
+private const val ICON_IN_END = 0.85f    // 地球图标在框内浮现完成
+
+// ---- 第四幕：收缩成 NEW ----
+// 这一段原来只占 0.04（约 0.2 秒），NEW 等于闪一下就没了 —— 用户根本来不及看。
+// 现在给「收缩 + 三个字母落位 + 稳定停留」共 0.12（约 0.8 秒），并且最后才淡出。
+private const val SHRINK_END = 0.88f     // 方框收缩到最小
+private const val NEW_IN_END = 0.94f     // 「NEW」三个字母逐个落位
+private const val FADE_START = 0.985f    // 整体淡出，交给 NEW 介绍界面
 
 /** 缓出：让「到位」这件事有刹车感。 */
 private fun easeOut(x: Float): Float = 1f - (1f - x) * (1f - x) * (1f - x)
@@ -178,6 +193,8 @@ fun SplashCg(
 
             drawOldThree(t, originX, originY, cell, gap)
             drawNewFour(t, originX, originY, cell, gap)
+            drawFrameWithIcon(t, originX, originY, cell, gap)
+            drawWordNew(t, originX, originY, cell, gap)
             drawCaption(t, measurer)
         }
     }
@@ -239,7 +256,10 @@ private fun DrawScope.drawNewFour(
     cell: Float,
     gap: Float,
 ) {
-    if (t < GAP_END) return
+    if (t < GAP_END || t > T4_OUT_END) return
+    // 第三幕要在这个位置放方框和地球，所以「4」得先让开。
+    // 用 0.06 的窗口淡出，不留突兀的硬切。
+    val fadeOut = ((t - (T4_OUT_END - 0.06f)) / 0.06f).coerceIn(0f, 1f)
     val pixels = glyphPixels(DIGIT_4, seed = 404)
     val span = T4_IN_END - GAP_END
     pixels.forEach { p ->
@@ -259,7 +279,7 @@ private fun DrawScope.drawNewFour(
         val cx = originX + p.col * (cell + gap) + cell / 2f + dx
         val cy = originY + p.row * (cell + gap) + cell / 2f + dy
 
-        val base = NewMain.copy(alpha = come)
+        val base = NewMain.copy(alpha = come * (1f - fadeOut))
         drawRect(
             color = base,
             topLeft = Offset(cx - side / 2f, cy - side / 2f),
@@ -284,6 +304,8 @@ private fun DrawScope.drawNewFour(
 
 /** 底部版本文字：3.0 的余晖 → 4.0 的宣告。 */
 private fun DrawScope.drawCaption(t: Float, measurer: TextMeasurer) {
+    // 版本号跟着幕走：3.0 → 4.0 → NEW（第三幕后交给「NEW」自己说事）
+    if (t >= FRAME_IN_START) return
     val label = if (t < GAP_END) "3.0" else "4.0"
     val color = if (t < GAP_END) OldDeep.copy(alpha = 0.9f) else MutedInk
     val alpha = when {
@@ -308,6 +330,160 @@ private fun DrawScope.drawCaption(t: Float, measurer: TextMeasurer) {
             size.height * 0.76f,
         ),
     )
+}
+
+
+/**
+ * 7x7 地球点阵（沉浸模式图标）。
+ *
+ * 第一版写得太稀疏（只有外圈 + 两三条零散的内点），缩到小尺寸后看着像一道斜线，
+ * 完全不像球。改成「实心球 + 挖空一条赤道带」：轮廓是实心的，中间留白两格当纬线，
+ * 这样即便只有 7x7 也能读出「球体」。
+ */
+// 实心圆，只在中间一行挖掉两个点当赤道 —— 挖一整行会变成上下两个汉堡片。
+private val GLOBE_7 = listOf(
+    "..111..",
+    ".11111.",
+    "1111111",
+    "1101011",
+    "1111111",
+    ".11111.",
+    "..111..",
+)
+
+/** NEW 三个字母的 5x7 点阵。 */
+private val LETTER_N = listOf("10001","11001","10101","10011","10001","10001","10001")
+private val LETTER_E = listOf("11111","10000","10000","11110","10000","10000","11111")
+private val LETTER_W = listOf("10001","10001","10001","10101","10101","10101","01010")
+
+/**
+ * 第三幕：方框描边浮现 → 沉浸模式的地球图标在框内亮起 → 方框收缩。
+ *
+ * 方框用像素方块逐边画出（四边同时推进），不是画一个圆角矩形 ——
+ * 那会在整体像素风里显得突兀。
+ */
+private fun DrawScope.drawFrameWithIcon(
+    t: Float,
+    originX: Float,
+    originY: Float,
+    cell: Float,
+    gap: Float,
+) {
+    if (t < FRAME_IN_START || t > SHRINK_END) return
+
+    val frameP = ((t - FRAME_IN_START) / (FRAME_IN_END - FRAME_IN_START)).coerceIn(0f, 1f)
+    val iconP = ((t - FRAME_IN_END) / (ICON_IN_END - FRAME_IN_END)).coerceIn(0f, 1f)
+    val shrinkP = ((t - ICON_IN_END) / (SHRINK_END - ICON_IN_END)).coerceIn(0f, 1f)
+
+    // 方框整体从 100% 收到 58%，给下一幕的 NEW 让出位置
+    val boxScale = 1f - easeIn(shrinkP) * 0.42f
+    val side = cell * boxScale
+    val step = side + gap
+    val cols = 9
+    val rows = 9
+    val boxW = side * cols + gap * (cols - 1)
+    val boxH = side * rows + gap * (rows - 1)
+    val bx = (size.width - boxW) / 2f
+    val by = (originY + cell * 3.5f) - boxH / 2f
+
+    val perim = (cols * 2 + rows * 2 - 4).toFloat()
+    var drawn = 0f
+    for (r in 0 until rows) {
+        for (c in 0 until cols) {
+            val onEdge = r == 0 || r == rows - 1 || c == 0 || c == cols - 1
+            if (!onEdge) continue
+            // 沿周长推进：按「离起点的距离」决定这一格何时亮
+            val order = perimeterOrder(c, r, cols, rows) / perim
+            if (order > frameP) continue
+            val cx = bx + c * step + side / 2f
+            val cy = by + r * step + side / 2f
+            drawRect(
+                color = NewMain.copy(alpha = 0.85f),
+                topLeft = Offset(cx - side / 2f, cy - side / 2f),
+                size = Size(side, side),
+            )
+        }
+    }
+
+    // 地球图标：逐点浮现
+    if (iconP > 0f) {
+        val gx = (size.width - (side * 7 + gap * 6)) / 2f
+        val gy = (originY + cell * 3.5f) - (side * 7 + gap * 6) / 2f
+        GLOBE_7.forEachIndexed { r, line ->
+            line.forEachIndexed { c, ch ->
+                if (ch != '1') return@forEachIndexed
+                // 从中心向外浮现
+                val d = (abs(c - 3) + abs(r - 3)) / 6f
+                if (d > iconP) return@forEachIndexed
+                val cx = gx + c * (side + gap) + side / 2f
+                val cy = gy + r * (side + gap) + side / 2f
+                drawRect(
+                    color = NewGlow.copy(alpha = 0.95f),
+                    topLeft = Offset(cx - side / 2f, cy - side / 2f),
+                    size = Size(side, side),
+                )
+            }
+        }
+    }
+}
+
+/** 周长上的推进顺序：0 = 左上角起，顺时针。 */
+private fun perimeterOrder(c: Int, r: Int, cols: Int, rows: Int): Float = when {
+    r == 0 -> c.toFloat()
+    c == cols - 1 -> (cols - 1 + r).toFloat()
+    r == rows - 1 -> (cols - 1 + rows - 1 + (cols - 1 - c)).toFloat()
+    else -> (cols - 1 + rows - 1 + cols - 1 + (rows - 1 - r)).toFloat()
+}
+
+/**
+ * 第四幕：收缩成「NEW」。
+ *
+ * 三个字母从左往右依次落位，最后一个落定时正好到 [NEW_IN_END]，
+ * 紧接 [FADE_START] 整体淡出，把画面交给 NEW 介绍界面。
+ */
+private fun DrawScope.drawWordNew(
+    t: Float,
+    originX: Float,
+    originY: Float,
+    cell: Float,
+    gap: Float,
+) {
+    if (t < SHRINK_END) return
+    val letters = listOf(LETTER_N, LETTER_E, LETTER_W)
+    // NEW 必须用**比数字小得多的格子**：数字是 5 格宽、屏幕上只放一个，
+    // 而 NEW 要横排三个字母 —— 按数字的 cell（约屏宽 9%）算，
+    // 15 格就有 1500px，远超 1080 屏宽，三个字母直接叠成一团。
+    // 0.30 让总宽落在屏宽 62% 左右。
+    val unit = cell * 0.30f
+    val letterW = unit * 5 + gap * 4
+    val spacing = unit * 1.6f
+    val totalW = letterW * 3 + spacing * 2
+    val startX = (size.width - totalW) / 2f
+    val startY = (originY + cell * 3.5f) - (unit * 7 + gap * 6) / 2f
+
+    val span = NEW_IN_END - SHRINK_END
+    letters.forEachIndexed { li, glyph ->
+        // 每个字母的落位窗口错开，形成「逐个落定」
+        val letterStart = SHRINK_END + span * (li * 0.28f)
+        if (t < letterStart) return@forEachIndexed
+        val p = easeOut(((t - letterStart) / (span * 0.44f)).coerceIn(0f, 1f))
+
+        val lx = startX + li * (letterW + spacing)
+        glyph.forEachIndexed { r, line ->
+            line.forEachIndexed { c, ch ->
+                if (ch != '1') return@forEachIndexed
+                // 从上往下落
+                val drop = (1f - p) * unit * 2.2f * (r / 7f + 0.4f)
+                val cx = lx + c * (unit + gap) + unit / 2f
+                val cy = startY + r * (unit + gap) + unit / 2f - drop
+                drawRect(
+                    color = NewMain.copy(alpha = p),
+                    topLeft = Offset(cx - unit / 2f, cy - unit / 2f),
+                    size = Size(unit, unit),
+                )
+            }
+        }
+    }
 }
 
 /** kotlin.math.cos 的 Float 版本（避免到处写 toFloat()）。 */
