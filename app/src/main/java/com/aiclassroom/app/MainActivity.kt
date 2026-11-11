@@ -239,6 +239,12 @@ import com.aiclassroom.app.model.EXAM_RECORD_LIMIT
 import com.aiclassroom.app.model.DEFAULT_MENTOR_PROMPT
 import com.aiclassroom.app.model.MEMORY_PROMPT_LIMIT
 import com.aiclassroom.app.model.MEMORY_CONTEXT_LIMIT
+import com.aiclassroom.app.util.CORE_PREMISE_LIMIT
+import com.aiclassroom.app.util.MEMORY_CARD_RECALL_LIMIT
+import com.aiclassroom.app.util.MEMORY_CARD_BUILD_MESSAGE_LIMIT
+import com.aiclassroom.app.util.RECENT_MESSAGE_CONTEXT_LIMIT
+import com.aiclassroom.app.util.toStrings
+import com.aiclassroom.app.util.normalizeVisibility
 import com.aiclassroom.feature.exam.ExamSession
 import com.aiclassroom.feature.exam.detectExamSession
 import com.aiclassroom.feature.exam.isExamRequest
@@ -340,6 +346,42 @@ import com.aiclassroom.app.util.buildInlineMarkdown
 import com.aiclassroom.app.util.sanitizeMathText
 import com.aiclassroom.app.util.isMathLikeLine
 import com.aiclassroom.app.util.looksLikeFailure
+import com.aiclassroom.app.util.mentorPriorityBlock
+import com.aiclassroom.app.util.promptPriorityReminder
+import com.aiclassroom.app.util.conversationConsistencyRules
+import com.aiclassroom.app.util.responseBoundaryRules
+import com.aiclassroom.app.util.promptMessagesForRoom
+import com.aiclassroom.app.util.promptMessagesForBranch
+import com.aiclassroom.app.util.truncatePromptSection
+import com.aiclassroom.app.util.parseLearningMemoryPack
+import com.aiclassroom.app.util.localLearningMemoryPack
+import com.aiclassroom.app.util.mergeMemoryCards
+import com.aiclassroom.app.util.normalizeCharacterCardJson
+import com.aiclassroom.app.util.extractPngCardText
+import com.aiclassroom.app.util.formatCharacterCards
+import com.aiclassroom.app.util.MEDIA_DISABLED_HINT
+import com.aiclassroom.app.util.MEDIA_NO_SESSION_HINT
+import com.aiclassroom.app.util.TOOL_LOOP_MAX_ROUNDS
+import com.aiclassroom.app.util.TOOL_LOG_TAG
+import com.aiclassroom.app.util.NO_CONTENT_REPLY
+import com.aiclassroom.app.util.RELEASE_NOTES_TEXT
+import com.aiclassroom.app.util.USER_MANUAL_TEXT
+import com.aiclassroom.app.util.CORE_PREMISE_CONTEXT_LIMIT
+import com.aiclassroom.app.util.WORLD_BOOK_CONTEXT_LIMIT
+import com.aiclassroom.app.util.MEMORY_CARD_STORE_LIMIT
+import com.aiclassroom.app.util.CHAPTER_PROMPT_LIMIT
+import com.aiclassroom.app.util.CHAPTER_CONTEXT_LIMIT
+import com.aiclassroom.app.util.BRANCH_CONTEXT_LIMIT
+import com.aiclassroom.app.util.BRANCH_CONTEXT_LIMIT_CHARS
+import com.aiclassroom.app.util.CHAPTER_SIZE
+import com.aiclassroom.app.util.MEMORY_BATCH_MESSAGE_COUNT
+import com.aiclassroom.app.util.MEMORY_BATCH_DELAY_MS
+import com.aiclassroom.app.util.MAIN_MEMORY_PREFIX
+import com.aiclassroom.app.util.DAY_MS
+import com.aiclassroom.app.util.GITHUB_RELEASES_URL
+import com.aiclassroom.app.util.GITHUB_LATEST_RELEASE_API
+import com.aiclassroom.app.util.MESSAGE_IMAGE_MAX_SIDE
+import com.aiclassroom.app.util.FULLSCREEN_IMAGE_MAX_SIDE
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -6898,7 +6940,6 @@ private fun JSONArray?.toBranches(): List<BranchClass> = if (this == null) empty
     val context = item.optJSONArray("context").toMessages().ifEmpty { messages.take(BRANCH_CONTEXT_LIMIT) }.toMutableStateList()
     BranchClass(item.optString("title"), item.optString("source"), messages, item.optString("memory"), context)
 } }
-private fun JSONArray?.toStrings(): List<String> = if (this == null) emptyList() else List(length()) { optString(it) }
 private fun JSONArray?.toChapters(): List<ConversationChapter> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item -> ConversationChapter(item.optString("title"), item.optString("summary"), item.optInt("startIndex"), item.optInt("endIndex")) } }
 private fun JSONArray?.toMemoryCards(): List<MemoryCard> = if (this == null) emptyList() else List(length()) { getJSONObject(it).let { item ->
     MemoryCard(
@@ -7278,12 +7319,8 @@ private fun displayNameOf(context: Context, uri: Uri): String = runCatching {
  * 只用于给落盘文件挑一个后缀，插件拿不到这个值，所以不做严格校验。
  */
 /** 音乐总开关关闭时的提示：说清楚它和网络/生图是两回事，以及去哪儿打开。 */
-private const val MEDIA_DISABLED_HINT =
-    "音乐插件已在「设置 → 插件 → 音乐」关闭：本次没有读取也没有控制任何播放器"
 
 /** 当前没有活跃的播放会话时的提示。 */
-private const val MEDIA_NO_SESSION_HINT =
-    "当前没有正在播放的播放器。先打开酷狗 / B 站音乐等 App 播放一首，再回来试。"
 
 /**
  * 把当前曲目拼成插件侧看的紧凑 JSON。
@@ -7353,9 +7390,6 @@ private fun JSONObject.optNonNullString(name: String): String? {
 }
 // ---------- function calling 基础设施（阶段B 线①） ----------
 
-private const val TOOL_LOOP_MAX_ROUNDS = 5
-private const val TOOL_LOG_TAG = "ToolLoop"
-private const val NO_CONTENT_REPLY = "模型没有返回内容。"
 
 
 /** OpenAI 兼容 tool_calls 里的一条调用。 */
@@ -7496,208 +7530,19 @@ private suspend fun buildLearningMemoryPack(messages: List<ChatMessage>, config:
     if (parsed != null && (parsed.corePremises.isNotEmpty() || parsed.cards.isNotEmpty())) parsed else local
 }
 
-private fun parseLearningMemoryPack(raw: String, start: Int, end: Int): LearningMemoryPack? = runCatching {
-    val jsonText = Regex("""\{[\s\S]*\}""").find(raw)?.value ?: return@runCatching null
-    val json = JSONObject(jsonText)
-    val premises = json.optJSONArray("corePremises").toStrings()
-        .map { it.replace(Regex("\\s+"), " ").trim() }
-        .filter { it.length in 4..120 }
-        .distinct()
-        .take(CORE_PREMISE_LIMIT)
-    val cardsJson = json.optJSONArray("cards") ?: JSONArray()
-    val cards = List(cardsJson.length()) { index ->
-        val item = cardsJson.getJSONObject(index)
-        val title = item.optString("title").replace(Regex("\\s+"), " ").trim().take(36)
-        val summary = item.optString("summary").replace(Regex("\\s+"), " ").trim().take(260)
-        val keywords = item.optJSONArray("keywords").toStrings().flatMap { extractKeywords(it) }.distinct().take(12)
-        MemoryCard(
-            title.ifBlank { "长期记忆" },
-            summary,
-            keywords,
-            item.optString("type", "concept").ifBlank { "concept" },
-            item.optInt("priority", 1).coerceIn(1, 5),
-            start,
-            end,
-            normalizeVisibility(item.optString("visibility", inferVisibility(summary))),
-            item.optJSONArray("knownBy").toStrings().map { name -> name.trim() }.filter { name -> name.isNotBlank() }.distinct().take(12),
-            item.optJSONArray("unknownBy").toStrings().map { name -> name.trim() }.filter { name -> name.isNotBlank() }.distinct().take(12),
-            item.optString("evidence", "").replace(Regex("\\s+"), " ").trim().take(160)
-        )
-    }.filter { it.summary.isNotBlank() }
-    LearningMemoryPack(premises, cards)
-}.getOrNull()
 
-private fun localLearningMemoryPack(messages: List<ChatMessage>): LearningMemoryPack {
-    val recent = messages.takeLast(MEMORY_CARD_BUILD_MESSAGE_LIMIT)
-    val topicLine = recent.lastOrNull { it.role == "user" }?.text?.replace(Regex("\\s+"), " ")?.take(80).orEmpty()
-    val fullText = recent.joinToString(" ") { it.text }
-    val keywords = extractKeywords(fullText)
-    val visibility = inferVisibility(fullText)
-    val premises = listOfNotNull(
-        topicLine.takeIf { it.isNotBlank() }?.let { "最近用户正在围绕“$it”继续学习。" },
-        keywords.take(5).joinToString("、").takeIf { it.isNotBlank() }?.let { "近期高频主题包括：$it。" }
-    )
-    val card = MemoryCard(
-        title = topicLine.ifBlank { "近期课堂内容" }.take(28),
-        summary = recent.joinToString(" ") { it.text }.replace(Regex("\\s+"), " ").take(220).ifBlank { "暂无可整理内容。" },
-        keywords = keywords.take(12),
-        type = if (visibility == "public") "concept" else "narrative",
-        priority = 1,
-        startIndex = (messages.size - recent.size).coerceAtLeast(0),
-        endIndex = messages.lastIndex.coerceAtLeast(0),
-        visibility = visibility,
-        knownBy = if (visibility == "public") emptyList() else listOf("作者"),
-        unknownBy = if (visibility == "public") emptyList() else listOf("未获知该秘密的角色"),
-        evidence = if (visibility == "public") "公开课堂内容" else "用户叙述中出现心理、暗中、幕后或对方不知道等私密信号"
-    )
-    return LearningMemoryPack(premises, listOf(card).filter { it.summary.isNotBlank() })
-}
 
-private fun mergeMemoryCards(cards: List<MemoryCard>): List<MemoryCard> = cards
-    .filter { it.summary.isNotBlank() }
-    .groupBy { "${it.title.lowercase(Locale.ROOT)}|${it.visibility}|${it.knownBy.joinToString(",")}|${it.unknownBy.joinToString(",")}" }
-    .map { (_, group) ->
-        val latest = group.last()
-        latest.copy(
-            keywords = group.flatMap { it.keywords }.distinct().take(14),
-            priority = group.maxOf { it.priority },
-            knownBy = group.flatMap { it.knownBy }.distinct().take(16),
-            unknownBy = group.flatMap { it.unknownBy }.distinct().take(16),
-            evidence = group.map { it.evidence }.lastOrNull { it.isNotBlank() }.orEmpty()
-        )
-    }
 
-private fun recallMemoryCards(cards: List<MemoryCard>, query: String, limit: Int): List<MemoryCard> {
-    val queryWords = extractKeywords(query).toSet()
-    if (queryWords.isEmpty()) return cards.sortedByDescending { it.priority }.take(limit)
-    return cards.map { card ->
-        val titleWords = extractKeywords(card.title).toSet()
-        val summaryWords = extractKeywords(card.summary).toSet()
-        val keywordHits = card.keywords.count { it in queryWords } * 4
-        val titleHits = titleWords.count { it in queryWords } * 3
-        val summaryHits = summaryWords.count { it in queryWords }
-        val score = keywordHits + titleHits + summaryHits + card.priority
-        card to score
-    }.filter { it.second > 0 }
-        .sortedWith(compareByDescending<Pair<MemoryCard, Int>> { it.second }.thenByDescending { it.first.endIndex })
-        .map { it.first }
-        .take(limit)
-}
 
-private fun extractKeywords(text: String): List<String> {
-    val cleaned = text.lowercase(Locale.ROOT)
-    val latin = Regex("[a-zA-Z][a-zA-Z0-9_+#.-]{1,28}").findAll(cleaned).map { it.value }.toList()
-    val chinese = Regex("[\\u4e00-\\u9fa5]{2,8}").findAll(cleaned).map { it.value }.toList()
-    val stop = setOf("这个", "那个", "什么", "为什么", "怎么", "如何", "可以", "进行", "一个", "我们", "你是", "用户", "讲师", "回答", "问题", "课堂", "学习", "内容", "需要")
-    return (latin + chinese)
-        .map { it.trim('，', '。', '、', '：', ':', ';', '；', '.', ',', '?', '？', '!', '！', '“', '”', '"') }
-        .filter { it.length >= 2 && it !in stop && !it.all { ch -> ch.isDigit() } }
-        .groupingBy { it }.eachCount()
-        .entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key.length })
-        .map { it.key }
-        .take(40)
-}
 
-private data class KnowledgeSnippet(val fileName: String, val text: String, val score: Int)
 
-private fun characterCardName(file: KnowledgeFile): String =
-    Regex("(?m)^#\\s+(.+)$").find(file.content)?.groupValues?.getOrNull(1)?.trim()
-        ?.takeIf { it.isNotBlank() }
-        ?: file.name.substringBeforeLast('.').ifBlank { "未命名角色" }
 
-private fun normalizeCharacterCardJson(raw: String): String {
-    val root = runCatching { JSONObject(raw) }.getOrNull() ?: return raw
-    val keys = listOf("name", "description", "personality", "scenario", "first_mes", "mes_example", "system_prompt", "data")
-    val source = root.optJSONObject("data") ?: root
-    return buildString {
-        keys.forEach { key ->
-            val value = source.optString(key, "").trim()
-            if (value.isNotBlank()) appendLine("## ${key.replace('_', ' ').replaceFirstChar { it.uppercase() }}\n$value")
-        }
-        if (isBlank()) append(raw)
-    }
-}
 
-private fun extractPngCardText(bytes: ByteArray): String {
-    val raw = bytes.toString(Charsets.ISO_8859_1)
-    val markers = listOf("chara", "character", "description", "personality", "scenario", "first_mes")
-    val hits = markers.flatMap { marker ->
-        Regex("(?i)$marker[^\\u0000-\\u001f]{0,4000}").findAll(raw).map { it.value }.toList()
-    }
-    return hits.joinToString("\n").replace(Regex("[^\\u0009\\u000A\\u000D\\u0020-\\u007E\\u4E00-\\u9FFF]"), " ").trim()
-}
 
-private fun formatCharacterCards(cards: List<KnowledgeFile>): String {
-    if (cards.isEmpty()) return ""
-    val perCardLimit = (CHARACTER_CARD_CONTEXT_LIMIT / cards.size).coerceIn(700, 2200)
-    return truncatePromptSection(cards.joinToString("\n\n") { file ->
-        "[角色：${characterCardName(file)}｜来源：${file.name}]\n" + truncatePromptSection(file.content, perCardLimit)
-    }, CHARACTER_CARD_CONTEXT_LIMIT)
-}
 
-private fun splitKnowledgeChunks(text: String, chunkSize: Int = KNOWLEDGE_CHUNK_SIZE): List<String> {
-    val paragraphs = text.replace("\r\n", "\n").split(Regex("\\n\\s*\\n"))
-        .map { it.trim() }.filter { it.isNotBlank() }
-    if (paragraphs.isEmpty()) return emptyList()
-    val chunks = mutableListOf<String>()
-    val current = StringBuilder()
-    fun flush() { if (current.isNotBlank()) { chunks += current.toString().trim(); current.clear() } }
-    paragraphs.forEach { paragraph ->
-        if (paragraph.length > chunkSize) {
-            flush()
-            paragraph.chunked(chunkSize).forEach { chunks += it }
-        } else {
-            if (current.length + paragraph.length + 2 > chunkSize) flush()
-            if (current.isNotEmpty()) current.append("\n\n")
-            current.append(paragraph)
-        }
-    }
-    flush()
-    return chunks
-}
 
-private fun recallKnowledgeSnippets(files: List<KnowledgeFile>, query: String, limit: Int = KNOWLEDGE_SNIPPET_RECALL_LIMIT): List<KnowledgeSnippet> {
-    val queryWords = extractKeywords(query).take(24)
-    val candidates = files.filter { it.kind != "character_card" }.flatMap { file ->
-        splitKnowledgeChunks(file.content).mapIndexed { index, chunk ->
-            val lowerChunk = chunk.lowercase(Locale.ROOT)
-            val hits = queryWords.fold(0) { total, word -> total + if (lowerChunk.contains(word)) 2 else 0 }
-            val nameHits = queryWords.count { word -> file.name.lowercase(Locale.ROOT).contains(word) } * 3
-            KnowledgeSnippet(file.name, chunk, hits + nameHits - (index / 12))
-        }
-    }
-    if (candidates.isEmpty()) return emptyList()
-    val ranked = candidates.sortedByDescending { it.score }
-    val selected = if (ranked.first().score > 0) {
-        ranked
-    } else {
-        candidates.groupBy { it.fileName }
-            .values
-            .mapNotNull { it.firstOrNull() }
-    }
-    val output = mutableListOf<KnowledgeSnippet>()
-    var used = 0
-    selected.forEach { snippet ->
-        if (output.size < limit && used + snippet.text.length <= KNOWLEDGE_SNIPPET_CONTEXT_LIMIT) {
-            output += snippet
-            used += snippet.text.length
-        }
-    }
-    return output
-}
 
-private fun normalizeVisibility(raw: String): String = when (raw.trim().lowercase(Locale.ROOT)) {
-    "author_private", "private", "author", "作者私密", "幕后", "幕后设定" -> "author_private"
-    "character_private", "character", "角色私密", "心理", "心理活动" -> "character_private"
-    else -> "public"
-}
 
-private fun inferVisibility(text: String): String {
-    val privateSignals = listOf("作者私密", "幕后", "暗中", "偷偷", "秘密", "心理", "内心", "策划", "计划", "对方不知道", "不知道", "不可让", "不能让", "隐瞒", "伪装", "假装", "背叛")
-    val characterSignals = listOf("心理", "内心", "想法", "打算", "盘算")
-    if (privateSignals.none { text.contains(it, ignoreCase = true) }) return "public"
-    return if (characterSignals.any { text.contains(it, ignoreCase = true) }) "character_private" else "author_private"
-}
 
 // 考试数据层已迁到纯 JVM 模块 :feature-exam（不依赖 Compose），解析结果回到 UI 前换成
 // Compose 快照列表，保证作答时列表项写入能触发重绘，与迁移前 toMutableStateList 行为一致。
@@ -7843,124 +7688,13 @@ private fun AIClassroomTheme(content: @Composable () -> Unit) {
 }
 
 
-private fun mentorPriorityBlock(config: ClassroomConfig): String {
-    val prompt = config.mentorPrompt.trim().ifBlank { DEFAULT_MENTOR_PROMPT }
-    val mentorName = config.mentorName.trim().ifBlank { "AI 讲师" }
-    val userAlias = config.userAlias.trim().ifBlank { "同学" }
-    return buildString {
-        appendLine("[最高优先级：用户自定义讲师人格]")
-        appendLine(prompt)
-        appendLine("你必须优先遵守以上用户保存的讲师人格、教学风格、表达方式和边界要求。")
-        appendLine("即使后续长期记忆、知识库、考试工具或分支上下文更长，也只能作为参考资料，不能覆盖或弱化本段要求。")
-        appendLine("讲师名字：$mentorName")
-        append("用户称呼：$userAlias")
-    }
-}
 
-private fun promptPriorityReminder(config: ClassroomConfig): String {
-    val mentorName = config.mentorName.trim().ifBlank { "AI 讲师" }
-    val userAlias = config.userAlias.trim().ifBlank { "同学" }
-    return "[优先级提醒] 回答时再次确认：始终优先遵守用户自定义讲师人格提示词；你是 $mentorName，并按设定称呼用户为 $userAlias。用户手写世界书用于补充固定设定；自动记忆、知识库和分支上下文只用于补充事实与连续性。"
-}
 
-private fun conversationConsistencyRules(): String = """
-[长期对话一致性规则]
-1. 回答必须优先依据最近连续对话，其次参考长期记忆、章节索引和知识库。
-2. 长期记忆和章节索引只代表压缩摘要，不能当作完整原文；若摘要与最近连续对话冲突，以最近连续对话为准。
-3. 不要编造用户没有说过的学习目标、进度、结论、考试结果或知识库内容。
-4. 当上下文不足、指代不清或记忆冲突时，先明确说明不确定并追问，不要硬接硬编。
-5. 延续教学时要保持当前章节、当前问题和上一轮回答逻辑一致。
-6. 若处于故事、角色扮演或剧情写作，模型知道的信息不等于角色知道的信息。角色只能依据公开事实、自己已知信息、明确证据和合理推理行动；作者私密、心理活动、暗中计划、幕后设定、对方不知道的信息不得让未知角色直接利用。
-""".trimIndent()
 
-private fun responseBoundaryRules(): String = """
-[回答边界与剧情推进规则]
-1. 默认只回应用户当前明确表达的内容，不要在末尾强行添加“接下来你应该……”“我建议你……”等强引导式外拓。
-2. 用户没有明确询问下一步、后续安排、继续剧情、如何推进、该怎么办时，不要替用户规划行动路线、立场结论或外部目标。
-3. 可以自然收束回答，但不要用强迫式问题或引导句结尾；除非确实缺少继续回答所必需的关键信息。
-4. 如果用户明确要求继续、推进、安排事件、生成后续剧情，或当前剧情明显停在必须由事件承接的位置，则根据世界书、角色可知信息、剧情因果和当前气氛策划一个完整合理事件。
-5. 策划事件时必须保持角色知识边界：未知角色不能因为作者私密信息而提前防备；事件要通过可见线索、行动、误会、证据或合理推理推进。
-6. 若不确定用户要“解释/评价”还是“继续剧情”，优先短促回应当前内容，不要主动夺取叙事方向。
-""".trimIndent()
 
-private fun detectsForwardPlanningIntent(text: String): Boolean {
-    val normalized = text.trim()
-    if (normalized.isBlank()) return false
-    val triggers = listOf(
-        "下一步", "接下来", "往后", "后续", "继续", "推进", "然后呢", "该怎么办", "怎么办",
-        "发生什么", "剧情发展", "安排事件", "设计事件", "策划", "完整事件", "往下写", "继续写",
-        "续写", "下一段", "下一幕", "下一章", "怎么发展", "如何发展"
-    )
-    return triggers.any { normalized.contains(it, ignoreCase = true) }
-}
 
-private fun promptMessagesForRoom(room: Classroom, history: List<ChatMessage>): List<ChatMessage> {
-    val recent = history.takeLast(RECENT_MESSAGE_CONTEXT_LIMIT)
-    val retrievalQuery = (history.takeLast(4).joinToString("\n") { it.text } + "\n" + room.topic).take(2400)
-    val recalledCards = recallMemoryCards(room.memoryCards, retrievalQuery, MEMORY_CARD_RECALL_LIMIT)
-    val knowledgeSnippets = recallKnowledgeSnippets(room.files, retrievalQuery)
-    val latestUserText = history.lastOrNull { it.role == "user" }?.text.orEmpty()
-    val wantsForwardPlanning = detectsForwardPlanningIntent(latestUserText)
-    val state = buildString {
-        appendLine("[当前课堂状态包]")
-        appendLine("课堂名：${room.name}")
-        appendLine("学习内容：${room.topic}")
-        appendLine("总消息数：${history.size}")
-        room.chapters.lastOrNull()?.let { appendLine("当前最近章节：${it.title}｜${it.summary}") }
-        if (latestUserText.isNotBlank()) appendLine("最近用户问题：${latestUserText.take(600)}")
-        appendLine(
-            if (wantsForwardPlanning) {
-                "用户意图判断：检测到明确的后续推进、事件策划或续写请求；可以在遵守世界书和角色知识边界的前提下生成完整合理事件。"
-            } else {
-                "用户意图判断：未检测到明确后续推进请求；请避免强引导式外拓，只回应当前内容，除非剧情已明显需要事件承接。"
-            }
-        )
-        if (recalledCards.isNotEmpty()) {
-            appendLine()
-            appendLine("[本轮按关键词召回的世界书记忆卡；它们是历史摘要，不是完整原文]")
-            appendLine("叙事隔离：可见性为 author_private 或 character_private 的内容只能作为作者/对应角色私密信息维持逻辑，未知角色不得提前知道、说破、防备或针对性行动。")
-            recalledCards.forEach { card ->
-                appendLine("- ${card.title}｜可见性：${card.visibility}｜知道者：${card.knownBy.ifEmpty { listOf("未标注") }.joinToString("、")}｜不知道者：${card.unknownBy.ifEmpty { listOf("未标注") }.joinToString("、")}｜依据：${card.evidence.ifBlank { "未标注" }}｜关键词：${card.keywords.take(8).joinToString("、")}｜${card.summary}")
-            }
-        }
-        if (knowledgeSnippets.isNotEmpty()) {
-            appendLine()
-            appendLine("[本轮资料检索｜只依据下列片段回答，不要补造成资料中没有的事实]")
-            knowledgeSnippets.forEach { snippet ->
-                appendLine("- 来源：${snippet.fileName}")
-                appendLine(snippet.text)
-            }
-        }
-        append("请只把这个状态包作为定位信息，真正展开回答时优先遵守后面的最近连续对话。")
-    }
-    return listOf(ChatMessage("system", state)) + recent
-}
 
-private fun promptMessagesForBranch(room: Classroom, context: List<ChatMessage>, history: List<ChatMessage>): List<ChatMessage> {
-    val branchAnchor = context.takeLast(BRANCH_CONTEXT_LIMIT).joinToString("\n") { "${if (it.role == "user") "用户" else "AI"}：${it.text.take(700)}" }
-    val retrievalQuery = (history.takeLast(4).joinToString("\n") { it.text } + "\n" + room.topic).take(2400)
-    val knowledgeSnippets = recallKnowledgeSnippets(room.files, retrievalQuery)
-    val state = buildString {
-        appendLine("[分支课堂状态包]")
-        appendLine("分支创建时的主课堂锚点如下，仅用于理解分支起点，不要把分支回答写回主课堂：")
-        append(branchAnchor.ifBlank { "暂无锚点。" })
-        if (knowledgeSnippets.isNotEmpty()) {
-            appendLine()
-            appendLine("[本轮资料检索｜只依据下列片段回答，不要补造成资料中没有的事实]")
-            knowledgeSnippets.forEach { snippet ->
-                appendLine("- 来源：${snippet.fileName}")
-                appendLine(snippet.text)
-            }
-        }
-    }
-    return listOf(ChatMessage("system", state)) + history.takeLast(RECENT_MESSAGE_CONTEXT_LIMIT)
-}
 
-private fun truncatePromptSection(text: String, limit: Int): String {
-    val clean = text.trim()
-    if (clean.length <= limit) return clean
-    return clean.take(limit) + "\n[以上资料已按上下文预算截断，截断部分不可臆测。]"
-}
 
 // 直接取构建产物里的 versionName，避免与 build.gradle.kts 脱节（曾因写死 3.3.0 而在 3.3.5 上误报更新）。
 private val APP_VERSION: String = BuildConfig.VERSION_NAME
@@ -7973,127 +7707,6 @@ private object AppShapes {
     val menu = RoundedCornerShape(topEnd = DesignTokens.Radius.Menu, bottomEnd = DesignTokens.Radius.Menu)
 }
 
-private const val RELEASE_NOTES_TEXT = """
-# AI Classroom 3.5.0
-
-# New!
-
-## AI 工具调用
-- 新增 12 个可被 AI 自主调用的工具：模型会自己判断何时使用，不再只能靠固定格式输出。
-- 考试工具 7 个：创建考试、读取当前考试、加题、改题、删题、改标题、标记「不会」。
-- 文件工具 4 个：列目录、读文件、写文件、删文件，限定在应用私有目录内，路径越权会被拒绝。
-- 网络工具 1 个：可以调用本机或外部服务的 HTTP 接口，带总开关与脱敏调用日志。
-
-## 考试系统插件化
-- 考试的数据与解析逻辑抽成独立模块，与主程序解耦，便于单独维护。
-- 横屏新增悬浮键：一键收起顶栏、底栏与提交条，把整屏让给题目，再点一次恢复。
-- 分界线可以拖动，实时调整题目与草稿纸的宽度占比。
-- 双击分界线切换草稿纸全屏，退出时回到原来的比例。
-- 提交条改为独立占位，不再遮挡题目文字。
-
-## 修复
-- 修复误报更新：版本号改为读取构建产物，不再与构建配置脱节。
-- 修复长文案弹窗无法滑动：更新说明、更新提示、使用手册均可上下滚动。
-
-## 兼容性
-- 业务逻辑保持不变：对话、记忆、章节、知识库、分支课堂均按原逻辑运行。
-- 旧课堂数据可直接加载，无需重建课堂。
-
-"""
-private const val USER_MANUAL_TEXT = """
-# AI Classroom 使用手册
-
-## 快速开始
-第一次使用时，先进入设置页，展开“模型模块”，填写 Base URL、API Key 和至少一个可用模型名并保存。回到主课堂后，输入你想学习的内容，例如“从零开始学 C 语言指针”，AI 会围绕这个课堂持续教学。
-
-## 主课堂
-主课堂是一门课程的主线。你可以输入学习目标、追问问题、让 AI 出例题、讲解代码或总结章节。课堂内容、对话、章节索引、摘要和配置都会保存在本地。
-
-刚进入应用或新建课堂时，主课堂顶部只显示浅色日期，中部保留输入框。输入学习要求并发送后，会自动进入正式主课堂对话界面。
-
-主课堂输入框右侧的图片按钮可以上传照片。上传后，应用会把图片交给设置页里的识图或转述模型分析，并把结果保存进当前课堂。
-
-## 分支课堂
-长按或点击对话下方的“从这里开分支”，可以从任意一段主课堂对话开始一条平行支线。分支会带上创建时的主课堂上下文，之后的所有问答只保存在分支中，不会复制、打包或改写主课堂。
-
-适合在不打断主线的情况下追问背景知识、补基础、展开例子或处理临时问题。
-
-## 记忆
-记忆页用于快速查找长期对话。应用会在后台按批次整理课堂内容，生成章节标题和一句话摘要，不会在每一句对话后阻塞前台回复。
-
-全览模式会生成实时向量思维导图，章节按摘要相似度自动连接；章节模式可双击章节跳回主课堂对应位置。
-
-长对话回答时，应用会把最近连续对话作为最高优先的上下文，同时插入自动提炼的常驻极简前提，并根据当前问题召回相关关键词记忆卡。世界书卡片会保存可见性、知道者、不知道者和证据；在故事或角色扮演中，作者私密、心理活动、暗中计划不会被未知角色直接利用。长期记忆、世界书卡片和章节索引都是压缩参考；若它们与最近对话冲突，模型会被要求优先遵守最近对话；如果上下文不足，应先说明不确定或追问，而不是编造内容。
-
-回答边界会额外判断用户是否明确要求继续、推进、策划事件或往后发展。未检测到这类请求时，AI 会避免在末尾添加强引导性建议；如果用户明确要求推进，或当前剧情确实需要承接，AI 会结合世界书、角色可知信息和剧情因果生成完整合理事件。
-
-## 知识库
-知识库可直接读取 `.md` 和 `.txt` 文件；角色卡还支持 `.json` 和 `.png`，并可批量导入。普通资料会按你当前的问题、最近对话和课堂主题检索少量相关片段，而不是把所有文件粗暴塞入提示词；点击文件可查看全文，长按可删除。
-
-“导入角色卡”支持 Markdown（`.md`）、常见角色卡 JSON（`.json`）和带文本元数据的 PNG（`.png`），也支持一次选择多个文件。Markdown 每个角色建议使用一个文件，并用一级标题写角色名，再用“身份”“性格”“语言风格”“动机”“关系”“不可违背”等二级标题描述。角色卡会作为作者级人物参考常驻，用于保持人物口吻、关系与行为边界；它不会让角色自动知道其他角色的秘密，最近连续对话已经发生的事实优先于角色卡。
-
-这套“角色卡常驻 + 当前资料检索 + 世界书 + 长期记忆”会让单个小说项目获得接近微调的设定一致性和连续性，但不会改变模型本身参数。想要更稳定的效果，请把世界规则写进世界书、每位角色单独建卡，并保存 2—3 段你期待的叙事示例作为普通资料。
-
-## API 与模型
-模型模块用于保存普通课堂对话的服务商、Base URL、API Key 和模型名。它支持自动获取模型，也可以手动输入模型名。
-
-模型优先级支持一行一个模型。应用会先调用第一行模型，如果连接失败或接口返回错误，会自动尝试下一行模型。
-
-深度思考模式开启后，会优先使用单独填写的深度思考模型。关闭后，应用只按普通模型优先级调用。
-
-## 多模态图片
-多模态模块拥有独立的服务商、Base URL、API Key 和识图/转述模型名称。它可以与普通对话模型不同。主课堂上传照片时会优先调用多模态模块；如果该模块未填写 API Key，则会回退使用模型模块的 API Key。
-
-## TTS
-TTS 模块用于保存语音服务配置，包括服务商、API Key、Base URL、模型和音色。预设服务商可快速填入常见 Base URL，也可以选择自定义。获取模型按钮会尝试从兼容接口读取模型列表；如果失败，可以手动填写模型名。
-
-双击 AI 讲师回复会调用 TTS 朗读。开启“长时开启 AI 回复朗读”后，新的 AI 回复会在生成完成后自动朗读。
-
-## 讲师人格
-讲师人格提示词可以自定义，例如大学教授、企业工程师、考研老师、幽默导师或二次元导师。讲师名字会实时显示在主课堂和分支课堂中；讲师对你的称呼会写入提示词，让模型在教学时按这个称呼与你互动。手写世界书可以保存长期固定设定、课程边界、学习习惯、角色知识边界或必须遵守的课堂规则。保存后当前课堂会持续使用这些设定。
-
-讲师人格提示词拥有最高优先级。即使长期记忆、知识库、世界书卡片和分支上下文不断变长，应用也会在系统提示词首尾重复人格优先级提醒，要求模型优先遵守用户保存的人格提示词和教学风格。
-
-## 高效模式
-高效模式用于过滤 NSFW 等不适合学习场景的内容，默认开启。它本质上是健康模式，适合学习、自习和考试场景。
-
-## 界面与皮肤
-皮肤模块可切换对话方向、按钮颜色和界面明暗。默认强调色是橙色（按钮 `#FF7A1A`，插件强调元素 `#E85D04`），可通过调色盘或 Hex 输入换任意颜色；除按钮和可点击强调外，背景、卡片和正文不会被皮肤色染色。
-
-默认界面采用低饱和灰蓝色和中性背景，减少高亮色与多层阴影；界面明暗可选择自动跟随系统、白色或黑色，应用会自动保持文字反色，保证可读性。
-
-## 多课堂
-在主界面从左向右滑出课堂菜单，可以切换课堂、新建课堂、删除任意课堂，也可以复制其他课堂配置。点课堂标题可切换，点删除只会删除该课堂，不会先跳进那个课堂。每个课堂都可以有独立 API、模型、人格、皮肤和知识库配置。
-
-## 考试工具
-考试不是普通入口。AI 明确要进行考试、测试或模拟测验时，应用会自动进入沉浸式考试界面。
-
-题目由“前提”和“问题”组成。用户在每个问题后填写答案并提交批改。标记“不会”后，这道题会自动生成讲解分支，方便考试结束后继续学习。
-
-## 插件
-插件是 AI 可以自己决定要不要调用的工具。你不用点，模型觉得需要时才会用；具体调什么、什么时候调，由它自己判断。
-
-五组插件各管一件事：
-- 考试工具：把题目写进当前考试，也能改标题、加题、删题、标记“不会”。
-- 文件工具：在应用私有目录里列目录、读、写、删文件，出不了这个目录。
-- 网络工具：让 AI 去读一个 http/https 地址，比如接口文档或网页。
-- 配置工具：让 AI 改模型名、BaseURL 和温度，省得你自己翻设置。
-- 生图：按你的描述生成图片，自动存到本机“files/images”。
-
-生图怎么配（“设置 → 插件 → 生图详细配置”）：
-- OpenAI：选 OpenAI Images，填 Key，模型填 dall-e-3 之类，尺寸填 1024x1024。
-- SD WebUI 或本地端口软件：选 SD WebUI，Base URL 填 http://127.0.0.1:端口。只要那个软件是 SD WebUI 兼容的就能直接用。
-- 自定义 HTTP：选“自定义 HTTP”，填自己的接口地址，按 {"prompt":"{{prompt}}"} 的格式提交。
-
-明文 HTTP：本应用已放行 http，方便连本机或局域网里的服务；但 http 是明文传输，链路上能看到内容，建议只填本地或可信局域网地址，走公网时优先用 https。
-
-密钥与安全：AI 看不到你的 API Key，只能看到“已配置”这类状态，也没有工具能改它；配置工具能改的只有模型、BaseURL 和温度。
-
-关掉某个插件：进“设置 → 插件”，把那一行的开关关掉即可，立即生效，AI 再调用会被直接拒绝，不会留下任何改动。
-
-## 本地保存
-所有课堂、分支、对话、知识库摘要、记忆章节、设置和考试记录都会保存在手机本地。手机重启或应用版本更新后，数据仍会保留。
-"""
 
 private val Page = DesignTokens.Legacy.Page
 private val Ink = DesignTokens.Legacy.Ink
@@ -8101,31 +7714,7 @@ private val Muted = DesignTokens.Legacy.Muted
 private val Blue = DesignTokens.Legacy.Blue
 private val Green = DesignTokens.Legacy.Green
 private val Purple = DesignTokens.Legacy.Purple
-private const val CORE_PREMISE_LIMIT = 16
-private const val CORE_PREMISE_CONTEXT_LIMIT = 1800
-private const val WORLD_BOOK_CONTEXT_LIMIT = 3000
-private const val MEMORY_CARD_RECALL_LIMIT = 8
-private const val MEMORY_CARD_STORE_LIMIT = 120
-private const val MEMORY_CARD_BUILD_MESSAGE_LIMIT = 36
-private const val CHAPTER_PROMPT_LIMIT = 32
-private const val CHAPTER_CONTEXT_LIMIT = 5000
-private const val RECENT_MESSAGE_CONTEXT_LIMIT = 32
-private const val CHARACTER_CARD_CONTEXT_LIMIT = 7000
-private const val KNOWLEDGE_CHUNK_SIZE = 1100
-private const val KNOWLEDGE_SNIPPET_RECALL_LIMIT = 4
-private const val KNOWLEDGE_SNIPPET_CONTEXT_LIMIT = 5200
-private const val BRANCH_CONTEXT_LIMIT = 24
-private const val BRANCH_CONTEXT_LIMIT_CHARS = 5000
-private const val CHAPTER_SIZE = 12
-private const val MEMORY_BATCH_MESSAGE_COUNT = 8
-private const val MEMORY_BATCH_DELAY_MS = 45000L
-private const val MAIN_MEMORY_PREFIX = "主课堂记忆："
-private const val DAY_MS = 86_400_000L
-private const val GITHUB_RELEASES_URL = "https://github.com/AHWJ-Alpha/AI-Classroom/releases"
-private const val GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/AHWJ-Alpha/AI-Classroom/releases/latest"
 /** 消息气泡里图片的解码边长上限（气泡最宽也就三百多 dp，再大纯属浪费内存）。 */
-private const val MESSAGE_IMAGE_MAX_SIDE = 1080
 /** 全屏看图的解码边长上限：能放大到 4 倍，所以给得比气泡高。 */
-private const val FULLSCREEN_IMAGE_MAX_SIDE = 2048
 /** 气泡里单张图片的最大显示高度：再高就把一屏占满了，长图请点开全屏看。 */
 private val MESSAGE_IMAGE_MAX_HEIGHT = 320.dp

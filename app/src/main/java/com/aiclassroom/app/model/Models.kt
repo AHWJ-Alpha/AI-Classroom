@@ -142,6 +142,8 @@ internal data class ExamRecord(
     val questions: List<ExamQuestion> = emptyList()
 )
 
+internal data class KnowledgeSnippet(val fileName: String, val text: String, val score: Int)
+
 internal data class Classroom(
     val name: String,
     val topic: String,
