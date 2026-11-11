@@ -185,6 +185,8 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -3645,65 +3647,40 @@ private val TopHazeState = HazeState()
 @Composable
 private fun MessageActionMenu(expanded: Boolean, palette: AppPalette, onDismiss: () -> Unit, onBranch: () -> Unit, onDeleteAfter: () -> Unit) {
     if (!expanded) return
-    val screenWPx = with(LocalDensity.current) { LocalConfiguration.current.screenWidthDp.dp.roundToPx() }
-    val screenHPx = with(LocalDensity.current) { LocalConfiguration.current.screenHeightDp.dp.roundToPx() }
-    val glassBase = palette.surface.copy(alpha = 1f)
-    val blurOn = HazeDefaults.blurEnabled()
-    val panelInteraction = remember { MutableInteractionSource() }
-    var anchor by remember { mutableStateOf(Offset.Zero) }
-    var parentHeightPx by remember { mutableStateOf(0) }
-    var panelSize by remember { mutableStateOf(IntSize.Zero) }
-    Box(
-        Modifier
-            .onGloballyPositioned { coords ->
-                anchor = coords.positionInWindow()
-                parentHeightPx = coords.parentLayoutCoordinates?.size?.height ?: 0
-            }
-            .layout { measurable, _ ->
-                val placeable = measurable.measure(Constraints.fixed(screenWPx, screenHPx))
-                layout(0, 0) {
-                    placeable.place(IntOffset(-anchor.x.roundToInt(), -anchor.y.roundToInt()))
-                }
-            }
+    // **不要再用「整屏 Box + 负偏移 + haze 模糊」那套 hack**。
+    //
+    // 原实现强制 measure 成整屏尺寸、再把内容 place 到 (-anchor.x, -anchor.y)，
+    // 外面还叠了一层 18dp 的 `hazeEffect` 全屏模糊。这段代码跑在 LazyColumn 的
+    // item 里，只被 clip 到几百 px 的消息区，却要渲染 2400×1080 的 GPU 离屏模糊层 ——
+    // 实测长按直接 SIGSEGV in RenderThread（fault addr 0x7278612f10），进程当场死亡，
+    // 用户看到的就是「长按没有菜单，App 直接退出」。
+    //
+    // 用标准 Popup：它自己就是一个独立窗口，不需要伪造全屏、不需要负偏移；
+    // 模糊也去掉 —— 弹出菜单底下就一层半透明底，视觉上够了，没必要赌 GPU。
+    Popup(
+        onDismissRequest = onDismiss,
+        // 默认贴着父容器（消息卡片）左上角、向上展开，长卡片会顶到状态栏里；
+        // 往下让一点，既避开状态栏也贴近手指。
+        offset = IntOffset(0, with(LocalDensity.current) { 28.dp.roundToPx() }),
+        properties = PopupProperties(focusable = true),
     ) {
-        Box(
-            Modifier
-                .pointerInput(Unit) { detectTapGestures { onDismiss() } }
-                .pointerInput(Unit) { detectDragGestures { change, _ -> change.consume() } }
+        Surface(
+            color = palette.surface,
+            shape = RoundedCornerShape(DesignTokens.Radius.Control),
+            tonalElevation = 3.dp,
+            shadowElevation = 8.dp,
         ) {
-            Surface(
-                modifier = Modifier
-                    .offset {
-                        val maxX = screenWPx - panelSize.width
-                        val maxY = minOf(screenHPx, anchor.y.roundToInt() + parentHeightPx) - panelSize.height
-                        IntOffset(
-                            anchor.x.roundToInt().coerceIn(0, maxX.coerceAtLeast(0)),
-                            anchor.y.roundToInt().coerceIn(0, maxY.coerceAtLeast(0))
-                        )
-                    }
-                    .clickable(panelInteraction, null) { }
-                    .hazeEffect(state = SharedHazeState) {
-                        blurRadius = 18.dp
-                        backgroundColor = glassBase
-                        tints = listOf(HazeTint(palette.surface.copy(alpha = 0.25f)))
-                        fallbackTint = HazeTint(glassBase.copy(alpha = if (blurOn) 0.28f else 0.80f))
-                    }
-                    .onSizeChanged { panelSize = it },
-                color = palette.surface.copy(alpha = 0.70f),
-                shape = RoundedCornerShape(4.dp)
-            ) {
-                Column {
-                    DropdownMenuItem(
-                        text = { Text("从这里开分支", color = palette.ink) },
-                        leadingIcon = { Icon(Icons.Default.AccountTree, null, tint = palette.button) },
-                        onClick = { onDismiss(); onBranch() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("删除此处及之后", color = palette.ink) },
-                        leadingIcon = { Icon(Icons.Default.Delete, null, tint = palette.button) },
-                        onClick = { onDismiss(); onDeleteAfter() }
-                    )
-                }
+            Column {
+                DropdownMenuItem(
+                    text = { Text("从这里开分支", color = palette.ink) },
+                    leadingIcon = { Icon(Icons.Default.AccountTree, null, tint = palette.button) },
+                    onClick = { onDismiss(); onBranch() }
+                )
+                DropdownMenuItem(
+                    text = { Text("删除此处及之后", color = palette.ink) },
+                    leadingIcon = { Icon(Icons.Default.Delete, null, tint = palette.button) },
+                    onClick = { onDismiss(); onDeleteAfter() }
+                )
             }
         }
     }
