@@ -334,6 +334,12 @@ import com.aiclassroom.app.util.normalizeInterfaceMode
 import com.aiclassroom.app.util.legacyInterfaceMode
 import com.aiclassroom.app.util.luminanceValue
 import com.aiclassroom.app.util.compositeOn
+import com.aiclassroom.app.util.summarize
+import com.aiclassroom.app.util.stripMarkdownForSpeech
+import com.aiclassroom.app.util.buildInlineMarkdown
+import com.aiclassroom.app.util.sanitizeMathText
+import com.aiclassroom.app.util.isMathLikeLine
+import com.aiclassroom.app.util.looksLikeFailure
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -3604,12 +3610,6 @@ private fun AiThinkingRow(palette: AppPalette, mentorName: String = "AI 讲师")
 }
 
 /** 展示层失败识别：覆盖数据层实际产出的失败文案，用于给失败消息套错误样式；命中时原样展示消息内容。 */
-private fun looksLikeFailure(text: String): Boolean {
-    if (text.isBlank()) return false
-    val lower = text.lowercase()
-    return text.startsWith("调用失败") || text.startsWith("请先选择") || text.startsWith("请先填写") ||
-        lower.contains("http 4") || lower.contains("http 5") || lower.contains("unauthorized") || lower.contains("invalid api")
-}
 
 @Composable
 private fun ReleaseNotesDialog(palette: AppPalette, onClose: () -> Unit) {
@@ -6497,68 +6497,6 @@ private fun MarkdownText(text: String, color: Color = MaterialTheme.colorScheme.
     }
 }
 
-private fun isMathLikeLine(line: String): Boolean =
-    line.contains("$") || line.contains("\\(") || line.contains("\\[") || line.contains("\\begin") || line.contains("\\text") || line.contains("\\phi") || line.contains("\\psi")
-
-private fun sanitizeMathText(raw: String): String {
-    var text = raw
-        .replace('；', ';')
-        .replace('（', '(')
-        .replace('）', ')')
-        .replace('《', '<')
-        .replace('》', '>')
-    val replacements = listOf(
-        "ItextComplexityi" to "\\text{Complexity}",
-        "ItextíComplexity)" to "\\text{Complexity}",
-        "Itext Complexityj" to "\\text{Complexity}",
-        "ItextfCon" to "\\text{Complexity}",
-        "Itext（" to "\\text{",
-        "Itext(" to "\\text{",
-        "ltext（" to "\\text{",
-        "ltext(" to "\\text{",
-        "text《" to "\\text{",
-        "text<" to "\\text{",
-        "Ibeginfcases" to "\\begin{cases}",
-        "Ibegin(cases" to "\\begin{cases}",
-        "Iend(casesy" to "\\end{cases}",
-        "Iend(cases" to "\\end{cases}",
-        "lnot" to "\\lnot",
-        "lor" to "\\lor",
-        "land" to "\\land",
-        "lpsi" to "\\psi",
-        "Ipsi" to "\\psi",
-        "Npsi" to "\\psi",
-        "phil" to "\\phi",
-        "Iphi" to "\\phi",
-        "\\phil" to "\\phi",
-        "\\lpsi" to "\\psi"
-    )
-    replacements.forEach { (bad, good) -> text = text.replace(bad, good) }
-    text = text
-        .replace(Regex("\\\\text\\{([^}\\n]*)(?=\\n|$)"), "\\\\text{$1}")
-        .replace(Regex("\\s+小底部"), "")
-        .replace("!\\phi", "\\phi")
-    return text
-}
-
-private fun buildInlineMarkdown(line: String) = buildAnnotatedString {
-    var i = 0
-    while (i < line.length) {
-        val boldStart = line.indexOf("**", i)
-        val codeStart = line.indexOf('`', i)
-        val next = listOf(boldStart, codeStart).filter { it >= 0 }.minOrNull() ?: -1
-        if (next < 0) { append(line.substring(i)); break }
-        append(line.substring(i, next))
-        if (next == boldStart) {
-            val end = line.indexOf("**", next + 2)
-            if (end > next) { withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(line.substring(next + 2, end)) }; i = end + 2 } else { append("**"); i = next + 2 }
-        } else {
-            val end = line.indexOf('`', next + 1)
-            if (end > next) { withStyle(SpanStyle(fontFamily = FontFamily.Monospace, color = Blue)) { append(line.substring(next + 1, end)) }; i = end + 1 } else { append('`'); i = next + 1 }
-        }
-    }
-}
-
 @Composable
 private fun InfoCard(content: @Composable ColumnScope.() -> Unit) {
     Surface(
@@ -7325,11 +7263,6 @@ private suspend fun callTts(config: ClassroomConfig, text: String): ByteArray = 
     }.getOrDefault(ByteArray(0))
 }
 
-private fun stripMarkdownForSpeech(text: String): String = sanitizeMathText(text)
-    .replace(Regex("```[\\s\\S]*?```"), " ")
-    .replace(Regex("[#>*_`\\[\\]()]"), " ")
-    .replace(Regex("\\s+"), " ")
-    .trim()
 
 /** SAF 选中的文件展示名：优先 DISPLAY_NAME，读不到再退回路径最后一段。 */
 private fun displayNameOf(context: Context, uri: Uri): String = runCatching {
@@ -7888,7 +7821,6 @@ private fun buildVisionJson(model: String, system: String, prompt: String, dataU
         imageBlocks + "]}],\"temperature\":0.7}"
 }
 
-private fun summarize(scope: String, messages: List<ChatMessage>): String = "$scope 记忆：" + messages.joinToString(" ") { it.text }.replace(Regex("\\s+"), " ").take(180)
 
 private fun filterNsfw(text: String, enabled: Boolean): String {
     if (!enabled) return text
