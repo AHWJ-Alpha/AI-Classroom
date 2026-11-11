@@ -88,6 +88,29 @@ internal object WebScripts {
         """.trimIndent()
     }
 
+    /**
+     * 执行一段用户可见页面里的 JS，用于 `web_act` 的 `js` 动作。
+     *
+     * 典型用途是控制媒体播放：
+     * ```
+     * document.querySelector('video').currentTime = 83
+     * ```
+     * 这样就能精确 seek 到某一秒再截图，而不必靠点进度条碰运气。
+     *
+     * 包一层立即执行函数：避免脚本里的变量泄漏到页面全局作用域，
+     * 也保证返回值永远是一个可 JSON 化的对象（PageHandle.eval 只认这个）。
+     */
+    fun evaluate(code: String): String = """
+        (function(){
+          try {
+            var __v = (function(){ """ + code + """ })();
+            return {ok: true, value: __v === undefined ? null : String(__v)};
+          } catch (e) {
+            return {ok: false, error: String((e && e.message) || e)};
+          }
+        })()
+    """.trimIndent()
+
     /** 点一下。用原生 click()，不模拟坐标，避免点到浮层上。 */
     fun click(selector: String): String {
         val sel = js(selector)

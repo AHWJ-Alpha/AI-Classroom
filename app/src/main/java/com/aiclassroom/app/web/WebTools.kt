@@ -186,8 +186,9 @@ class WebActTool(deps: WebToolDeps) : WebToolBase(deps) {
               "items": {
                 "type": "object",
                 "properties": {
-                  "type": {"type": "string", "enum": ["fill", "click", "wait"], "description": "动作类型"},
+                  "type": {"type": "string", "enum": ["fill", "click", "wait", "js"], "description": "动作类型；js 表示执行一段脚本（例如把视频跳到某一秒）"},
                   "selector": {"type": "string", "description": "CSS selector，fill / click 必填"},
+                  "script": {"type": "string", "description": "type=js 时执行的 JS，可直接写语句；return 的值会作为结果返回"},
                   "value": {"type": "string", "description": "fill 时写入的文本"},
                   "ms": {"type": "integer", "description": "wait 时等待的毫秒数，上限 10000"}
                 },
@@ -220,6 +221,7 @@ class WebActTool(deps: WebToolDeps) : WebToolBase(deps) {
                 selector = item.optString("selector").trim(),
                 value = item.optString("value"),
                 ms = item.optLong("ms", 0L),
+                script = item.optString("script"),
             )
         }
         val confirmRisk = args.optBoolean("confirmRisk", false)
@@ -315,6 +317,24 @@ class WebActTool(deps: WebToolDeps) : WebToolBase(deps) {
                         // 点完给页面一点时间响应，后续动作才能落在新出现的元素上。
                         page.waitFor(600)
                     }
+                    "js" -> {
+                        // 执行一段任意 JS。典型用途：把视频 seek 到某一秒再截图分析，
+                        // 或者读取页面上的结构化数据（比如拿到 m3u8 地址）。
+                        if (action.script.isBlank()) {
+                            return@withPage ActionOutcome.Rejected("第 " + at + " 个动作（js）缺少 script")
+                        }
+                        val raw = page.eval(WebScripts.evaluate(action.script)).getOrElse { error ->
+                            return@withPage ActionOutcome.Rejected("第 " + at + " 个动作（js）执行失败：" + (error.message ?: "未知错误"))
+                        }
+                        val obj = runCatching { JSONObject(raw.ifBlank { "{}" }) }.getOrNull()
+                        if (obj?.optBoolean("ok") != true) {
+                            return@withPage ActionOutcome.Rejected(
+                                "第 " + at + " 个动作（js）报错：" + obj?.optString("error").orEmpty().ifBlank { raw.take(160) }
+                            )
+                        }
+                        val value = obj?.optString("value").orEmpty()
+                        done += "js ✓" + if (value.isBlank()) "" else " → " + value.take(120)
+                    }
                     "wait" -> {
                         page.waitFor(action.ms)
                         done += "wait " + action.ms + "ms ✓"
@@ -390,7 +410,53 @@ fun registerWebTools(registry: ToolRegistry, deps: WebToolDeps): List<String> {
         WebCaptureTool(deps),
         WebActTool(deps),
         WebSearchTool(deps),
+        WebAllowDomainTool(deps),
     )
     tools.forEach(registry::register)
     return tools.map { it.name }
+}
+
+/**
+ * web_allow_domain：把一个域名加进网页操作白名单。
+ *
+ * 为什么需要它：以前 AI 遇到没放行过的站点只能在界面弹框干等用户点确认。
+ * 用户既然已经在对话里说了「去 B 站看这个视频」，就不该再让他去设置里手填一遍域名。
+ *
+ * 边界：**只在用户明确提到这个网站时调用**，且调用后必须在回复里说明放行了哪个站。
+ * 工具调用本身会进 web 日志，用户也可以在「设置 → 插件 → 网络工具 → 白名单」里随时删掉。
+ */
+class WebAllowDomainTool(deps: WebToolDeps) : WebToolBase(deps) {
+
+    override val name: String = "web_allow_domain"
+
+    override val description: String =
+        "把一个域名加入网页操作白名单，之后 web_act 才能在这个站点上点击 / 填表 / 执行 JS。" +
+            "只在用户明确提到这个网站（给了链接或站名）时调用，不要自己猜域名。" +
+            "调用后要在回复里告诉用户你放行了哪个站点。" +
+            SAFETY_NOTE
+
+    override val parametersJson: String = """
+        {
+          "type": "object",
+          "properties": {
+            "domain": {"type": "string", "description": "要放行的域名，例如 bilibili.com（会去掉协议、路径、端口、www.）"}
+          },
+          "required": ["domain"]
+        }
+    """.trimIndent()
+
+    override suspend fun execute(argumentsJson: String): ToolResult {
+        val arguments = parseArguments(argumentsJson) ?: return fail("参数不是合法 JSON。")
+        val raw = arguments.optString("domain").trim()
+        if (raw.isEmpty()) return fail("缺少 domain。")
+        val host = WebDomains.normalize(raw)
+        if (host.isEmpty() || !host.contains('.')) return fail("域名不合法：" + raw.take(80))
+        val allowed = deps.domains.loadAllowed()
+        if (WebDomains.isAllowed(host, allowed)) {
+            return ok(JSONObject().put("ok", true).put("domain", host).put("already", true))
+        }
+        deps.domains.saveAllowed((allowed + host).distinct())
+        deps.log("[web] 白名单新增 " + host)
+        return ok(JSONObject().put("ok", true).put("domain", host).put("already", false))
+    }
 }

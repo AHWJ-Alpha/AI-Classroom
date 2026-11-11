@@ -33,6 +33,8 @@ object WebGuard {
         val selector: String,
         val value: String,
         val ms: Long,
+        /** type=js 时要执行的脚本；其余动作忽略。 */
+        val script: String = "",
     )
 
     sealed class Check {
