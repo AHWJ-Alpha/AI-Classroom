@@ -425,22 +425,28 @@ class MainActivity : ComponentActivity() {
         // 要在 super.onCreate 之前切主题：windowBackground 在窗口创建那一刻就定了，
         // 晚一步就只能看到默认的浅色底 —— 那就是「开屏先闪一下白」的来源。
         // 只有真会播 CG 的那次启动才用深色底，平时启动仍是浅色，不会闪黑。
+        //
+        // 标记用 played（值是版本号），不是旧的 seen —— 后者在开发期被写成过 3.5.0，
+        // 沿用会让「装完这一版却不播」。
         val splashPrefs = getSharedPreferences("splash_cg", MODE_PRIVATE)
-        val willShowSplash = splashPrefs.getString("seen", "") != BuildConfig.VERSION_NAME
+        val willShowSplash = splashPrefs.getString("played", "") != BuildConfig.VERSION_NAME
         if (willShowSplash) setTheme(R.style.Theme_AIClassroom_Splash)
         super.onCreate(savedInstanceState)
         // 音乐插件读播放信息前先拿到 application context；服务常驻时这条是空操作。
         NowPlaying.init(applicationContext)
         setContent {
             AIClassroomTheme {
-                // 开屏 CG：**每次进入应用都播**（用户要求）。
+                // 开屏 CG：**只在安装新版本后的第一次启动播放**。
                 // 主界面同时开始组合、被 CG 盖住；CG 末段整体淡出时自然露出来。
                 // 点击屏幕任意位置可跳过。
-                var showSplash by remember { mutableStateOf(true) }
+                var showSplash by remember { mutableStateOf(willShowSplash) }
                 Box(Modifier.fillMaxSize()) {
                     AIClassroomApp()
                     if (showSplash) {
-                        SplashCg(onFinished = { showSplash = false })
+                        SplashCg(onFinished = {
+                            splashPrefs.edit().putString("played", BuildConfig.VERSION_NAME).apply()
+                            showSplash = false
+                        })
                     }
                 }
             }
@@ -486,16 +492,13 @@ private fun AIClassroomApp() {
     // 没法塞进 ExamSession（不在本模块），所以在它刚出现时打一次点，提交时写进记录。
     var examStartedAt by remember { mutableStateOf(0L) }
     // NEW 介绍界面的显示时机要跟着开屏 CG 走。
-    //
-    // 原来这里是同步取值 `!store.hasSeenReleaseNotes(APP_VERSION)` —— 它在 **CG 播出的同时**
-    // 就把对话框弹出来了，白色 dialog 直接盖在像素动画上，用户能看到的只有对话框。
-    // （这就是为什么录屏怎么抓都只有 New! 那一屏。）现在先置 false，等 CG 播完再判断。
+    // 同步取值会让白色 dialog 盖在 CG 上（之前踩过），所以先 false，等 CG 播完再判断。
     var showNewDialog by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        // CG 现在每次进入应用都播，所以这里恒定等它播完（5s 动画 + 0.5s 淡出）。
-        // 早先按 seen 标记判断是否要等 —— 而 seen 是历史遗留的 true，
-        // 于是这里直接跳过等待，白色对话框又盖在 CG 上了。
-        delay(5_600)
+        // 只有这一次真会播 CG 才需要等；平时启动秒开。
+        val cgPrefs2 = context.getSharedPreferences("splash_cg", android.content.Context.MODE_PRIVATE)
+        val cgWillPlay = cgPrefs2.getString("played", "") != BuildConfig.VERSION_NAME
+        if (cgWillPlay) delay(5_600)
         showNewDialog = !store.hasSeenReleaseNotes(APP_VERSION)
     }
     var activeBranchIndex by remember { mutableIntStateOf(-1) }
