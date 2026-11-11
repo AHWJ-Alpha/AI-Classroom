@@ -491,7 +491,19 @@ private fun AIClassroomApp() {
     // 这份考试的起始时刻：会话在多处被创建（AI 触发 / 考试工具 / 存档恢复），
     // 没法塞进 ExamSession（不在本模块），所以在它刚出现时打一次点，提交时写进记录。
     var examStartedAt by remember { mutableStateOf(0L) }
-    var showNewDialog by remember { mutableStateOf(!store.hasSeenReleaseNotes(APP_VERSION)) }
+    // NEW 介绍界面的显示时机要跟着开屏 CG 走。
+    //
+    // 原来这里是同步取值 `!store.hasSeenReleaseNotes(APP_VERSION)` —— 它在 **CG 播出的同时**
+    // 就把对话框弹出来了，白色 dialog 直接盖在像素动画上，用户能看到的只有对话框。
+    // （这就是为什么录屏怎么抓都只有 New! 那一屏。）现在先置 false，等 CG 播完再判断。
+    var showNewDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val cgPrefs = context.getSharedPreferences("splash_cg", android.content.Context.MODE_PRIVATE)
+        val cgWillPlay = cgPrefs.getString("seen", "") != BuildConfig.VERSION_NAME
+        // 只有「这一版第一次启动」才需要等；平时秒开。留 0.6s 给动画收尾。
+        if (cgWillPlay) delay(5_600)
+        showNewDialog = !store.hasSeenReleaseNotes(APP_VERSION)
+    }
     var activeBranchIndex by remember { mutableIntStateOf(-1) }
     var branchInput by remember { mutableStateOf("") }
     var branchLoading by remember { mutableStateOf(false) }

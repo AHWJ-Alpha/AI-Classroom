@@ -56,7 +56,7 @@ import kotlin.random.Random
  * 数字不是用字体画的，而是 5x7 点阵逐格铺方块 —— 每格之间留 1px 缝隙，
  * 放大后能清楚看到「格子」，这是像素风的关键，用字体缩放做不出来。
  */
-private const val TOTAL_MS = 6_400
+private const val TOTAL_MS = 5_000
 
 // ---- 调色：旧（3.0 二次元） ----
 private val OldMain = Color(0xFF6C63FF)
@@ -124,29 +124,31 @@ private fun glyphPixels(glyph: List<String>, seed: Int): List<Pixel> {
 
 /** 各阶段的归一化时间点（相对 [TOTAL_MS]）。 */
 // ---- 第一幕：「3」 ----
-private const val T3_IN_END = 0.12f      // 点亮完成
+// 总长从 6.4s 压到 5.0s 时**不能等比缩放**：等比会把原本就紧的段落压没。
+// 这里按「各段的最小可辨识时长」重排 —— 停留 0.40s、消散 0.70s、NEW 0.60s。
+private const val T3_IN_END = 0.12f      // 点亮完成           (0.60s)
 // 完整停留：早先没有这一段，像素才刚亮齐就开始散，实测截到的都是「已经散了一半」的画面，
 // 谁也看不出那是个 3。加这一段之后形状能被认出来，消散才有对比。
-private const val T3_HOLD_END = 0.23f    // 完整停留结束，开始消散
-private const val T3_OUT_END = 0.40f     // 散尽
+private const val T3_HOLD_END = 0.20f    // 完整停留结束       (1.00s)
+private const val T3_OUT_END = 0.34f     // 散尽               (1.70s)
 
 // ---- 第二幕：「4」 ----
-private const val GAP_END = 0.43f        // 留白结束
-private const val T4_IN_END = 0.63f      // 「4」成型
-private const val FLARE_END = 0.69f      // 辉光扫过
-private const val T4_OUT_END = 0.75f     // 「4」隐去
+private const val GAP_END = 0.36f        // 留白结束           (1.80s)
+private const val T4_IN_END = 0.54f      // 「4」成型          (2.70s)
+private const val FLARE_END = 0.58f      // 辉光扫过           (2.90s)
+private const val T4_OUT_END = 0.62f     // 「4」隐去          (3.10s)
 
 // ---- 第三幕：方框 + 沉浸图标 ----
-private const val FRAME_IN_START = 0.74f // 方框开始描边
-private const val FRAME_IN_END = 0.79f   // 方框画完
-private const val ICON_IN_END = 0.85f    // 地球图标在框内浮现完成
+private const val FRAME_IN_START = 0.62f // 方框开始描边       (3.10s)
+private const val FRAME_IN_END = 0.68f   // 方框画完           (3.40s)
+private const val ICON_IN_END = 0.75f    // 地球图标浮现完成   (3.75s)
 
 // ---- 第四幕：收缩成 NEW ----
 // 这一段原来只占 0.04（约 0.2 秒），NEW 等于闪一下就没了 —— 用户根本来不及看。
-// 现在给「收缩 + 三个字母落位 + 稳定停留」共 0.12（约 0.8 秒），并且最后才淡出。
-private const val SHRINK_END = 0.88f     // 方框收缩到最小
-private const val NEW_IN_END = 0.94f     // 「NEW」三个字母逐个落位
-private const val FADE_START = 0.985f    // 整体淡出，交给 NEW 介绍界面
+// 现在给「收缩 + 三个字母落位 + 稳定停留」共 0.12（0.60s），最后才淡出。
+private const val SHRINK_END = 0.80f     // 方框收缩到最小     (4.00s)
+private const val NEW_IN_END = 0.92f     // 「NEW」逐个落位    (4.60s)
+private const val FADE_START = 0.97f     // 整体淡出           (4.85s)
 
 /** 缓出：让「到位」这件事有刹车感。 */
 private fun easeOut(x: Float): Float = 1f - (1f - x) * (1f - x) * (1f - x)
@@ -258,8 +260,9 @@ private fun DrawScope.drawNewFour(
 ) {
     if (t < GAP_END || t > T4_OUT_END) return
     // 第三幕要在这个位置放方框和地球，所以「4」得先让开。
-    // 用 0.06 的窗口淡出，不留突兀的硬切。
-    val fadeOut = ((t - (T4_OUT_END - 0.06f)) / 0.06f).coerceIn(0f, 1f)
+    // 淡出窗口取整段的 40%，5s 下约 0.2 秒 —— 不留突兀的硬切。
+    val fadeWin = 0.05f
+    val fadeOut = ((t - (T4_OUT_END - fadeWin)) / fadeWin).coerceIn(0f, 1f)
     val pixels = glyphPixels(DIGIT_4, seed = 404)
     val span = T4_IN_END - GAP_END
     pixels.forEach { p ->
