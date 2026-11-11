@@ -6,4 +6,17 @@
         <item name="android:navigationBarColor">#FFFFFF</item>
         <item name="android:fontFamily">sans</item>
     </style>
+
+    <!--
+      开屏 CG 专用主题：只把 windowBackground 换成 CG 的深黑（#0A0A0C），
+      这样「点图标 → 第一帧」之间不会闪一下白屏。
+      平时启动不播 CG，仍走 Theme.AIClassroom 的浅色底，不会闪黑。
+    -->
+    <style name="Theme.AIClassroom.Splash" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0A0A0C</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#0A0A0C</item>
+        <item name="android:navigationBarColor">#0A0A0C</item>
+        <item name="android:fontFamily">sans</item>
+    </style>
 </resources>

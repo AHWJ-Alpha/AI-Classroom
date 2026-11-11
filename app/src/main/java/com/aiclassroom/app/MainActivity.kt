@@ -418,13 +418,39 @@ import com.aiclassroom.app.util.parseClassroomIdentity
 import com.aiclassroom.app.ui.chat.MessageActionMenu
 import com.aiclassroom.app.ui.chat.AiThinkingRow
 import androidx.compose.material.icons.filled.Close
+import com.aiclassroom.app.ui.splash.SplashCg
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 要在 super.onCreate 之前切主题：windowBackground 在窗口创建那一刻就定了，
+        // 晚一步就只能看到默认的浅色底 —— 那就是「开屏先闪一下白」的来源。
+        // 只有真会播 CG 的那次启动才用深色底，平时启动仍是浅色，不会闪黑。
+        val splashPrefs = getSharedPreferences("splash_cg", MODE_PRIVATE)
+        val willShowSplash = splashPrefs.getString("seen", "") != BuildConfig.VERSION_NAME
+        if (willShowSplash) setTheme(R.style.Theme_AIClassroom_Splash)
         super.onCreate(savedInstanceState)
         // 音乐插件读播放信息前先拿到 application context；服务常驻时这条是空操作。
         NowPlaying.init(applicationContext)
-        setContent { AIClassroomTheme { AIClassroomApp() } }
+        setContent {
+            AIClassroomTheme {
+                // 开屏 CG：**只在版本号变化后的首次启动播放**（像更新公告那样）。
+                // 每次冷启动都播 3 秒会烦人，所以用 prefs 记住「这个版本已经看过」。
+                // 主界面同时开始组合（被 CG 盖住），CG 结束时不会有白屏跳变。
+                val splashPrefsLocal = remember { splashPrefs }
+                var showSplash by remember {
+                    mutableStateOf(willShowSplash)
+                }
+                Box(Modifier.fillMaxSize()) {
+                    AIClassroomApp()
+                    if (showSplash) {
+                        SplashCg(onFinished = {
+                            splashPrefsLocal.edit().putString("seen", BuildConfig.VERSION_NAME).apply()
+                            showSplash = false
+                        })
+                    }
+                }
+            }
+        }
 
     }
 }
