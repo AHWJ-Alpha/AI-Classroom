@@ -417,6 +417,7 @@ import com.aiclassroom.app.util.examRecordSummary
 import com.aiclassroom.app.util.parseClassroomIdentity
 import com.aiclassroom.app.ui.chat.MessageActionMenu
 import com.aiclassroom.app.ui.chat.AiThinkingRow
+import androidx.compose.material.icons.filled.Close
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -2964,6 +2965,18 @@ private fun ClassScreen(
                 if (last?.role == "assistant" && looksLikeFailure(last.text)) last.text else null
             }
         }
+        // 失败提示条**不能一直挂着**：它原来只在「最后一条是失败消息」时才消失，
+        // 用户不发下一条就会永久占住屏幕顶部，很烦。
+        // 现在给它 8 秒自动收起 + 手动关闭按钮 —— 只收提示条，失败消息本体仍在列表里，
+        // 想回看往上翻还能看到原文。
+        var failureDismissed by remember { mutableStateOf(false) }
+        LaunchedEffect(failureNotice) {
+            failureDismissed = false
+            if (failureNotice != null) {
+                delay(8_000)
+                failureDismissed = true
+            }
+        }
         // 顶部提示位：存档考试入口与请求失败提示共用一列，避免两者互相遮挡。
         Column(
             Modifier.align(Alignment.TopCenter).fillMaxWidth(),
@@ -2972,7 +2985,7 @@ private fun ClassScreen(
         savedExam?.let { archived ->
             ExamResumeBanner(archived, palette, onResumeExam)
         }
-        failureNotice?.let { notice ->
+        if (!failureDismissed) failureNotice?.let { notice ->
             Surface(
                 modifier = Modifier.padding(start = DesignTokens.Spacing.Md, end = DesignTokens.Spacing.Md, top = DesignTokens.Spacing.Lg),
                 shape = AppShapes.control,
@@ -2981,7 +2994,7 @@ private fun ClassScreen(
                 shadowElevation = 0.dp
             ) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = DesignTokens.Spacing.Lg, vertical = DesignTokens.Spacing.Md),
+                    Modifier.fillMaxWidth().padding(start = DesignTokens.Spacing.Lg, end = DesignTokens.Spacing.Sm, top = DesignTokens.Spacing.Md, bottom = DesignTokens.Spacing.Md),
                     horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Md),
                     verticalAlignment = Alignment.Top
                 ) {
@@ -2994,6 +3007,18 @@ private fun ClassScreen(
                         lineHeight = DesignTokens.Type.LineSnug,
                         modifier = Modifier.weight(1f)
                     )
+                    // 手动关闭：等不及 8 秒就用它。
+                    IconButton(
+                        onClick = { failureDismissed = true },
+                        modifier = Modifier.size(DesignTokens.Size.IconLg),
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "关闭提示",
+                            tint = palette.muted,
+                            modifier = Modifier.size(DesignTokens.Size.IconSm),
+                        )
+                    }
                 }
             }
         }
