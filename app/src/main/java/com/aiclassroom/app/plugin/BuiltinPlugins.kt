@@ -24,9 +24,21 @@ internal object BuiltinPlugins {
     private const val KEY_REMOVED = "removed"
 
     /** 改了内置插件的内容就把这个数字 +1，升级后会自动重新释放。 */
-    private const val VERSION = 1
+    private const val VERSION = 2
 
     private const val ASSET_ROOT = "plugins"
+
+    /**
+     * **系统插件**：属于应用功能本身（沉浸模式是主界面的一整个形态，音乐是顶栏常驻入口），
+     * 不是「用户装进来的扩展」。所以它们
+     * - 不记入 [KEY_REMOVED]（删了也会在下次启动时回来）
+     * - 设置页不显示卸载按钮
+     * 但**仍然可以被停用**（plugin_enabled_<id>），用户不想用可以关掉，只是不能删。
+     */
+    val SYSTEM_IDS: Set<String> = setOf("immersive", "music")
+
+    /** 这个插件是不是系统自带（不可卸载）。 */
+    fun isSystem(id: String): Boolean = id in SYSTEM_IDS
 
     fun install(context: Context, pluginsDir: File) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -45,7 +57,9 @@ internal object BuiltinPlugins {
         pluginsDir.mkdirs()
         var installed = 0
         ids.forEach { id ->
-            if (id in removed) {
+            // 系统插件无视「用户删过」的记录：它们是应用功能的一部分，
+            // 否则用户误删一次，沉浸模式和音乐就永久消失了。
+            if (id in removed && !isSystem(id)) {
                 Log.i(TAG, "跳过已删除的内置插件：" + id)
                 return@forEach
             }
@@ -82,6 +96,11 @@ internal object BuiltinPlugins {
 
     /** 用户卸载某个内置插件时调用，记下来，升级不再自动塞回。 */
     fun markRemoved(context: Context, id: String) {
+        // 系统插件不接受「已删除」标记：即使调用方漏判，也不会把它记进 removed 名单。
+        if (isSystem(id)) {
+            Log.w(TAG, "系统插件不允许标记删除：" + id)
+            return
+        }
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val removed = prefs.getStringSet(KEY_REMOVED, emptySet())?.toMutableSet() ?: mutableSetOf()
         if (removed.add(id)) prefs.edit().putStringSet(KEY_REMOVED, removed).apply()

@@ -85,6 +85,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmarks
@@ -179,6 +180,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.graphics.ImageBitmap
@@ -191,6 +193,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -3619,7 +3622,15 @@ private fun MessageCard(
             }
         }
     }
-        MessageActionMenu(menuOpen, palette, onDismiss = { menuOpen = false }, onBranch = { onBranch(index) }, onDeleteAfter = { onDeleteAfter(index) })
+        val clipboard = LocalClipboardManager.current
+        MessageActionMenu(
+            expanded = menuOpen,
+            palette = palette,
+            onDismiss = { menuOpen = false },
+            onCopy = { clipboard.setText(AnnotatedString(message.text)) },
+            onBranch = { onBranch(index) },
+            onDeleteAfter = { onDeleteAfter(index) },
+        )
     }
 }
 
@@ -3645,7 +3656,7 @@ private val TopHazeState = HazeState()
  * 容器布局尺寸记 0 但以屏幕尺寸绘制并平移到窗口原点，故不影响卡片/列表排版；面板锚定长按位置并夹在卡片底与窗口内。
  */
 @Composable
-private fun MessageActionMenu(expanded: Boolean, palette: AppPalette, onDismiss: () -> Unit, onBranch: () -> Unit, onDeleteAfter: () -> Unit) {
+private fun MessageActionMenu(expanded: Boolean, palette: AppPalette, onDismiss: () -> Unit, onCopy: () -> Unit, onBranch: () -> Unit, onDeleteAfter: () -> Unit) {
     if (!expanded) return
     // **不要再用「整屏 Box + 负偏移 + haze 模糊」那套 hack**。
     //
@@ -3671,6 +3682,11 @@ private fun MessageActionMenu(expanded: Boolean, palette: AppPalette, onDismiss:
             shadowElevation = 8.dp,
         ) {
             Column {
+                DropdownMenuItem(
+                    text = { Text("复制", color = palette.ink) },
+                    leadingIcon = { Icon(Icons.Default.ContentCopy, null, tint = palette.button) },
+                    onClick = { onDismiss(); onCopy() }
+                )
                 DropdownMenuItem(
                     text = { Text("从这里开分支", color = palette.ink) },
                     leadingIcon = { Icon(Icons.Default.AccountTree, null, tint = palette.button) },
@@ -5512,6 +5528,7 @@ private fun ModelScreen(
                         onImagePick = { key -> onPluginImagePick(info.id, key) },
                         onImageClear = { key -> onPluginImageClear(info.id, key) },
                         onUninstall = { onUninstallPlugin(info.id) },
+                        system = BuiltinPlugins.isSystem(info.id),
                     )
                 }
                 TextButton(onClick = onImportPlugin) {
@@ -6012,6 +6029,8 @@ private fun PluginPackageRow(
     onImagePick: (String) -> Unit,
     onImageClear: (String) -> Unit,
     onUninstall: () -> Unit,
+    /** 系统自带插件（沉浸模式 / 音乐）：可以停用，但不给卸载入口。 */
+    system: Boolean = false,
 ) {
     val unfinished = info.unfinishedSettings
     Column(
@@ -6078,11 +6097,21 @@ private fun PluginPackageRow(
                         )
                     }
                 }
-                TextButton(
-                    onClick = onUninstall,
-                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
-                ) {
-                    Text("卸载", color = MaterialTheme.colorScheme.error, fontSize = DesignTokens.Type.Small)
+                if (system) {
+                    // 系统插件：说明为什么没有卸载按钮（只说「不给按钮」会让人以为是 bug）。
+                    Text(
+                        "系统自带插件，可停用但不能卸载",
+                        color = Muted,
+                        fontSize = DesignTokens.Type.Caption,
+                        lineHeight = 16.sp,
+                    )
+                } else {
+                    TextButton(
+                        onClick = onUninstall,
+                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+                    ) {
+                        Text("卸载", color = MaterialTheme.colorScheme.error, fontSize = DesignTokens.Type.Small)
+                    }
                 }
             }
         }
