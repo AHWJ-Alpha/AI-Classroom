@@ -5366,39 +5366,53 @@ private fun ModelScreen(
                     expanded = "生图" in expandedPluginRows,
                     onToggleExpanded = { expandedPluginRows = togglePluginConfig(expandedPluginRows, "生图") }
                 )
+                // 通知使用权是「能不能读到播放信息」的硬前提，但它藏在系统设置里，
+                // 而且「音乐」这一行要展开两层才看得到里面的按钮 —— 用户找不到入口，
+                // 就会以为这个功能坏了。所以状态提到行描述里，不展开也能看见。
+                // 每秒复查：从系统设置授权回来，这里和描述都会立刻变。
+                var mediaGranted by remember { mutableStateOf(MediaAccess.isGranted(context)) }
+                LaunchedEffect(mediaToolsEnabled) {
+                    while (true) {
+                        mediaGranted = MediaAccess.isGranted(context)
+                        delay(1_500)
+                    }
+                }
                 PluginRow(
-                    Icons.Default.PlayArrow, "音乐", 3, "读取正在播放的歌名/歌手/封面，并控制播放",
+                    Icons.Default.PlayArrow, "音乐", 3,
+                    if (mediaGranted) "读取正在播放的歌名/歌手/封面，并控制播放"
+                    else "缺少「通知使用权」，读不到歌名也控制不了播放（展开这里可直接去授权）",
                     mediaToolsEnabled, onMediaToolsEnabledChange,
                     expanded = "音乐" in expandedPluginRows,
                     onToggleExpanded = { expandedPluginRows = togglePluginConfig(expandedPluginRows, "音乐") },
                     notes = listOf("与网络、生图是三个独立开关：音乐只读系统「正在播放」并转发播放/暂停，不发任何网络请求。关闭后 media.* 在本地直接拒绝，插件拿不到任何播放信息。")
                 ) {
-                    // 通知使用权是「能不能读到播放信息」的硬前提，却藏在系统设置里 ——
-                    // 以前这里只写一句说明，用户看完也不知道点哪；现在直接给状态 + 按钮。
-                    // 展开时每秒复查一次：从系统设置授权回来，这里会立刻变成「已授权」。
-                    var granted by remember { mutableStateOf(MediaAccess.isGranted(context)) }
-                    LaunchedEffect("音乐" in expandedPluginRows) {
-                        while ("音乐" in expandedPluginRows) {
-                            granted = MediaAccess.isGranted(context)
-                            delay(1_000)
-                        }
-                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            if (granted) Icons.Default.Check else Icons.Default.Error,
+                            if (mediaGranted) Icons.Default.Check else Icons.Default.Error,
                             null,
-                            tint = if (granted) MaterialTheme.colorScheme.primary else DesignTokens.Accent,
+                            tint = if (mediaGranted) MaterialTheme.colorScheme.primary else DesignTokens.Accent,
                             modifier = Modifier.size(16.dp),
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            if (granted) "通知使用权已授权" else "还没有通知使用权，读不到歌名也控制不了播放",
-                            color = if (granted) Muted else DesignTokens.Accent,
+                            if (mediaGranted) "通知使用权已授权"
+                            else "还没有通知使用权，读不到歌名也控制不了播放",
+                            color = if (mediaGranted) Muted else DesignTokens.Accent,
                             fontSize = DesignTokens.Type.Small,
                             modifier = Modifier.weight(1f),
                         )
                     }
-                    if (!granted) {
+                    if (!mediaGranted) {
+                        // 不需要 root：通知使用权是普通用户在系统设置里勾选即可的特殊权限。
+                        // 国产 ROM 会改写入口，所以这里既给直达按钮，也给文字路径兜底。
+                        Text(
+                            "不需要 root。手机上找不到的话，按这个路径走：" +
+                                "设置 → 应用设置 → 应用管理 → 特殊权限（或右上角 ⋮）→ 通知使用权 → " +
+                                "找到「AI Classroom 音乐」并打开。部分机型在「通知与控制中心 → 通知使用权」。",
+                            color = Muted,
+                            fontSize = DesignTokens.Type.Small,
+                            lineHeight = 18.sp,
+                        )
                         OutlinedButton(onClick = { MediaAccess.openSettings(context) }) {
                             Text("去授权通知使用权", color = MaterialTheme.colorScheme.primary)
                         }
