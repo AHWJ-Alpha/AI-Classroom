@@ -1331,8 +1331,15 @@ private fun AIClassroomApp(
         }.onFailure { Log.w(PLUGIN_LOG_TAG, "重算插件界面时钟失败", it) }
     }
     // 界面回调：渲染器只递事件，真正调用插件函数在 IO 线程，跑完只刷新这一个插件。
+    // 第一次点「音乐」按钮就检查通知使用权：没授权直接弹窗，
+    // 而不是等用户去「设置 → 插件 → 音乐」里展开两层才看见那一行小字。
+    // 普通用户装完 App 不可能像开发者那样用 adb 授权，必须当场给出路。
+    var showMediaPermDialog by remember { mutableStateOf(false) }
     val onPluginUiEvent: (PluginUiEvent) -> Unit = remember(pluginManager) {
         { event ->
+            if (event.pluginId == "music" && !MediaAccess.isGranted(context)) {
+                showMediaPermDialog = true
+            }
             scope.launch(Dispatchers.IO) {
                 pluginManager.invokeUiEntry(event.pluginId, event.entry, event.event, event.value)
                 mainHandler.post {
@@ -2574,6 +2581,32 @@ private fun AIClassroomApp(
         }, onEditSummary = { index, summary ->
             if (index in classes.indices) replaceClassroomAt(index, classes[index].copy(summary = summary), "课堂简介已保存")
         }, onNew = { addClassroom() }, onNewWithConfig = { addClassroom(classes[it]) }, onCopyConfig = ::copyConfigFrom, onDelete = ::deleteClassroom)
+    }
+    // 音乐浮窗的通知使用权引导。第一次用的人不会知道这个权限藏在系统「特殊权限」里，
+    // 所以点开音乐时当场说清楚，并给一个直达按钮。
+    if (showMediaPermDialog) {
+        AlertDialog(
+            onDismissRequest = { showMediaPermDialog = false },
+            title = { Text("音乐浮窗需要「通知使用权」") },
+            text = {
+                Text(
+                    "读取别的 App 正在播什么歌，Android 要求先给「通知使用权」。" +
+                        "\n\n它不在「应用权限」列表里（那里只有相机、存储这些），" +
+                        "而是在「特殊权限 → 通知使用权」下，所以按权限名找是找不到的。" +
+                        "\n\n点下面的按钮会直接跳到那个页面，找到「AI Classroom 音乐」打开开关就行。" +
+                        "不需要 root。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showMediaPermDialog = false
+                    MediaAccess.openSettings(context)
+                }) { Text("去开启") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMediaPermDialog = false }) { Text("以后再说") }
+            },
+        )
     }
     ChatMenuOverlay(
         hazeState = hazeState,
