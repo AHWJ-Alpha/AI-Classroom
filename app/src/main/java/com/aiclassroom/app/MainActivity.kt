@@ -58,6 +58,8 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -3485,11 +3487,32 @@ private fun Modifier.hapticTouch(
         }
     }
 }
+
+/**
+ * 按下反馈：缩放 + 略微压暗。
+ *
+ * Material 自带涟漪，但在浅底/高对比配色下经常看不出来（尤其图标按钮），
+ * 所以再叠一层几何变化 —— 手指按下时眼睛能明确看到「按下去了」。
+ */
+@Composable
+private fun Modifier.pressFeedback(source: MutableInteractionSource): Modifier {
+    val pressed by source.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.90f else 1f, tween(90), label = "pressScale")
+    val dim by animateFloatAsState(if (pressed) 0.72f else 1f, tween(90), label = "pressDim")
+    return graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+        alpha = dim
+    }
+}
 @Composable
 private fun FloatingIconAction(icon: ImageVector, palette: AppPalette, onClick: () -> Unit, modifier: Modifier = Modifier, contentDescription: String? = null) {
+    // 悬浮键没有涟漪，靠按下缩放确认「点到了」。
+    val fabPress = remember { MutableInteractionSource() }
     Surface(
         onClick = onClick,
-        modifier = modifier.size(DesignTokens.Size.Fab),
+        interactionSource = fabPress,
+        modifier = modifier.size(DesignTokens.Size.Fab).pressFeedback(fabPress),
         color = palette.surface,
         shape = RoundedCornerShape(DesignTokens.Radius.Pill),
         shadowElevation = 1.dp,
@@ -3525,6 +3548,9 @@ private fun ChatInputBar(
     modifier: Modifier = Modifier
 ) {
     val haptics = rememberHaptics()
+    // 图片键 / 发送键的按下反馈要用同一个 interactionSource 才能读到 pressed 状态。
+    val imagePressSource = remember { MutableInteractionSource() }
+    val sendPressSource = remember { MutableInteractionSource() }
     // 输入框是否处于编辑状态：决定要不要从单行撑到两行。
     var inputFocused by remember { mutableStateOf(false) }
     Surface(
@@ -3547,7 +3573,8 @@ private fun ChatInputBar(
             IconButton(
                 onClick = onImage,
                 enabled = !isLoading,
-                modifier = Modifier.size(44.dp),
+                interactionSource = imagePressSource,
+                modifier = Modifier.size(44.dp).pressFeedback(imagePressSource),
                 colors = IconButtonDefaults.iconButtonColors(
                     containerColor = Color.Transparent,
                     contentColor = palette.secondary,
@@ -3599,7 +3626,8 @@ private fun ChatInputBar(
                 Button(
                     onClick = onSend,
                     enabled = !isLoading,
-                    modifier = Modifier.size(if (compact) 40.dp else 44.dp),
+                    interactionSource = sendPressSource,
+                    modifier = Modifier.size(if (compact) 40.dp else 44.dp).pressFeedback(sendPressSource),
                     shape = AppShapes.button,
                     contentPadding = PaddingValues(0.dp),
                     colors = ButtonDefaults.buttonColors(
