@@ -5812,31 +5812,30 @@ private fun ModelScreen(
                         "说明系统层的「触感反馈」被调低了 —— 去系统设置 → 声音与振动里确认一下。",
                     color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
                 )
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Haptics.LABELS.forEachIndexed { value, label ->
-                        val selected = hapticLevel == value
-                        Surface(
-                            onClick = {
-                                hapticLevel = value
-                                Haptics.save(context, value)
-                                // 选完立刻震一下，方便当场对比强弱。
-                                Haptics.tap(context)
-                            },
-                            shape = AppShapes.button,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(DesignTokens.Border.Hairline, MaterialTheme.colorScheme.outline),
-                        ) {
-                            Text(
-                                label,
-                                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
-                                fontSize = DesignTokens.Type.Small,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                            )
+                Spacer(Modifier.height(6.dp))
+                // 滑动调档：5 个档位，滑到新的一档就用**那一档的强度**震一次，
+                // 手上立刻知道这档有多重，不用挨个点按钮试。
+                Slider(
+                    value = hapticLevel.toFloat(),
+                    onValueChange = { v ->
+                        val step = v.roundToInt().coerceIn(0, Haptics.MAX)
+                        if (step != hapticLevel) {
+                            hapticLevel = step
+                            Haptics.save(context, step)
+                            if (step != Haptics.OFF) Haptics.tap(context)
                         }
+                    },
+                    valueRange = 0f..Haptics.MAX.toFloat(),
+                    // 5 个位置之间是 3 个中间刻度。
+                    steps = Haptics.MAX - 1,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Haptics.LABELS.forEach { label ->
+                        Text(label, color = Muted, fontSize = DesignTokens.Type.Caption)
                     }
                 }
             }
