@@ -12,7 +12,7 @@ android {
         applicationId = "com.aiclassroom.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 43
+        versionCode = 45
         versionName = "4.0.2"
     }
 
