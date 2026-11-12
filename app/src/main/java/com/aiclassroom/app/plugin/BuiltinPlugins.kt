@@ -24,7 +24,7 @@ internal object BuiltinPlugins {
     private const val KEY_REMOVED = "removed"
 
     /** 改了内置插件的内容就把这个数字 +1，升级后会自动重新释放。 */
-    private const val VERSION = 3
+    private const val VERSION = 4
 
     private const val ASSET_ROOT = "plugins"
 
@@ -38,14 +38,19 @@ internal object BuiltinPlugins {
     val SYSTEM_IDS: Set<String> = setOf("immersive", "music")
 
     /**
-     * **示例插件**：演示用，不是应用功能。
+     * 曾经随包发布的**测试件**，现已不再随包：
+     * - `msg_badge` 回复徽章：只是「字数·用时」的展示演示
+     * - `pet_cat` 宠物猫：纯装饰 sprite
      *
-     * - `pet_cat` / `time_flow` / `msg_badge`：界面插槽与动画的演示
-     * - `nightmare`：manifest.settings 五种配置类型的演示（权限只有 storage，没有任何业务能力）
+     * 注意 `nightmare`（夜梦画室）**不在**这个清单里 —— 它是给生图用的配置面板，属于功能。
      *
-     * 它们可以正常卸载，列表里单列一组并注明「示例」，免得和用户自己导入的插件混在一起。
+     * 光从 assets 删掉不够：老用户设备上已经释放出来的目录会一直留着，
+     * 所以升级时要按这个清单把它们清掉。
      */
-    val SAMPLE_IDS: Set<String> = setOf("pet_cat", "time_flow", "msg_badge", "nightmare")
+    val RETIRED_IDS: Set<String> = setOf("msg_badge", "pet_cat")
+
+    /** 示例插件已全部下线；保留这个入口，免得调用方全要改。 */
+    val SAMPLE_IDS: Set<String> = emptySet()
 
     /** 这个插件是不是系统自带（不可卸载）。 */
     fun isSystem(id: String): Boolean = id in SYSTEM_IDS
@@ -68,6 +73,14 @@ internal object BuiltinPlugins {
         }
 
         pluginsDir.mkdirs()
+        // 下线清理：这些测试件以前随包发布过，只从 assets 删掉不够 ——
+        // 老用户设备上已经释放出来的目录会一直留着，插件列表里还是能看到。
+        RETIRED_IDS.forEach { id ->
+            val dir = File(pluginsDir, id)
+            if (dir.exists() && dir.deleteRecursively()) {
+                Log.i(TAG, "已清理下线插件：" + id)
+            }
+        }
         var installed = 0
         ids.forEach { id ->
             // 系统插件无视「用户删过」的记录：它们是应用功能的一部分，

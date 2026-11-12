@@ -2,13 +2,13 @@
 
 一间可以持续学习、也可以一起写故事的 AI 课堂。主课堂保留长期脉络，分支课堂容纳临时探索；知识库、角色卡与世界书帮助讲师在长对话里保持设定一致。
 
-[下载 APK](https://github.com/AHWJ-Alpha/AI-Classroom/releases) · [查看 4.0.1 更新](releases/AI-Classroom-4.0.1.md) · [反馈问题](https://github.com/AHWJ-Alpha/AI-Classroom/issues)
+[下载 APK](https://github.com/AHWJ-Alpha/AI-Classroom/releases) · [查看 4.0.2 更新](releases/AI-Classroom-4.0.2.md) · [反馈问题](https://github.com/AHWJ-Alpha/AI-Classroom/issues)
 
-> 当前源码版本：`4.0.1`。已发布版本及安装包以 [GitHub Releases](https://github.com/AHWJ-Alpha/AI-Classroom/releases) 页面为准。Android 最低要求：8.0（API 26）。
+> 当前源码版本：`4.0.2`。已发布版本及安装包以 [GitHub Releases](https://github.com/AHWJ-Alpha/AI-Classroom/releases) 页面为准。Android 最低要求：8.0（API 26）。
 
 本文是当前版本的使用说明。历史更新日志仅描述对应版本的改动；当前功能、支持格式和使用方式以本文为准。
 
-## 4.0.1 有什么新的
+## 4.0.2 有什么新的
 
 | 领域 | 变化 |
 | --- | --- |
