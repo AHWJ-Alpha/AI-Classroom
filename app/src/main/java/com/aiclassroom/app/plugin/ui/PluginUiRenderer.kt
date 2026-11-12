@@ -18,6 +18,8 @@ import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -313,12 +315,18 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
     val haptics = rememberHaptics()
     val interactive = node.onTap != null || node.onDoubleTap != null || node.onLongPress != null
     var pressed by remember(node.path) { mutableStateOf(false) }
-    // 90ms：短到跟手，又不至于像闪烁。松手用同一时长回弹。
-    //
-    // 缩放是主要的可见线索：浅色圆本身就和白底接近，单靠 alpha 混合几乎看不出来（实测只差 4/255）。
-    // alpha 只作辅助，让深色主题下也有变化。
-    val pressScale by animateFloatAsState(if (pressed) 0.88f else 1f, tween(90), label = "nodePressScale")
-    val pressDim by animateFloatAsState(if (pressed) 0.72f else 1f, tween(90), label = "nodePressDim")
+    // 按下快而小（90ms）要跟手；松开用弹簧，带一点过冲，手感才「活」。
+    val pressScale by animateFloatAsState(
+        targetValue = if (pressed) 0.86f else 1f,
+        animationSpec = if (pressed) tween(90) else spring(dampingRatio = 0.42f, stiffness = 900f),
+        label = "nodePressScale",
+    )
+    // 从中心渗出一圈高亮：浅色圆和白底太接近，光靠缩放看不出来（实测只差 4/255）。
+    val pressGlow by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = if (pressed) tween(110) else tween(220),
+        label = "nodePressGlow",
+    )
     // 屏幕尺寸（px）：拖动时用来夹住 offset，避免把内容拖出可视区。
     val screenDensity = LocalDensity.current
     val screenConfig = LocalConfiguration.current
@@ -376,11 +384,17 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
             .align(alignmentOf(anchor))
             .offset(x = dx, y = dy)
             .onSizeChanged { boxSize.value = it }
+            .drawBehind {
+                if (pressGlow > 0.01f) {
+                    val r = size.minDimension / 2f * (0.72f + 0.28f * pressGlow)
+                    drawCircle(paint.palette.card.copy(alpha = 0.55f * pressGlow), radius = r)
+                    drawCircle(paint.palette.button.copy(alpha = 0.22f * pressGlow), radius = r)
+                }
+            }
             .graphicsLayer {
                 // 拖动缩放（scale）与按压反馈（pressScale）叠在一起：两件事互不干扰。
                 scaleX = scale * pressScale
                 scaleY = scale * pressScale
-                alpha = pressDim
             }
             // 点击 / 长按：独立识别器，手指一移动它自己取消。
             .pointerInput(node.path, node.onDoubleTap) {
