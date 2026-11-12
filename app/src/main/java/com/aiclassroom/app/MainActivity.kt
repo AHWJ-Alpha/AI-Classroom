@@ -3420,12 +3420,9 @@ private fun Modifier.hapticTouch(context: android.content.Context): Modifier = p
 
                 }
             }
-            // 滑动的反馈只在**松手**时给一记轻的：
-            // 过程中持续震会变成嗡嗡嗡（实测用户直接听出来很吵），
-            // 而「点按 = 完整一记 / 滑动 = 松手轻响一下」也足够区分两种操作。
-            if (dragging) {
-                if (travelled > slop * 2f) Haptics.tap(context, Haptics.Kind.TICK)
-            } else if (System.currentTimeMillis() - startedAt < 500L) {
+            // 普通滚动一律不震：滚动本身没有「经过某个选项」的语义，
+            // 给反馈只会变成噪音。需要刻度感的控件（滑条）自己在 onValueChange 里发。
+            if (!dragging && System.currentTimeMillis() - startedAt < 500L) {
                 Haptics.tap(context, Haptics.Kind.TAP)
             }
         }
@@ -6569,11 +6566,20 @@ private fun PluginSliderField(
     val max = (setting.max ?: 100.0).toFloat()
     val current = value.toFloatOrNull()?.coerceIn(min, max) ?: min
     Row(verticalAlignment = Alignment.CenterVertically) {
+        // 滑条是唯一需要「逐个选项」震动的控件：每跨过一个整数刻度给一记轻的，
+        // 像拨盘跳格。普通列表滚动不走这里，所以不会连成一片。
+        val sliderContext = LocalContext.current
+        var lastSliderStep by remember { mutableStateOf(current.roundToInt()) }
         Slider(
             value = current,
             onValueChange = { v ->
                 // 整数化：尺寸这类参数没必要拖出小数。
-                onValueChange(v.roundToInt().toString())
+                val step = v.roundToInt()
+                if (step != lastSliderStep) {
+                    lastSliderStep = step
+                    Haptics.tap(sliderContext, Haptics.Kind.TICK)
+                }
+                onValueChange(step.toString())
             },
             valueRange = min..max,
             enabled = !locked,
