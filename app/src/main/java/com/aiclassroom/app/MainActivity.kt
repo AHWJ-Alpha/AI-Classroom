@@ -2137,6 +2137,7 @@ private fun AIClassroomApp(
             val panelShape = RoundedCornerShape(DesignTokens.Radius.Card)
             val panelColor = palette.surface
             val glassColor = palette.surface.copy(alpha = 0.70f)
+            val navHaptic = LocalContext.current
             var dragTabIndex by remember { mutableStateOf(-1) }
             Box(
                 Modifier
@@ -2159,8 +2160,19 @@ private fun AIClassroomApp(
                         fun tabIndexAt(x: Float) =
                             ((x / size.width) * Tab.entries.size).toInt().coerceIn(0, Tab.entries.size - 1)
                         detectHorizontalDragGestures(
-                            onDragStart = { pos -> dragTabIndex = tabIndexAt(pos.x) },
-                            onHorizontalDrag = { change, _ -> dragTabIndex = tabIndexAt(change.position.x) },
+                            onDragStart = { pos ->
+                                dragTabIndex = tabIndexAt(pos.x)
+                                Haptics.tap(navHaptic, Haptics.Kind.TICK)
+                            },
+                            // 底栏可拖动换位：每跨过一格给一记刻度震动，
+                            // 这样「拖着换位置」有逐格确认感，和普通滚动区分开。
+                            onHorizontalDrag = { change, _ ->
+                                val next = tabIndexAt(change.position.x)
+                                if (next != dragTabIndex) {
+                                    dragTabIndex = next
+                                    Haptics.tap(navHaptic, Haptics.Kind.TICK)
+                                }
+                            },
                             onDragEnd = {
                                 if (dragTabIndex >= 0) tab = Tab.entries[dragTabIndex]
                                 dragTabIndex = -1
@@ -2307,7 +2319,7 @@ private fun AIClassroomApp(
                     }, pluginOverlay = uiOverlayBindings, pluginMessageTail = uiMessageTailBindings,
                         pluginStates = uiStateSnapshot, onPluginUiEvent = onPluginUiEvent,
                         pluginStateVersions = pluginStateVersions,
-                        pluginUserImages = uiUserImages, pluginUserImageFits = uiUserImageFits,
+                        pluginUserImages = uiUserImages, pluginUserImageFits = uiUserImageFits,
                         pluginTopBar = uiTopBarBindings, onClassMenu = { classMenuOpen = !classMenuOpen }) { index ->
                         val selected = current.messages.take(index + 1)
                         val branchMessages = mutableStateListOf<ChatMessage>()
@@ -2939,10 +2951,10 @@ private fun ClassScreen(
     pluginStateVersions: Map<String, Int> = emptyMap(),
     /** 插件设置里 type=image 的字段（插件 id -> 字段 -> 文件）。 */
     pluginUserImages: Map<String, Map<String, File>> = emptyMap(),
-    pluginUserImageFits: Map<String, Map<String, String>> = emptyMap(),
-    /** TOP_BAR_ACTIONS 的绑定：顶栏不再渲染，改由输入区分发。 */
-    pluginTopBar: List<PluginUiBinding> = emptyList(),
-    /** 课堂菜单（原顶栏设置键）。 */
+    pluginUserImageFits: Map<String, Map<String, String>> = emptyMap(),
+    /** TOP_BAR_ACTIONS 的绑定：顶栏不再渲染，改由输入区分发。 */
+    pluginTopBar: List<PluginUiBinding> = emptyList(),
+    /** 课堂菜单（原顶栏设置键）。 */
     onClassMenu: () -> Unit = {},
     onBranch: (Int) -> Unit
 ) {
