@@ -2,19 +2,21 @@
 
 一间可以持续学习、也可以一起写故事的 AI 课堂。主课堂保留长期脉络，分支课堂容纳临时探索；知识库、角色卡与世界书帮助讲师在长对话里保持设定一致。
 
-[下载 APK](https://github.com/AHWJ-Alpha/AI-Classroom/releases) · [查看 4.0.0 更新](releases/AI-Classroom-4.0.0.md) · [反馈问题](https://github.com/AHWJ-Alpha/AI-Classroom/issues)
+[下载 APK](https://github.com/AHWJ-Alpha/AI-Classroom/releases) · [查看 4.0.1 更新](releases/AI-Classroom-4.0.1.md) · [反馈问题](https://github.com/AHWJ-Alpha/AI-Classroom/issues)
 
-> 当前源码版本：`4.0.0`。已发布版本及安装包以 [GitHub Releases](https://github.com/AHWJ-Alpha/AI-Classroom/releases) 页面为准。Android 最低要求：8.0（API 26）。
+> 当前源码版本：`4.0.1`。已发布版本及安装包以 [GitHub Releases](https://github.com/AHWJ-Alpha/AI-Classroom/releases) 页面为准。Android 最低要求：8.0（API 26）。
 
 本文是当前版本的使用说明。历史更新日志仅描述对应版本的改动；当前功能、支持格式和使用方式以本文为准。
 
-## 4.0.0 有什么新的
+## 4.0.1 有什么新的
 
 | 领域 | 变化 |
 | --- | --- |
 | 插件 | 数字设置项改为滑条，拖动即时生效；沉浸模式与音乐改为**系统插件**（可停用、不可卸载）；顶栏按钮改为纯图标 |
 | 音乐 | 悬浮窗时间条重写：不再跳变、不再归零，换歌正确重置；小圆与大浮窗互斥切换、位置共享，尺寸可在设置里调 |
 | 网页工具 | `web_capture` 支持区域裁剪（用来单独截登录二维码）；`web_act` 支持执行 JS（可把视频精确 seek 到某一秒再截图）；新增 `web_allow_domain` 在对话中直接放行站点 |
+| 触感反馈 | 设置里滑条调档：关闭 / 轻 / 中 / 强 / 极大，滑到哪档就用哪档强度震一次；改用系统调校的震动基元，线性马达上是干脆的一下 |
+| 输入框 | 平时单行，点进去编辑才两行；点别处自动收焦点缩回单行 |
 | 版本 | 设置页底部显示版本号：单击检查更新，**连击 5 下重放开屏动画** |
 | 结构 | 主文件从 8478 行压到 7332 行，数据模型与工具函数拆成 13 个独立文件 |
 

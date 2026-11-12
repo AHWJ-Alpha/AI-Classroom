@@ -12,8 +12,8 @@ android {
         applicationId = "com.aiclassroom.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 41
-        versionName = "4.0.0"
+        versionCode = 42
+        versionName = "4.0.1"
     }
 
     // 签名：debug 与 release 共用同一把 developer 钥匙。
