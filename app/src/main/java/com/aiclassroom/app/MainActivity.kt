@@ -194,6 +194,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.AnnotatedString
@@ -2043,10 +2044,12 @@ private fun AIClassroomApp(
     ) {
     CompositionLocalProvider(LocalAppHazeState provides hazeState) {
     Box(Modifier.fillMaxSize()) {
+    // 点别处时要能主动收焦点：Compose 不会自动做这件事。
+    val focusManager = LocalFocusManager.current
     Scaffold(
         // hapticTouch：全局触感层。挂在根布局上，所有按键都有了反馈，
         // 而且能区分「点按」和「滑动」——不用给每个按钮单独接线。
-        modifier = Modifier.fillMaxSize().hazeSource(hazeState).hapticTouch(context),
+        modifier = Modifier.fillMaxSize().hazeSource(hazeState).hapticTouch(context) { focusManager.clearFocus() },
         topBar = { if (!immersiveMode) {
             // 与底栏一致的毛玻璃：内容从栏下透出，避免顶栏像一块死板的白条。
             // 用 TopHazeState 独立于 BottomHazeState —— 同一份 state 会在两处互相干扰模糊源。
@@ -3439,7 +3442,11 @@ private fun String.shortModelName(): String = substringAfterLast('/').take(20)
  * - 滑动中：每 90ms 一记短促 tick，像滚轮刻度
  * - 滑动松手：稍重的收尾，告诉人「停住了」
  */
-private fun Modifier.hapticTouch(context: android.content.Context): Modifier = pointerInput(Unit) {
+private fun Modifier.hapticTouch(
+    context: android.content.Context,
+    /** 判定为「点按」时额外做的事（清焦点用）。 */
+    onTap: () -> Unit = {},
+): Modifier = pointerInput(Unit) {
     val slop = viewConfiguration.touchSlop
     awaitPointerEventScope {
         while (true) {
@@ -3469,6 +3476,9 @@ private fun Modifier.hapticTouch(context: android.content.Context): Modifier = p
             // 给反馈只会变成噪音。需要刻度感的控件（滑条）自己在 onValueChange 里发。
             if (!dragging && System.currentTimeMillis() - startedAt < 500L) {
                 Haptics.tap(context, Haptics.Kind.TAP)
+                // 点空白/别处 → 收起输入框焦点。Compose 的 TextField 不会自动失焦，
+                // 不主动清的话输入框会一直保持「编辑中」的两行高度。
+                onTap()
             }
         }
     }
