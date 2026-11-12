@@ -291,6 +291,7 @@ import com.aiclassroom.app.plugin.ui.PluginUiFullscreen
 import com.aiclassroom.app.plugin.ui.PluginUiMessageTail
 import com.aiclassroom.app.plugin.ui.PluginUiOverlay
 import com.aiclassroom.app.plugin.ui.PluginUiTopBarActions
+import com.aiclassroom.app.plugin.ui.rememberHaptics
 import com.aiclassroom.app.plugin.PrefsPluginStateStore
 import com.aiclassroom.app.plugin.importPluginArchive
 import com.aiclassroom.app.plugin.cappedJson
@@ -2172,6 +2173,7 @@ private fun AIClassroomApp(
                     tonalElevation = 0.dp
                 ) {
                 Tab.entries.forEachIndexed { index, item ->
+                    val haptics = rememberHaptics()
                     val selected = if (dragTabIndex >= 0) dragTabIndex == index else tab == item
                     val iconScale by androidx.compose.animation.core.animateFloatAsState(
                         targetValue = when {
@@ -2188,7 +2190,11 @@ private fun AIClassroomApp(
                     )
                     NavigationBarItem(
                         selected = selected,
-                        onClick = { tab = item; classMenuOpen = false },
+                        onClick = {
+                            haptics(HapticFeedbackConstants.VIRTUAL_KEY)
+                            tab = item
+                            classMenuOpen = false
+                        },
                                                 icon = {
                             // 长按拖动才出现的高亮胶囊：圆角/描边取底栏面板同一套 token（Radius.Card + Border.Hairline + outline），平时不加任何底色
                             Box(
@@ -3373,8 +3379,13 @@ private fun String.shortModelName(): String = substringAfterLast('/').take(20)
 
 @Composable
 private fun FloatingIconAction(icon: ImageVector, palette: AppPalette, onClick: () -> Unit, modifier: Modifier = Modifier, contentDescription: String? = null) {
+    // 悬浮键没有任何涟漪，纯靠一记轻震动确认「点到了」。
+    val haptics = rememberHaptics()
     Surface(
-        onClick = onClick,
+        onClick = {
+            haptics(HapticFeedbackConstants.VIRTUAL_KEY)
+            onClick()
+        },
         modifier = modifier.size(DesignTokens.Size.Fab),
         color = palette.surface,
         shape = RoundedCornerShape(DesignTokens.Radius.Pill),
@@ -3410,6 +3421,7 @@ private fun ChatInputBar(
     trailingActions: @Composable RowScope.() -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val haptics = rememberHaptics()
     // 输入框是否处于编辑状态：决定要不要从单行撑到两行。
     var inputFocused by remember { mutableStateOf(false) }
     Surface(
@@ -3471,7 +3483,11 @@ private fun ChatInputBar(
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     IconButton(
-                        onClick = { modelMenuOpen = true; reasoningMenuOpen = true },
+                        onClick = {
+                            haptics(HapticFeedbackConstants.VIRTUAL_KEY)
+                            modelMenuOpen = true
+                            reasoningMenuOpen = true
+                        },
                         modifier = Modifier.size(32.dp),
                     ) {
                         Icon(
@@ -3482,7 +3498,10 @@ private fun ChatInputBar(
                         )
                     }
                 Button(
-                    onClick = onSend,
+                    onClick = {
+                        haptics(HapticFeedbackConstants.VIRTUAL_KEY)
+                        onSend()
+                    },
                     enabled = !isLoading,
                     modifier = Modifier.size(if (compact) 40.dp else 44.dp),
                     shape = AppShapes.button,
