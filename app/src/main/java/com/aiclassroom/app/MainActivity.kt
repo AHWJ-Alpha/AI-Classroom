@@ -2053,7 +2053,7 @@ private fun AIClassroomApp(
             ) {
                 Column(Modifier.fillMaxWidth().statusBarsPadding()) {
                     Row(
-                        Modifier.fillMaxWidth().height(if (conversationScrolled) 42.dp else 48.dp).padding(horizontal = DesignTokens.Spacing.Page),
+                        Modifier.fillMaxWidth().height(66.dp).padding(horizontal = DesignTokens.Spacing.Page),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Md)
                     ) {
@@ -2086,8 +2086,7 @@ private fun AIClassroomApp(
                         // 标题列。Kicker（AI CLASSROOM）在宽度吃紧时让位：
                         // 插件按钮多起来以后它会和标题挤在一起，所以低于阈值就整行不画，标题独占。
                         BoxWithConstraints(Modifier.weight(1f)) {
-                            // 滚动时收起 Kicker，顶栏只剩标题一行 —— 这就是「滑动时收缩成一行」。
-                            val showKicker = maxWidth >= 150.dp && !conversationScrolled
+                            val showKicker = maxWidth >= 150.dp
                             Column(Modifier.fillMaxWidth()) {
                                 if (showKicker) {
                                     Text("AI CLASSROOM", style = DesignTokens.TextStyles.Kicker, color = palette.muted)
@@ -2102,9 +2101,25 @@ private fun AIClassroomApp(
                                 )
                             }
                         }
-                        // 顶栏不再放操作按钮：
-                        // 沉浸 / 音乐 / 设置都挪进了输入区（沉浸进控制行，音乐和设置在输入框与发送键之间）。
-                        // 顶栏只保留「菜单 + 标题」，厚度压到 48dp（滚动时 42dp），把纵向空间让给对话。
+                        // 「自定义学习内容」这类 topic 常驻在顶栏，和插件按钮抢宽度，已移除。
+                        // 位置不够时的降级见标题列（BoxWithConstraints）。
+                        // TOP_BAR_ACTIONS：插件按钮插在现有图标那一排的左侧（无插件时这里什么都不渲染）。
+                        PluginUiTopBarActions(
+                            bindings = uiTopBarBindings,
+                            states = uiStateSnapshot,
+                            palette = palette,
+                            onEvent = onPluginUiEvent,
+                            stateVersions = pluginStateVersions,
+                            userImages = uiUserImages,
+                            userImageFits = uiUserImageFits,
+                        )
+                        IconButton(
+                            onClick = { classMenuOpen = !classMenuOpen },
+                            modifier = Modifier.size(DesignTokens.Size.IconButton),
+                            colors = IconButtonDefaults.iconButtonColors(contentColor = DesignTokens.Accent)
+                        ) {
+                            Icon(Icons.Default.Tune, contentDescription = "打开课堂菜单", modifier = Modifier.size(DesignTokens.Size.Icon))
+                        }
                     }
                     HorizontalDivider(thickness = DesignTokens.Border.Hairline, color = palette.outline)
                 }
@@ -3005,18 +3020,16 @@ private fun ClassScreen(
             }
             if (isLoading) item { AiThinkingRow(palette, room.config.mentorName) }
         }
-        // 沉浸模式：从顶栏搬出来的侧边悬浮键。
-        // 放在右上、56dp —— 比原来顶栏那个 34dp 的图标大一圈，拇指够得到。
-        // 用半透明底 + 细描边，压在消息上也不糊。
+
+        // 悬浮的沉浸（全屏）键：顶栏那个仍然在，这个是为了手够得到而额外放的。
+        // 56dp 比顶栏的 34dp 大一圈；半透明底 + 细描边，压在消息上也不糊。
         Surface(
             onClick = { onImmersiveChange(!immersiveMode) },
             modifier = Modifier
-                // zIndex：这个 Box 里后面还有考试横幅等子项，按声明顺序它们会画在悬浮键之上，
-                // 必须抬高层级，否则按钮被盖住看不见（实测就是这个问题）。
+                // zIndex 必须给：这个 Box 里后面还有考试横幅等子项，按声明顺序会盖住悬浮键（实测过）。
                 .zIndex(10f)
                 .align(Alignment.TopEnd)
-                // top 取 80dp 而不是 10dp：正上方常驻「存档考试」横幅，
-                // 贴边会被它的「回看」按钮挡住（实测过）。80dp 正好落在横幅下方。
+                // top 取 80dp：正上方常驻「存档考试」横幅，贴边会被它的「回看」按钮挡住。
                 .padding(end = 10.dp, top = 80.dp)
                 .size(56.dp),
             shape = AppShapes.panel,
@@ -3033,7 +3046,6 @@ private fun ClassScreen(
                 )
             }
         }
-
         // 「是否已滚离顶部」→ 顶栏收起 Kicker 并变薄。顶栏画在 AIClassroomApp 里，
         // 读不到这里的 listState，所以用文件级状态搭桥（比一路透传 LazyListState 干净）。
         val scrolledNow by remember(listState) {
@@ -3074,26 +3086,8 @@ private fun ClassScreen(
                     )
                 }
             },
-            trailingActions = {
-                if (musicTopBar.isNotEmpty()) {
-                    PluginUiTopBarActions(
-                        bindings = musicTopBar,
-                        states = pluginStates,
-                        palette = palette,
-                        onEvent = onPluginUiEvent,
-                        stateVersions = pluginStateVersions,
-                        userImages = pluginUserImages,
-                        userImageFits = pluginUserImageFits,
-                    )
-                }
-                IconButton(
-                    onClick = onClassMenu,
-                    modifier = Modifier.size(34.dp),
-                    colors = IconButtonDefaults.iconButtonColors(contentColor = DesignTokens.Accent)
-                ) {
-                    Icon(Icons.Default.Tune, contentDescription = "打开课堂菜单", modifier = Modifier.size(20.dp))
-                }
-            },
+            // 音乐 / 设置留在顶栏（那里本来就有一份），输入区不再重复放。
+            trailingActions = {},
             modifier = Modifier.align(Alignment.BottomCenter)
         )
         val failureNotice by remember {
@@ -3457,8 +3451,8 @@ private fun ChatInputBar(
                 OutlinedTextField(
                     input,
                     onInput,
-                    // 右侧让出的宽度要同时容纳「音乐」「设置」「发送」三个键，否则文字会压到它们下面。
-                    Modifier.fillMaxWidth().padding(end = if (compact) 124.dp else 132.dp),
+                    // 右侧只让给「发送」和它上方的合并键。
+                    Modifier.fillMaxWidth().padding(end = if (compact) 48.dp else 58.dp),
                     placeholder = { Text("输入学习目标或问题") },
                     minLines = if (compact) 1 else 3,
                     maxLines = if (compact) 1 else 5,
