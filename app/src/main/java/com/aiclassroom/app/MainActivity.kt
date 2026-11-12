@@ -3,6 +3,7 @@ package com.aiclassroom.app
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.util.LruCache
+import com.aiclassroom.app.media.MediaAccess
 import com.aiclassroom.app.media.MusicLauncher
 import com.aiclassroom.app.media.NowPlaying
 import com.aiclassroom.app.web.WebCaptureEngine
@@ -361,6 +362,7 @@ import com.aiclassroom.app.util.extractPngCardText
 import com.aiclassroom.app.util.formatCharacterCards
 import com.aiclassroom.app.util.MEDIA_DISABLED_HINT
 import com.aiclassroom.app.util.MEDIA_NO_SESSION_HINT
+import com.aiclassroom.app.util.MEDIA_PERMISSION_HINT
 import com.aiclassroom.app.util.TOOL_LOOP_MAX_ROUNDS
 import com.aiclassroom.app.util.TOOL_LOG_TAG
 import com.aiclassroom.app.util.NO_CONTENT_REPLY
@@ -993,22 +995,28 @@ private fun AIClassroomApp(
             // 没授权时给的是 media_permission_required + 一句「去哪儿开」的提示，
             // 而不是一个空曲目 —— 静默失败会让插件作者以为自己的代码写错了。
             mediaCurrentImpl = {
-                var track = NowPlaying.current()
-                if (track == null) {
-                    // 兜底：主动向系统要一次活跃会话。
-                    //
-                    // `refreshIfIdle` 只挂在 onNotificationPosted 上 —— 应用重装后、
-                    // 或播放器压根不发通知时，那个回调永远不来，sessions 表一直是空的，
-                    // 于是插件读到的永远是「未在播放」，进度条也就永远 0:00。
-                    // 这里在「真拿不到」时补一次扫描：正常情况零开销（current() 非空直接跳过）。
-                    withContext(Dispatchers.IO) { runCatching { NowPlaying.refresh() } }
-                    track = NowPlaying.current()
-                }
-                when {
-                    !mediaToolsEnabled ->
-                        PluginResult.Failure("media_disabled", MEDIA_DISABLED_HINT)
-                    track == null -> PluginResult.Success(mediaJson(context, null, mediaArtworkCache))
-                    else -> PluginResult.Success(mediaJson(context, track, mediaArtworkCache))
+                // 顺序很重要：先判开关，再判通知使用权，最后才去读会话。
+                //
+                // 以前没有中间那道权限判断，于是「没授权」被当成「没会话」：
+                // getActiveSessions 抛 SecurityException → syncSessions 静默吞掉 →
+                // current() 恒为 null → 返回一个只有 playing:false 的空曲目。
+                // 用户看到的是「未在播放 / 打开酷狗放一首歌试试」，怎么点播放都没反应，
+                // 却完全不知道真正的原因是权限没给。
+                if (!mediaToolsEnabled) {
+                    PluginResult.Failure("media_disabled", MEDIA_DISABLED_HINT)
+                } else if (!MediaAccess.isGranted(context)) {
+                    PluginResult.Failure("media_permission_required", MEDIA_PERMISSION_HINT)
+                } else {
+                    var track = NowPlaying.current()
+                    if (track == null) {
+                        // 兜底：主动向系统要一次活跃会话。
+                        // `refreshIfIdle` 只挂在 onNotificationPosted 上 —— 应用重装后、
+                        // 或播放器压根不发通知时，那个回调永远不来，sessions 表一直是空的。
+                        // 正常情况零开销（current() 非空直接跳过）。
+                        withContext(Dispatchers.IO) { runCatching { NowPlaying.refresh() } }
+                        track = NowPlaying.current()
+                    }
+                    PluginResult.Success(mediaJson(context, track, mediaArtworkCache))
                 }
             },
             mediaControlImpl = { action ->
@@ -1017,7 +1025,8 @@ private fun AIClassroomApp(
                 when {
                     !mediaToolsEnabled -> PluginResult.Failure("media_disabled", MEDIA_DISABLED_HINT)
                     // 一键播放：会话在不在都要处理，所以排在 track == null 之前。
-                    // 权限仍是 media.control，不新开权限。
+                    // **也排在权限判断之前** —— 它只是用 intent 拉起播放器 App，
+                    // 不需要读别人的会话；放在权限后面会让「还没授权」的人连启动都做不到。
                     normalized == "playorshow" -> {
                         val outcome = MusicLauncher.playOrLaunch(context)
                         PluginResult.Success(
@@ -1029,6 +1038,10 @@ private fun AIClassroomApp(
                                 .toString(),
                         )
                     }
+
+                    // 同 mediaCurrent：没权限却按「没会话」报，会让用户以为播放器没开。
+                    !MediaAccess.isGranted(context) ->
+                        PluginResult.Failure("media_permission_required", MEDIA_PERMISSION_HINT)
 
                     track == null -> PluginResult.Failure("media_no_session", MEDIA_NO_SESSION_HINT)
                     normalized == "play" || normalized == "pause" ||
@@ -4985,6 +4998,7 @@ private fun ModelScreen(
     /** 手动查到新版本时，把结果交给上层弹更新框。 */
     onShowUpdate: (com.aiclassroom.app.model.UpdateInfo) -> Unit = {}
 ) {
+    val context = LocalContext.current
     // 自定义插件库：json 是唯一真相，改一次就序列化回上层（写 prefs + 触发 registry 重建）。
     val customTools = remember(customToolsJson) { CustomToolSpec.listFromJson(customToolsJson) }
     val providers = listOf("OpenAI", "DeepSeek", "通义千问", "自定义")
@@ -5357,8 +5371,39 @@ private fun ModelScreen(
                     mediaToolsEnabled, onMediaToolsEnabledChange,
                     expanded = "音乐" in expandedPluginRows,
                     onToggleExpanded = { expandedPluginRows = togglePluginConfig(expandedPluginRows, "音乐") },
-                    notes = listOf("与网络、生图是三个独立开关：音乐只读系统「正在播放」并转发播放/暂停，不发任何网络请求。关闭后 media.* 在本地直接拒绝，插件拿不到任何播放信息。需要系统「通知使用权」，在系统设置 → 通知使用权里给 AI Classroom 打开。")
-                )
+                    notes = listOf("与网络、生图是三个独立开关：音乐只读系统「正在播放」并转发播放/暂停，不发任何网络请求。关闭后 media.* 在本地直接拒绝，插件拿不到任何播放信息。")
+                ) {
+                    // 通知使用权是「能不能读到播放信息」的硬前提，却藏在系统设置里 ——
+                    // 以前这里只写一句说明，用户看完也不知道点哪；现在直接给状态 + 按钮。
+                    // 展开时每秒复查一次：从系统设置授权回来，这里会立刻变成「已授权」。
+                    var granted by remember { mutableStateOf(MediaAccess.isGranted(context)) }
+                    LaunchedEffect("音乐" in expandedPluginRows) {
+                        while ("音乐" in expandedPluginRows) {
+                            granted = MediaAccess.isGranted(context)
+                            delay(1_000)
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            if (granted) Icons.Default.Check else Icons.Default.Error,
+                            null,
+                            tint = if (granted) MaterialTheme.colorScheme.primary else DesignTokens.Accent,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (granted) "通知使用权已授权" else "还没有通知使用权，读不到歌名也控制不了播放",
+                            color = if (granted) Muted else DesignTokens.Accent,
+                            fontSize = DesignTokens.Type.Small,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    if (!granted) {
+                        OutlinedButton(onClick = { MediaAccess.openSettings(context) }) {
+                            Text("去授权通知使用权", color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
                 PluginRow(
                     Icons.Default.Movie, "视频工具", 1, "从本地视频按画面变化自适应抽帧，交给视觉模型理解",
                     videoToolsEnabled, onVideoToolsEnabledChange,

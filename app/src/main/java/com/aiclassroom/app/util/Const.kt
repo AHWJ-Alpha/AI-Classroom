@@ -17,6 +17,10 @@ internal const val MEDIA_DISABLED_HINT =
     "音乐插件已在「设置 → 插件 → 音乐」关闭：本次没有读取也没有控制任何播放器"
 
 /** 当前没有活跃的播放会话时的提示。 */
+/** 通知使用权没授予时的提示：这是「读不到播放信息」最常见的原因，必须说清楚去哪儿开。 */
+internal const val MEDIA_PERMISSION_HINT =
+    "还没有「通知使用权」：系统不允许本应用读取其他 App 的播放状态，所以读不到歌名，也无法控制播放。" +
+        " 去「设置 → 插件 → 音乐 → 授权通知使用权」打开，或在系统设置的「通知使用权」列表里给 AI Classroom 授权。"
 internal const val MEDIA_NO_SESSION_HINT =
     "当前没有正在播放的播放器。先打开酷狗 / B 站音乐等 App 播放一首，再回来试。"
 

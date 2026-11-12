@@ -208,15 +208,41 @@ function onToggleShow(ctx) {
   host.requestUiRefresh();
 }
 
-/** 播放 / 暂停：按钮显不显眼由 ui.json 决定，这里只发指令 + 立刻刷新。 */
+/**
+ * 播放 / 暂停。
+ *
+ * 关键点：没有会话时（播放器被系统杀掉、或这台机器从没播放过）直接发 play
+ * 会得到 media_no_session，界面上就是「点了没反应」。这时要退回到 playOrShow：
+ * 它用 intent 把上次用过的播放器拉起来，等会话出现再发 play，用户才真的听到声音。
+ */
 function onToggle(ctx) {
   var action = state.playing ? 'pause' : 'play';
   var result = host.mediaControl(action);
-  if (result && result.ok) {
+  var ok = !!(result && result.ok);
+  var code = (result && result.code) || '';
+  // 只有「想播但播不了」才退回拉起播放器；暂停失败不该顺手把歌打开。
+  if (!ok && action === 'play' && (code === 'media_no_session' || code === 'media_control_failed')) {
+    var fallback = host.mediaControl('playOrShow');
+    if (fallback && fallback.ok) {
+      var info = {};
+      try { info = JSON.parse(fallback.value) || {}; } catch (e) { info = {}; }
+      if (info.state === 'playing' || info.state === 'resumed' || info.state === 'launched') {
+        result = fallback;
+        ok = true;
+      } else if (info.message) {
+        hintArtist = String(info.message);
+        hintTicks = 4;
+      }
+    }
+  }
+  if (ok) {
     state.playing = (action === 'play');
     optimisticTicks = 2;
   } else {
-    ctx.log('播放控制失败：' + ((result && result.code) || 'unknown') + ' ' + ((result && result.message) || ''));
+    // 失败要看得见：把原因写到歌手位几秒，否则用户只觉得按钮点下去没动。
+    hintArtist = (result && result.message) ? String(result.message) : '播放器没有响应';
+    hintTicks = 4;
+    ctx.log('播放控制失败：' + (code || 'unknown') + ' ' + ((result && result.message) || ''));
   }
   host.requestUiRefresh();
 }
