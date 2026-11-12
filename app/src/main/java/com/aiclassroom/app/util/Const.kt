@@ -31,13 +31,14 @@ internal const val TOOL_LOG_TAG = "ToolLoop"
 internal const val NO_CONTENT_REPLY = "模型没有返回内容。"
 
 internal const val RELEASE_NOTES_TEXT = """
-# AI Classroom 4.0.2
+# AI Classroom 4.0.3
 
 ## 插件
 - 默认插件只保留四个功能件：**沉浸模式 / 音乐 / 夜梦画室（生图配置）/ 时间流动**。
 - 移除两个测试件：回复徽章、宠物猫。老设备升级时会自动清理，不用手动删。
 
 ## 触感反馈
+- **修复小米等机型完全没震动**：改为走系统触感通道，直接调用 vibrator 会被这些 ROM 丢掉。
 - 设置里滑条调档：关闭 / 轻 / 中 / 强 / 极大，滑到哪档就用哪档强度震一次。
 - 改用系统调校过的震动基元，线性马达上是干脆的一下，不是嗡嗡的转子感。
 - 点按给完整一记；滚动列表全程安静；拖底栏换位、拖滑条每跨一格震一下。

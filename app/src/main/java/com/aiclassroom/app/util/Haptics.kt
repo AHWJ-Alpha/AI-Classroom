@@ -64,9 +64,28 @@ object Haptics {
         else -> 1.0f
     }
 
+    /**
+     * 宿主 View（弱引用）。系统触感通道要靠它 —— 见 [tap] 里的说明。
+     */
+    @Volatile
+    private var hostView: java.lang.ref.WeakReference<android.view.View>? = null
+
+    fun attach(view: android.view.View) {
+        hostView = java.lang.ref.WeakReference(view)
+    }
+
     fun tap(context: Context, kind: Kind = Kind.TAP) {
         val lv = level
         if (lv == OFF) return
+        // 首选系统触感通道。
+        // 实测：小米把应用直接调 vibrator.vibrate() 的请求判成 `ignored_unsupported` 丢掉
+        // （dumpsys 里能看见），Composition 和 createPredefined 都一样，等于完全没震动；
+        // 而 performHapticFeedback 由 ViewRootImpl 转给厂商自己的触感实现，各 ROM 都认。
+        val view = hostView?.get()
+        if (view != null) {
+            val ok = runCatching { view.performHapticFeedback(constantFor(kind, lv)) }.getOrDefault(false)
+            if (ok) return
+        }
         runCatching {
             val vibrator = vibratorOf(context) ?: return
             if (!vibrator.hasVibrator()) return
@@ -78,6 +97,21 @@ object Haptics {
                 vibrator.vibrate(effect)
             }
         }.onFailure { Log.w("Haptics", it.message ?: "vibrate failed") }
+    }
+
+    /** 档位 + 手势类型 → 系统触感常量。档位靠「换更重的常量」体现。 */
+    private fun constantFor(kind: Kind, level: Int): Int {
+        val hfc = android.view.HapticFeedbackConstants::class.java
+        return when (kind) {
+            Kind.TICK -> android.view.HapticFeedbackConstants.CLOCK_TICK
+            Kind.SETTLE -> android.view.HapticFeedbackConstants.CONFIRM
+            else -> when (level) {
+                LIGHT -> android.view.HapticFeedbackConstants.VIRTUAL_KEY
+                MEDIUM -> android.view.HapticFeedbackConstants.KEYBOARD_TAP
+                STRONG -> android.view.HapticFeedbackConstants.LONG_PRESS
+                else -> android.view.HapticFeedbackConstants.CONFIRM
+            }
+        }
     }
 
     private fun vibratorOf(context: Context): Vibrator? =
@@ -93,31 +127,27 @@ object Haptics {
      * - TICK → 同基元压到一半强度：滑动刻度，不能盖过点按
      * - SETTLE → PRIMITIVE_THUD：沉一点的收尾
      */
+    /**
+     * 一律走**预置效果**（EFFECT_TICK / CLICK / HEAVY_CLICK），不用 Composition 基元。
+     *
+     * 原因是实测：小米的振动 HAL 把 Composition 的效果判成 `ignored_unsupported`
+     * 直接丢弃（dumpsys 里能看到 `effect | ignored_unsupported`），于是完全没震动；
+     * 同一份代码在 vivo 上却正常。预置效果由各家自己实现，兼容性最好。
+     *
+     * 代价是没有 0..1 的 scale 可调，档位改成「换一个更重的预置效果」：
+     * 轻 → TICK，中 → CLICK，强/极大 → HEAVY_CLICK。
+     */
     private fun effectFor(kind: Kind, level: Int): VibrationEffect? {
-        val scale = scaleFor(level)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val composition = VibrationEffect.startComposition()
-            when (kind) {
-                Kind.TICK -> composition.addPrimitive(
-                    VibrationEffect.Composition.PRIMITIVE_CLICK, (scale * 0.5f).coerceIn(0.05f, 1f)
-                )
-                Kind.SETTLE -> composition.addPrimitive(
-                    VibrationEffect.Composition.PRIMITIVE_THUD, (scale * 0.8f).coerceIn(0.05f, 1f)
-                )
-                else -> composition.addPrimitive(
-                    VibrationEffect.Composition.PRIMITIVE_CLICK, scale
-                )
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        val id = when (kind) {
+            Kind.TICK -> VibrationEffect.EFFECT_TICK
+            Kind.SETTLE -> VibrationEffect.EFFECT_HEAVY_CLICK
+            else -> when (level) {
+                LIGHT -> VibrationEffect.EFFECT_TICK
+                MEDIUM -> VibrationEffect.EFFECT_CLICK
+                else -> VibrationEffect.EFFECT_HEAVY_CLICK
             }
-            return composition.compose()
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val id = when (kind) {
-                Kind.TICK -> VibrationEffect.EFFECT_TICK
-                Kind.SETTLE -> VibrationEffect.EFFECT_HEAVY_CLICK
-                else -> VibrationEffect.EFFECT_CLICK
-            }
-            return VibrationEffect.createPredefined(id)
-        }
-        return null
+        return VibrationEffect.createPredefined(id)
     }
 }

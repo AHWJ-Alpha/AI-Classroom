@@ -2046,6 +2046,8 @@ private fun AIClassroomApp(
     Box(Modifier.fillMaxSize()) {
     // 点别处时要能主动收焦点：Compose 不会自动做这件事。
     val focusManager = LocalFocusManager.current
+    // 把宿主 View 交给 Haptics：系统触感通道要靠它，直接 vibrate() 在小米上会被丢弃。
+    Haptics.attach(LocalView.current)
     Scaffold(
         // hapticTouch：全局触感层。挂在根布局上，所有按键都有了反馈，
         // 而且能区分「点按」和「滑动」——不用给每个按钮单独接线。
