@@ -14,6 +14,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import kotlinx.coroutines.launch
 import android.graphics.BitmapFactory
 import android.util.Log
+import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -116,6 +117,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -250,6 +252,33 @@ private fun snapAnchorTo(base: UiAnchor?, offset: IntOffset, width: Int, height:
     return GRID9[row * 3 + col]
 }
 
+
+/**
+ * 震动的统一入口。
+ *
+ * 为什么用 `View.performHapticFeedback` 而不是 Compose 的 `LocalHapticFeedback`：
+ * 后者在 Compose 1.7 只有 LongPress / TextHandleMove 两档，区分不出「轻点一下」
+ * 和「拖到位了」；而这里恰恰需要不同操作给不同手感。
+ *
+ * 参数用 [android.view.HapticFeedbackConstants] 的常量，调用方自己挑档位：
+ * - `VIRTUAL_KEY`：轻点（按键感，最轻）
+ * - `TEXT_HANDLE_MOVE`：拖动中的持续微反馈
+ * - `CLOCK_TICK`：滑过一格的刻度感
+ * - `LONG_PRESS`：长按（重）
+ * - `CONFIRM`：操作确已生效（吸附到位、开关切换）
+ */
+@Composable
+internal fun rememberHaptics(): (Int) -> Boolean {
+    val view = LocalView.current
+    return remember(view) {
+        { constant ->
+            // 个别设备把系统「触摸震动」关了会抛异常，这里不该影响主流程。
+            // 返回值是「系统是否接受这次震动」：false 说明这个常量在当前 ROM 上不被支持，
+            // 排查时看日志比盲猜快。
+            runCatching { view.performHapticFeedback(constant) }.getOrDefault(false)
+        }
+    }
+}
 /**
  * 可拖动的子节点。
  *
@@ -269,6 +298,19 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
     var scale by remember(positionKey) { mutableFloatStateOf(1f) }
     val boxSize = remember(positionKey) { mutableStateOf(IntSize.Zero) }
     val snapToGrid = node.snapTo == "grid9"
+    // ---- 交互反馈 ----
+    // 浮窗节点是自绘的，没有 Material 的涟漪；以前按下到松手之间界面毫无变化，
+    // 用户会觉得「点了没反应」（尤其连点播放/暂停这种无状态切换的按钮时）。
+    // 这里补两样：按下缩小 + 压暗，以及按操作类型分级的震动。
+    val haptics = rememberHaptics()
+    val interactive = node.onTap != null || node.onDoubleTap != null || node.onLongPress != null
+    var pressed by remember(node.path) { mutableStateOf(false) }
+    // 90ms：短到跟手，又不至于像闪烁。松手用同一时长回弹。
+    //
+    // 缩放是主要的可见线索：浅色圆本身就和白底接近，单靠 alpha 混合几乎看不出来（实测只差 4/255）。
+    // alpha 只作辅助，让深色主题下也有变化。
+    val pressScale by animateFloatAsState(if (pressed) 0.88f else 1f, tween(90), label = "nodePressScale")
+    val pressDim by animateFloatAsState(if (pressed) 0.72f else 1f, tween(90), label = "nodePressDim")
     // 屏幕尺寸（px）：拖动时用来夹住 offset，避免把内容拖出可视区。
     val screenDensity = LocalDensity.current
     val screenConfig = LocalConfiguration.current
@@ -284,6 +326,9 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
         if (size.width > 0) {
             anchor = snapAnchorTo(anchor, offset, size.width, size.height)
             offset = IntOffset.Zero
+            // 吸附到位给一记「确认」震动：这是拖动真正产生结果的瞬间，
+            // 比拖的过程中一直震更有意义。
+            haptics(HapticFeedbackConstants.CONFIRM)
         }
     }
 
@@ -324,12 +369,28 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
             .offset(x = dx, y = dy)
             .onSizeChanged { boxSize.value = it }
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                // 拖动缩放（scale）与按压反馈（pressScale）叠在一起：两件事互不干扰。
+                scaleX = scale * pressScale
+                scaleY = scale * pressScale
+                alpha = pressDim
             }
             // 点击 / 长按：独立识别器，手指一移动它自己取消。
             .pointerInput(node.path, node.onDoubleTap) {
                 detectTapGestures(
+                    // 按下立刻有反馈：视觉（缩小+压暗）和触觉（最轻的一档按键感）。
+                    // 手指一移动识别器就取消，tryAwaitRelease 返回 false，pressed 在 finally 里复位，
+                    // 所以拖动浮窗不会留下「一直按着」的视觉残留。
+                    onPress = {
+                        if (interactive) {
+                            pressed = true
+                            haptics(HapticFeedbackConstants.VIRTUAL_KEY)
+                        }
+                        try {
+                            tryAwaitRelease()
+                        } finally {
+                            pressed = false
+                        }
+                    },
                     // 同时挂单击与双击时，单击会被延迟到双击超时之后才触发（Compose 内建行为）——
                     // 所以插件里「双击展开」的节点不要再挂 onTap，否则点击会有 300ms 延迟。
                     onDoubleTap = node.onDoubleTap?.let { entry ->
@@ -339,13 +400,29 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
                         { paint.onEvent(PluginUiEvent(paint.pluginId, entry, "tap")) }
                     },
                     onLongPress = node.onLongPress?.let { entry ->
-                        { paint.onEvent(PluginUiEvent(paint.pluginId, entry, "longPress")) }
+                        {
+                            // 长按比轻点重一档，且要在触发时机上区分开 ——
+                            // 轻点是「手落下」，长按是「手留住」，两者用不同常量才摸得出差别。
+                            haptics(HapticFeedbackConstants.LONG_PRESS)
+                            paint.onEvent(PluginUiEvent(paint.pluginId, entry, "longPress"))
+                        }
                     },
                 )
             }
             // 拖动 + 双指缩放：一个识别器同时给平移和 zoom。
             .pointerInput(node.path, node.snapTo, node.scaleable, screenW, screenH) {
+                // 拖动过程中的「沙沙」感：每 400ms 一次极轻的刻度震动。
+                // 不做成每帧都震 —— 那样是嗡嗡响，不是反馈。
+                var lastDragTick = 0L
                 detectTransformGestures { _, pan, zoom, _ ->
+                    if (pan != Offset.Zero || zoom != 1f) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastDragTick > 400) {
+                            lastDragTick = now
+                            // CLOCK_TICK 而不是 TEXT_HANDLE_MOVE：
+                            haptics(HapticFeedbackConstants.CLOCK_TICK)
+                        }
+                    }
                     if (node.scaleable && zoom != 1f) {
                         scale = (scale * zoom).coerceIn(0.5f, 3f)
                     } else if (pan != Offset.Zero) {
@@ -1246,8 +1323,13 @@ private const val TWO_PI = (Math.PI * 2).toFloat()
 private fun PluginButton(node: UiNode, paint: Paint, modifier: Modifier) {
     val label = node.label ?: return
     val entry = node.onTap
+    val haptics = rememberHaptics()
     val onClick: (() -> Unit)? = if (entry == null) null else {
-        { paint.onEvent(PluginUiEvent(paint.pluginId, entry, "tap")) }
+        {
+            // Surface 自带涟漪（视觉高亮），这里补触觉 —— 两者一起才算「按下去有反应」。
+            haptics(HapticFeedbackConstants.VIRTUAL_KEY)
+            paint.onEvent(PluginUiEvent(paint.pluginId, entry, "tap"))
+        }
     }
     val shape = shapeOf(node.radius ?: UiRadius.CONTROL)
     when (node.style ?: UiButtonStyle.SECONDARY) {
