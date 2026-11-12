@@ -31,7 +31,7 @@ internal const val TOOL_LOG_TAG = "ToolLoop"
 internal const val NO_CONTENT_REPLY = "模型没有返回内容。"
 
 internal const val RELEASE_NOTES_TEXT = """
-# AI Classroom 4.0.3
+# AI Classroom 4.0.2
 
 ## 插件
 - 默认插件只保留四个功能件：**沉浸模式 / 音乐 / 夜梦画室（生图配置）/ 时间流动**。
