@@ -3406,7 +3406,6 @@ private fun Modifier.hapticTouch(context: android.content.Context): Modifier = p
             var lastY = down.position.y
             var travelled = 0f
             var dragging = false
-            var lastTickAt = 0L
             while (true) {
                 val event = awaitPointerEvent(PointerEventPass.Initial)
                 val change = event.changes.firstOrNull { it.id == downId } ?: break
@@ -3418,17 +3417,14 @@ private fun Modifier.hapticTouch(context: android.content.Context): Modifier = p
                     lastX = change.position.x
                     lastY = change.position.y
                     if (!dragging && travelled > slop) dragging = true
-                    if (dragging) {
-                        val now = System.currentTimeMillis()
-                        if (now - lastTickAt > 90L) {
-                            lastTickAt = now
-                            Haptics.tap(context, Haptics.Kind.TICK)
-                        }
-                    }
+
                 }
             }
+            // 滑动的反馈只在**松手**时给一记轻的：
+            // 过程中持续震会变成嗡嗡嗡（实测用户直接听出来很吵），
+            // 而「点按 = 完整一记 / 滑动 = 松手轻响一下」也足够区分两种操作。
             if (dragging) {
-                Haptics.tap(context, Haptics.Kind.SETTLE)
+                if (travelled > slop * 2f) Haptics.tap(context, Haptics.Kind.TICK)
             } else if (System.currentTimeMillis() - startedAt < 500L) {
                 Haptics.tap(context, Haptics.Kind.TAP)
             }
