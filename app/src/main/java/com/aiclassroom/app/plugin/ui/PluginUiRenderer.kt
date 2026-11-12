@@ -116,7 +116,9 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalConfiguration
+import com.aiclassroom.app.util.Haptics
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
@@ -269,13 +271,16 @@ private fun snapAnchorTo(base: UiAnchor?, offset: IntOffset, width: Int, height:
  */
 @Composable
 internal fun rememberHaptics(): (Int) -> Boolean {
-    val view = LocalView.current
-    return remember(view) {
+    val context = LocalContext.current
+    return remember(context) {
         { constant ->
-            // 个别设备把系统「触摸震动」关了会抛异常，这里不该影响主流程。
-            // 返回值是「系统是否接受这次震动」：false 说明这个常量在当前 ROM 上不被支持，
-            // 排查时看日志比盲猜快。
-            runCatching { view.performHapticFeedback(constant) }.getOrDefault(false)
+            // 具体强度交给 Haptics（设置里可调「关闭 / 轻 / 中 / 强 / 极大」）。
+            // 这里保留常量参数只是为了让调用点能表达「这次是轻点还是长按」——
+            // 长按和吸附用更长的时长，振幅仍然由设置统一决定。
+            val heavy = constant == HapticFeedbackConstants.LONG_PRESS ||
+                constant == HapticFeedbackConstants.CONFIRM
+            Haptics.tap(context, heavy = heavy)
+            true
         }
     }
 }

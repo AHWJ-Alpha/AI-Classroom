@@ -364,6 +364,7 @@ import com.aiclassroom.app.util.mergeMemoryCards
 import com.aiclassroom.app.util.normalizeCharacterCardJson
 import com.aiclassroom.app.util.extractPngCardText
 import com.aiclassroom.app.util.formatCharacterCards
+import com.aiclassroom.app.util.Haptics
 import com.aiclassroom.app.util.MEDIA_DISABLED_HINT
 import com.aiclassroom.app.util.MEDIA_NO_SESSION_HINT
 import com.aiclassroom.app.util.MEDIA_PERMISSION_HINT
@@ -440,6 +441,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // 音乐插件读播放信息前先拿到 application context；服务常驻时这条是空操作。
         NowPlaying.init(applicationContext)
+        Haptics.load(applicationContext)
         setContent {
             AIClassroomTheme {
                 // 开屏 CG：**只在安装新版本后的第一次启动播放**。
@@ -5118,6 +5120,8 @@ private fun ModelScreen(
     onShowUpdate: (com.aiclassroom.app.model.UpdateInfo) -> Unit = {}
 ) {
     val context = LocalContext.current
+    // 触感强度：设置页改完立刻生效，不用重启。
+    var hapticLevel by remember { mutableStateOf(Haptics.level) }
     // ---- 通知使用权（音乐插件读播放信息的前提）----
     // 放在函数级而不是 LazyColumn 的 item 里：item 滚出屏幕会被回收，状态和轮询都会断。
     // 轮询是为了「用户去系统设置授权完、切回来，界面立刻变成已授权」，
@@ -5714,6 +5718,44 @@ private fun ModelScreen(
                 }
                 TextButton(onClick = onImportPlugin) {
                     Text("⊕ 导入插件文件（.zip / .aip）", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        item {
+            InfoCard {
+                Text("触感反馈", fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "点击、长按、拖动时的震动强度。调「极大」如果还是不明显，" +
+                        "说明系统层的「触感反馈」被调低了 —— 去系统设置 → 声音与振动里确认一下。",
+                    color = Muted, fontSize = DesignTokens.Type.Small, lineHeight = 18.sp
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Haptics.LABELS.forEachIndexed { value, label ->
+                        val selected = hapticLevel == value
+                        Surface(
+                            onClick = {
+                                hapticLevel = value
+                                Haptics.save(context, value)
+                                // 选完立刻震一下，方便当场对比强弱。
+                                Haptics.tap(context)
+                            },
+                            shape = AppShapes.button,
+                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(DesignTokens.Border.Hairline, MaterialTheme.colorScheme.outline),
+                        ) {
+                            Text(
+                                label,
+                                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                fontSize = DesignTokens.Type.Small,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
                 }
             }
         }
