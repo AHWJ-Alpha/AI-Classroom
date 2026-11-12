@@ -210,6 +210,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.sp
 import com.aiclassroom.app.ui.components.AppDialogBase
@@ -3023,29 +3024,20 @@ private fun ClassScreen(
 
         // 悬浮的沉浸（全屏）键：顶栏那个仍然在，这个是为了手够得到而额外放的。
         // 56dp 比顶栏的 34dp 大一圈；半透明底 + 细描边，压在消息上也不糊。
-        Surface(
+        // 复用「到首行/底行」那个组件（FloatingIconAction）：
+        // 圆形 Pill + 同样的 Fab 尺寸 + 细描边 + 强调色图标，两处手感完全一致。
+        FloatingIconAction(
+            icon = if (immersiveMode) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+            palette = palette,
             onClick = { onImmersiveChange(!immersiveMode) },
             modifier = Modifier
                 // zIndex 必须给：这个 Box 里后面还有考试横幅等子项，按声明顺序会盖住悬浮键（实测过）。
                 .zIndex(10f)
                 .align(Alignment.TopEnd)
                 // top 取 80dp：正上方常驻「存档考试」横幅，贴边会被它的「回看」按钮挡住。
-                .padding(end = 10.dp, top = 80.dp)
-                .size(56.dp),
-            shape = AppShapes.panel,
-            color = palette.surface.copy(alpha = 0.90f),
-            border = BorderStroke(DesignTokens.Border.Hairline, palette.outline),
-            shadowElevation = 2.dp,
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    if (immersiveMode) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                    contentDescription = if (immersiveMode) "退出沉浸模式" else "进入沉浸模式",
-                    tint = palette.muted,
-                    modifier = Modifier.size(26.dp),
-                )
-            }
-        }
+                .padding(end = 10.dp, top = 80.dp),
+            contentDescription = if (immersiveMode) "退出沉浸模式" else "进入沉浸模式",
+        )
         // 「是否已滚离顶部」→ 顶栏收起 Kicker 并变薄。顶栏画在 AIClassroomApp 里，
         // 读不到这里的 listState，所以用文件级状态搭桥（比一路透传 LazyListState 干净）。
         val scrolledNow by remember(listState) {
@@ -3418,6 +3410,8 @@ private fun ChatInputBar(
     trailingActions: @Composable RowScope.() -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    // 输入框是否处于编辑状态：决定要不要从单行撑到两行。
+    var inputFocused by remember { mutableStateOf(false) }
     Surface(
         modifier = modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 6.dp).padding(bottom = if (liftBottom) LocalBottomBarLift.current else 0.dp),
         color = palette.surface,
@@ -3451,10 +3445,14 @@ private fun ChatInputBar(
                 OutlinedTextField(
                     input,
                     onInput,
-                    // 右侧只让给「发送」和它上方的合并键。
-                    Modifier.fillMaxWidth().padding(end = if (compact) 48.dp else 58.dp),
+                    // 右侧让给「合并键 + 发送」这一行。
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(end = if (compact) 88.dp else 92.dp)
+                        .onFocusChanged { inputFocused = it.isFocused },
                     placeholder = { Text("输入学习目标或问题") },
-                    minLines = if (compact) 1 else 3,
+                    // 平时保持最小单行，把纵向空间让给消息；**只有点进来编辑时才两行**。
+                    minLines = if (compact) 1 else if (inputFocused) 2 else 1,
                     maxLines = if (compact) 1 else 5,
                     singleLine = compact,
                     shape = AppShapes.control,
@@ -3466,11 +3464,11 @@ private fun ChatInputBar(
                         unfocusedContainerColor = palette.card
                     )
                 )
-                // 右侧一列：上面是「模型 + 推理」合并键，下面是「音乐 / 设置 / 发送」。
-                // 合并键正好坐在发送键上方那一片空白里，不额外占一行高度。
-                Column(
+                // 模型 + 推理合并键和发送键**同一条中心线**：左合并键、右发送。
+                Row(
                     Modifier.align(Alignment.BottomEnd).padding(end = 5.dp, bottom = 5.dp),
-                    horizontalAlignment = Alignment.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     IconButton(
                         onClick = { modelMenuOpen = true; reasoningMenuOpen = true },
@@ -3483,11 +3481,6 @@ private fun ChatInputBar(
                             modifier = Modifier.size(18.dp),
                         )
                     }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                    trailingActions()
                 Button(
                     onClick = onSend,
                     enabled = !isLoading,
@@ -3507,7 +3500,6 @@ private fun ChatInputBar(
                         Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp), tint = palette.onButton)
                     }
                 }
-                    }
                 }
             }
         }
