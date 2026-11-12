@@ -4999,6 +4999,18 @@ private fun ModelScreen(
     onShowUpdate: (com.aiclassroom.app.model.UpdateInfo) -> Unit = {}
 ) {
     val context = LocalContext.current
+    // ---- 通知使用权（音乐插件读播放信息的前提）----
+    // 放在函数级而不是 LazyColumn 的 item 里：item 滚出屏幕会被回收，状态和轮询都会断。
+    // 轮询是为了「用户去系统设置授权完、切回来，界面立刻变成已授权」，
+    // 否则要杀进程重进才刷新，用户会以为没生效。
+    var mediaGranted by remember { mutableStateOf(MediaAccess.isGranted(context)) }
+    var showMediaPermHelp by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            mediaGranted = MediaAccess.isGranted(context)
+            delay(1_500)
+        }
+    }
     // 自定义插件库：json 是唯一真相，改一次就序列化回上层（写 prefs + 触发 registry 重建）。
     val customTools = remember(customToolsJson) { CustomToolSpec.listFromJson(customToolsJson) }
     val providers = listOf("OpenAI", "DeepSeek", "通义千问", "自定义")
@@ -5366,17 +5378,8 @@ private fun ModelScreen(
                     expanded = "生图" in expandedPluginRows,
                     onToggleExpanded = { expandedPluginRows = togglePluginConfig(expandedPluginRows, "生图") }
                 )
-                // 通知使用权是「能不能读到播放信息」的硬前提，但它藏在系统设置里，
-                // 而且「音乐」这一行要展开两层才看得到里面的按钮 —— 用户找不到入口，
-                // 就会以为这个功能坏了。所以状态提到行描述里，不展开也能看见。
-                // 每秒复查：从系统设置授权回来，这里和描述都会立刻变。
-                var mediaGranted by remember { mutableStateOf(MediaAccess.isGranted(context)) }
-                LaunchedEffect(mediaToolsEnabled) {
-                    while (true) {
-                        mediaGranted = MediaAccess.isGranted(context)
-                        delay(1_500)
-                    }
-                }
+                // 状态与轮询都在 ModelScreen 函数开头声明，这里只读 ——
+                // 放在 LazyColumn 的 item 里会被滚动回收，状态和轮询都会跟着断。
                 PluginRow(
                     Icons.Default.PlayArrow, "音乐", 3,
                     if (mediaGranted) "读取正在播放的歌名/歌手/封面，并控制播放"
@@ -5403,18 +5406,11 @@ private fun ModelScreen(
                         )
                     }
                     if (!mediaGranted) {
-                        // 不需要 root：通知使用权是普通用户在系统设置里勾选即可的特殊权限。
-                        // 国产 ROM 会改写入口，所以这里既给直达按钮，也给文字路径兜底。
-                        Text(
-                            "不需要 root。手机上找不到的话，按这个路径走：" +
-                                "设置 → 应用设置 → 应用管理 → 特殊权限（或右上角 ⋮）→ 通知使用权 → " +
-                                "找到「AI Classroom 音乐」并打开。部分机型在「通知与控制中心 → 通知使用权」。",
-                            color = Muted,
-                            fontSize = DesignTokens.Type.Small,
-                            lineHeight = 18.sp,
-                        )
-                        OutlinedButton(onClick = { MediaAccess.openSettings(context) }) {
-                            Text("去授权通知使用权", color = MaterialTheme.colorScheme.primary)
+                        // 它不在「应用权限」里（那里只有相机、存储这类运行时权限），
+                        // 而是在「特殊权限 / 通知使用权」。用户在那个列表里按权限名找永远找不到，
+                        // 所以先弹窗讲清楚，再给一个直达按钮。
+                        OutlinedButton(onClick = { showMediaPermHelp = true }) {
+                            Text("一键开启通知使用权", color = MaterialTheme.colorScheme.primary)
                         }
                     }
                 }
@@ -5665,6 +5661,32 @@ private fun ModelScreen(
                     }
         }
         item { Text(saveNotice, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(4.dp)) }
+    }
+    // 通知使用权不在「应用权限」里 —— 那里只有相机、存储这类运行时权限。
+    // 它在系统的「特殊权限 → 通知使用权」，名字和行为都不像普通权限，
+    // 所以光给一句提示没用，得弹窗讲清楚再一键跳过去。
+    if (showMediaPermHelp) {
+        AlertDialog(
+            onDismissRequest = { showMediaPermHelp = false },
+            title = { Text("开启「通知使用权」") },
+            text = {
+                Text(
+                    "音乐浮窗要读其他 App 的播放状态，Android 要求先给「通知使用权」。" +
+                        "\n\n它不在「应用权限」列表里，而是在「特殊权限」下，所以按权限名找是找不到的。" +
+                        "\n\n点下面的按钮会直接跳到那个页面，找到「AI Classroom 音乐」打开开关即可。" +
+                        "不需要 root。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showMediaPermHelp = false
+                    MediaAccess.openSettings(context)
+                }) { Text("去开启") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMediaPermHelp = false }) { Text("取消") }
+            },
+        )
     }
 }
 
