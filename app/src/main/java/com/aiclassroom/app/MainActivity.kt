@@ -2048,6 +2048,9 @@ private fun AIClassroomApp(
     Box(Modifier.fillMaxSize()) {
     // 点别处时要能主动收焦点：Compose 不会自动做这件事。
     val focusManager = LocalFocusManager.current
+    // 顶栏菜单键 / 设置键的按下反馈。
+    val topMenuPress = remember { MutableInteractionSource() }
+    val topSettingsPress = remember { MutableInteractionSource() }
     // 把宿主 View 交给 Haptics：系统触感通道要靠它，直接 vibrate() 在小米上会被丢弃。
     Haptics.attach(LocalView.current)
     Scaffold(
@@ -2079,6 +2082,7 @@ private fun AIClassroomApp(
                         horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Md)
                     ) {
                         Surface(
+                            interactionSource = topMenuPress,
                             onClick = {
                                 if (tab != Tab.Class) {
                                     // 不在主界面：先回课堂首页（连带清掉分支详情与二级菜单）
@@ -2090,7 +2094,7 @@ private fun AIClassroomApp(
                                     classMenuOpen = !classMenuOpen
                                 }
                             },
-                            modifier = Modifier.size(DesignTokens.Size.Tile),
+                            modifier = Modifier.size(DesignTokens.Size.Tile).pressFeedback(topMenuPress),
                             shape = RoundedCornerShape(DesignTokens.Radius.Tile),
                             color = palette.card,
                             border = BorderStroke(DesignTokens.Border.Hairline, palette.outline)
@@ -2135,8 +2139,9 @@ private fun AIClassroomApp(
                             userImageFits = uiUserImageFits,
                         )
                         IconButton(
+                            interactionSource = topSettingsPress,
                             onClick = { classMenuOpen = !classMenuOpen },
-                            modifier = Modifier.size(DesignTokens.Size.IconButton),
+                            modifier = Modifier.size(DesignTokens.Size.IconButton).pressFeedback(topSettingsPress),
                             colors = IconButtonDefaults.iconButtonColors(contentColor = DesignTokens.Accent)
                         ) {
                             Icon(Icons.Default.Tune, contentDescription = "打开课堂菜单", modifier = Modifier.size(DesignTokens.Size.Icon))
@@ -3551,6 +3556,7 @@ private fun ChatInputBar(
     // 图片键 / 发送键的按下反馈要用同一个 interactionSource 才能读到 pressed 状态。
     val imagePressSource = remember { MutableInteractionSource() }
     val sendPressSource = remember { MutableInteractionSource() }
+    val mergedPress = remember { MutableInteractionSource() }
     // 输入框是否处于编辑状态：决定要不要从单行撑到两行。
     var inputFocused by remember { mutableStateOf(false) }
     Surface(
@@ -3613,8 +3619,9 @@ private fun ChatInputBar(
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     IconButton(
+                        interactionSource = mergedPress,
                         onClick = { modelMenuOpen = true; reasoningMenuOpen = true },
-                        modifier = Modifier.size(32.dp),
+                        modifier = Modifier.size(32.dp).pressFeedback(mergedPress),
                     ) {
                         Icon(
                             Icons.Default.Memory,
