@@ -59,6 +59,8 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -3502,13 +3504,33 @@ private fun Modifier.hapticTouch(
 @Composable
 private fun Modifier.pressFeedback(source: MutableInteractionSource): Modifier {
     val pressed by source.collectIsPressedAsState()
-    val scale by animateFloatAsState(if (pressed) 0.90f else 1f, tween(90), label = "pressScale")
-    val dim by animateFloatAsState(if (pressed) 0.72f else 1f, tween(90), label = "pressDim")
-    return graphicsLayer {
-        scaleX = scale
-        scaleY = scale
-        alpha = dim
-    }
+    // 按下：快而小（90ms）—— 要跟手；松开：弹簧回弹，带一点过冲，手感才「活」。
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.86f else 1f,
+        animationSpec = if (pressed) tween(90) else spring(dampingRatio = 0.42f, stiffness = 900f),
+        label = "pressScale",
+    )
+    // 高亮从 0 涨到 1，画在内容**底下**：像一滩光从按钮中心渗出来。
+    val glow by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = if (pressed) tween(110) else tween(220),
+        label = "pressGlow",
+    )
+    val accent = MaterialTheme.colorScheme.primary
+    val surfaceTint = MaterialTheme.colorScheme.surfaceVariant
+    return this
+        .drawBehind {
+            if (glow > 0.01f) {
+                // 先铺一层接近主题色的底，再叠主色，深浅底上都能看出来。
+                val r = size.minDimension / 2f * (0.72f + 0.28f * glow)
+                drawCircle(color = surfaceTint.copy(alpha = 0.55f * glow), radius = r)
+                drawCircle(color = accent.copy(alpha = 0.22f * glow), radius = r)
+            }
+        }
+        .graphicsLayer {
+            scaleX = scale
+            scaleY = scale
+        }
 }
 @Composable
 private fun FloatingIconAction(icon: ImageVector, palette: AppPalette, onClick: () -> Unit, modifier: Modifier = Modifier, contentDescription: String? = null) {
