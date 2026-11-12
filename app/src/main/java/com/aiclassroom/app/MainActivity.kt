@@ -176,6 +176,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.layout
@@ -2036,7 +2037,9 @@ private fun AIClassroomApp(
     CompositionLocalProvider(LocalAppHazeState provides hazeState) {
     Box(Modifier.fillMaxSize()) {
     Scaffold(
-        modifier = Modifier.fillMaxSize().hazeSource(hazeState),
+        // hapticTouch：全局触感层。挂在根布局上，所有按键都有了反馈，
+        // 而且能区分「点按」和「滑动」——不用给每个按钮单独接线。
+        modifier = Modifier.fillMaxSize().hazeSource(hazeState).hapticTouch(context),
         topBar = { if (!immersiveMode) {
             // 与底栏一致的毛玻璃：内容从栏下透出，避免顶栏像一块死板的白条。
             // 用 TopHazeState 独立于 BottomHazeState —— 同一份 state 会在两处互相干扰模糊源。
@@ -2192,11 +2195,7 @@ private fun AIClassroomApp(
                     )
                     NavigationBarItem(
                         selected = selected,
-                        onClick = {
-                            haptics(HapticFeedbackConstants.VIRTUAL_KEY)
-                            tab = item
-                            classMenuOpen = false
-                        },
+                        onClick = { tab = item; classMenuOpen = false },
                                                 icon = {
                             // 长按拖动才出现的高亮胶囊：圆角/描边取底栏面板同一套 token（Radius.Card + Border.Hairline + outline），平时不加任何底色
                             Box(
@@ -3380,14 +3379,66 @@ private fun ChatMenuOverlay(
 private fun String.shortModelName(): String = substringAfterLast('/').take(20)
 
 @Composable
+
+/**
+ * 全局触感层。
+ *
+ * 挂在根布局上，用一个「从不消费事件」的手势观察器统一发反馈 ——
+ * 这样不必给每个按钮单独接线，也不会漏掉以后新加的按钮。
+ *
+ * 用 [PointerEventPass.Initial] 且不调用 `consume()`：对下层完全透明，
+ * 点击、滚动、拖动、长按都不会被它抢走。
+ *
+ * 三种手感：
+ * - 点按：完整一记，确认「按到了」
+ * - 滑动中：每 90ms 一记短促 tick，像滚轮刻度
+ * - 滑动松手：稍重的收尾，告诉人「停住了」
+ */
+private fun Modifier.hapticTouch(context: android.content.Context): Modifier = pointerInput(Unit) {
+    val slop = viewConfiguration.touchSlop
+    awaitPointerEventScope {
+        while (true) {
+            val first = awaitPointerEvent(PointerEventPass.Initial)
+            val down = first.changes.firstOrNull { it.pressed } ?: continue
+            val downId = down.id
+            val startedAt = System.currentTimeMillis()
+            var lastX = down.position.x
+            var lastY = down.position.y
+            var travelled = 0f
+            var dragging = false
+            var lastTickAt = 0L
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val change = event.changes.firstOrNull { it.id == downId } ?: break
+                if (!change.pressed) break
+                val dx = change.position.x - lastX
+                val dy = change.position.y - lastY
+                if (dx != 0f || dy != 0f) {
+                    travelled += kotlin.math.sqrt(dx * dx + dy * dy)
+                    lastX = change.position.x
+                    lastY = change.position.y
+                    if (!dragging && travelled > slop) dragging = true
+                    if (dragging) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastTickAt > 90L) {
+                            lastTickAt = now
+                            Haptics.tap(context, Haptics.Kind.TICK)
+                        }
+                    }
+                }
+            }
+            if (dragging) {
+                Haptics.tap(context, Haptics.Kind.SETTLE)
+            } else if (System.currentTimeMillis() - startedAt < 500L) {
+                Haptics.tap(context, Haptics.Kind.TAP)
+            }
+        }
+    }
+}
+@Composable
 private fun FloatingIconAction(icon: ImageVector, palette: AppPalette, onClick: () -> Unit, modifier: Modifier = Modifier, contentDescription: String? = null) {
-    // 悬浮键没有任何涟漪，纯靠一记轻震动确认「点到了」。
-    val haptics = rememberHaptics()
     Surface(
-        onClick = {
-            haptics(HapticFeedbackConstants.VIRTUAL_KEY)
-            onClick()
-        },
+        onClick = onClick,
         modifier = modifier.size(DesignTokens.Size.Fab),
         color = palette.surface,
         shape = RoundedCornerShape(DesignTokens.Radius.Pill),
@@ -3485,11 +3536,7 @@ private fun ChatInputBar(
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     IconButton(
-                        onClick = {
-                            haptics(HapticFeedbackConstants.VIRTUAL_KEY)
-                            modelMenuOpen = true
-                            reasoningMenuOpen = true
-                        },
+                        onClick = { modelMenuOpen = true; reasoningMenuOpen = true },
                         modifier = Modifier.size(32.dp),
                     ) {
                         Icon(
@@ -3500,10 +3547,7 @@ private fun ChatInputBar(
                         )
                     }
                 Button(
-                    onClick = {
-                        haptics(HapticFeedbackConstants.VIRTUAL_KEY)
-                        onSend()
-                    },
+                    onClick = onSend,
                     enabled = !isLoading,
                     modifier = Modifier.size(if (compact) 40.dp else 44.dp),
                     shape = AppShapes.button,

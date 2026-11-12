@@ -277,9 +277,12 @@ internal fun rememberHaptics(): (Int) -> Boolean {
             // 具体强度交给 Haptics（设置里可调「关闭 / 轻 / 中 / 强 / 极大」）。
             // 这里保留常量参数只是为了让调用点能表达「这次是轻点还是长按」——
             // 长按和吸附用更长的时长，振幅仍然由设置统一决定。
-            val heavy = constant == HapticFeedbackConstants.LONG_PRESS ||
-                constant == HapticFeedbackConstants.CONFIRM
-            Haptics.tap(context, heavy = heavy)
+            val kind = when (constant) {
+                HapticFeedbackConstants.LONG_PRESS, HapticFeedbackConstants.CONFIRM -> Haptics.Kind.SETTLE
+                HapticFeedbackConstants.CLOCK_TICK, HapticFeedbackConstants.TEXT_HANDLE_MOVE -> Haptics.Kind.TICK
+                else -> Haptics.Kind.TAP
+            }
+            Haptics.tap(context, kind)
             true
         }
     }

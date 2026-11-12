@@ -56,10 +56,16 @@ object Haptics {
      * 时长比振幅更重要：实测 26ms 在手机上几乎摸不出来，60ms 才明显。
      * 振幅再高，时间太短也只是「嗒」一下的空气感。
      */
-    fun tap(context: Context, heavy: Boolean = false) {
+    /**
+     * 触发一次反馈。
+     *
+     * @param kind 点按给完整一记；滑动中的连续 tick 要短、要轻，不然是嗡嗡响；
+     *             滑动松手给一记稍重的收尾，让人知道「停住了」。
+     */
+    fun tap(context: Context, kind: Kind = Kind.TAP) {
         val lv = level
         if (lv == OFF) return
-        val ms = when (lv) {
+        val base = when (lv) {
             LIGHT -> 10L
             MEDIUM -> 18L
             STRONG -> 30L
@@ -71,6 +77,13 @@ object Haptics {
             STRONG -> 210
             else -> 255
         }
+        // 滑动的 tick 必须短：长震会糊成一片，反而感觉不到「在滑」。
+        val ms = when (kind) {
+            Kind.TICK -> (base / 4).coerceAtLeast(6L)
+            Kind.SETTLE -> (base * 2 / 3).coerceAtLeast(12L)
+            else -> base
+        }
+        val amp = if (kind == Kind.TICK) (amplitude * 2 / 3).coerceAtLeast(60) else amplitude
         runCatching {
             val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
@@ -78,10 +91,11 @@ object Haptics {
                 @Suppress("DEPRECATION")
                 context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
             } ?: return
-            if (!vibrator.hasVibrator()) { return }
-            vibrator.vibrate(
-                VibrationEffect.createOneShot(if (heavy) ms * 2 else ms, amplitude)
-            )
+            if (!vibrator.hasVibrator()) return
+            vibrator.vibrate(VibrationEffect.createOneShot(ms, amp))
         }.onFailure { Log.w("Haptics", it.message ?: "vibrate failed") }
     }
+
+    /** 反馈类型。 */
+    enum class Kind { TAP, TICK, SETTLE }
 }
