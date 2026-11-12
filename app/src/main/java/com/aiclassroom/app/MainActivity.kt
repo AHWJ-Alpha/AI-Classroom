@@ -67,6 +67,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -209,6 +210,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.unit.sp
 import com.aiclassroom.app.ui.components.AppDialogBase
 import com.aiclassroom.app.ui.components.AppPrimaryButton
@@ -2051,7 +2053,7 @@ private fun AIClassroomApp(
             ) {
                 Column(Modifier.fillMaxWidth().statusBarsPadding()) {
                     Row(
-                        Modifier.fillMaxWidth().height(66.dp).padding(horizontal = DesignTokens.Spacing.Page),
+                        Modifier.fillMaxWidth().height(if (conversationScrolled) 42.dp else 48.dp).padding(horizontal = DesignTokens.Spacing.Page),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Md)
                     ) {
@@ -2084,7 +2086,8 @@ private fun AIClassroomApp(
                         // 标题列。Kicker（AI CLASSROOM）在宽度吃紧时让位：
                         // 插件按钮多起来以后它会和标题挤在一起，所以低于阈值就整行不画，标题独占。
                         BoxWithConstraints(Modifier.weight(1f)) {
-                            val showKicker = maxWidth >= 150.dp
+                            // 滚动时收起 Kicker，顶栏只剩标题一行 —— 这就是「滑动时收缩成一行」。
+                            val showKicker = maxWidth >= 150.dp && !conversationScrolled
                             Column(Modifier.fillMaxWidth()) {
                                 if (showKicker) {
                                     Text("AI CLASSROOM", style = DesignTokens.TextStyles.Kicker, color = palette.muted)
@@ -2099,25 +2102,9 @@ private fun AIClassroomApp(
                                 )
                             }
                         }
-                        // 「自定义学习内容」这类 topic 常驻在顶栏，和插件按钮抢宽度，已移除。
-                        // 位置不够时的降级见标题列（BoxWithConstraints）。
-                        // TOP_BAR_ACTIONS：插件按钮插在现有图标那一排的左侧（无插件时这里什么都不渲染）。
-                        PluginUiTopBarActions(
-                            bindings = uiTopBarBindings,
-                            states = uiStateSnapshot,
-                            palette = palette,
-                            onEvent = onPluginUiEvent,
-                            stateVersions = pluginStateVersions,
-                            userImages = uiUserImages,
-                            userImageFits = uiUserImageFits,
-                        )
-                        IconButton(
-                            onClick = { classMenuOpen = !classMenuOpen },
-                            modifier = Modifier.size(DesignTokens.Size.IconButton),
-                            colors = IconButtonDefaults.iconButtonColors(contentColor = DesignTokens.Accent)
-                        ) {
-                            Icon(Icons.Default.Tune, contentDescription = "打开课堂菜单", modifier = Modifier.size(DesignTokens.Size.Icon))
-                        }
+                        // 顶栏不再放操作按钮：
+                        // 沉浸 / 音乐 / 设置都挪进了输入区（沉浸进控制行，音乐和设置在输入框与发送键之间）。
+                        // 顶栏只保留「菜单 + 标题」，厚度压到 48dp（滚动时 42dp），把纵向空间让给对话。
                     }
                     HorizontalDivider(thickness = DesignTokens.Border.Hairline, color = palette.outline)
                 }
@@ -2297,7 +2284,8 @@ private fun AIClassroomApp(
                     }, pluginOverlay = uiOverlayBindings, pluginMessageTail = uiMessageTailBindings,
                         pluginStates = uiStateSnapshot, onPluginUiEvent = onPluginUiEvent,
                         pluginStateVersions = pluginStateVersions,
-                        pluginUserImages = uiUserImages, pluginUserImageFits = uiUserImageFits) { index ->
+                        pluginUserImages = uiUserImages, pluginUserImageFits = uiUserImageFits,
+                        pluginTopBar = uiTopBarBindings, onClassMenu = { classMenuOpen = !classMenuOpen }) { index ->
                         val selected = current.messages.take(index + 1)
                         val branchMessages = mutableStateListOf<ChatMessage>()
                         val title = selected.firstOrNull()?.text?.take(18)?.ifBlank { "分支课堂" } ?: "分支课堂"
@@ -2928,7 +2916,11 @@ private fun ClassScreen(
     pluginStateVersions: Map<String, Int> = emptyMap(),
     /** 插件设置里 type=image 的字段（插件 id -> 字段 -> 文件）。 */
     pluginUserImages: Map<String, Map<String, File>> = emptyMap(),
-    pluginUserImageFits: Map<String, Map<String, String>> = emptyMap(),
+    pluginUserImageFits: Map<String, Map<String, String>> = emptyMap(),
+    /** TOP_BAR_ACTIONS 的绑定：顶栏不再渲染，改由输入区分发。 */
+    pluginTopBar: List<PluginUiBinding> = emptyList(),
+    /** 课堂菜单（原顶栏设置键）。 */
+    onClassMenu: () -> Unit = {},
     onBranch: (Int) -> Unit
 ) {
     if (room.messages.isEmpty()) {
@@ -3013,6 +3005,47 @@ private fun ClassScreen(
             }
             if (isLoading) item { AiThinkingRow(palette, room.config.mentorName) }
         }
+        // 沉浸模式：从顶栏搬出来的侧边悬浮键。
+        // 放在右上、56dp —— 比原来顶栏那个 34dp 的图标大一圈，拇指够得到。
+        // 用半透明底 + 细描边，压在消息上也不糊。
+        Surface(
+            onClick = { onImmersiveChange(!immersiveMode) },
+            modifier = Modifier
+                // zIndex：这个 Box 里后面还有考试横幅等子项，按声明顺序它们会画在悬浮键之上，
+                // 必须抬高层级，否则按钮被盖住看不见（实测就是这个问题）。
+                .zIndex(10f)
+                .align(Alignment.TopEnd)
+                // top 取 80dp 而不是 10dp：正上方常驻「存档考试」横幅，
+                // 贴边会被它的「回看」按钮挡住（实测过）。80dp 正好落在横幅下方。
+                .padding(end = 10.dp, top = 80.dp)
+                .size(56.dp),
+            shape = AppShapes.panel,
+            color = palette.surface.copy(alpha = 0.90f),
+            border = BorderStroke(DesignTokens.Border.Hairline, palette.outline),
+            shadowElevation = 2.dp,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    if (immersiveMode) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                    contentDescription = if (immersiveMode) "退出沉浸模式" else "进入沉浸模式",
+                    tint = palette.muted,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+        }
+
+        // 「是否已滚离顶部」→ 顶栏收起 Kicker 并变薄。顶栏画在 AIClassroomApp 里，
+        // 读不到这里的 listState，所以用文件级状态搭桥（比一路透传 LazyListState 干净）。
+        val scrolledNow by remember(listState) {
+            derivedStateOf {
+                val first = listState.layoutInfo.visibleItemsInfo.firstOrNull()
+                first != null && first.index > 0
+            }
+        }
+        LaunchedEffect(scrolledNow) { conversationScrolled = scrolledNow }
+        // 顶栏的三个按钮拆成两组：沉浸进控制行，音乐跟着「设置」落在发送键左侧。
+        val immersiveTopBar = pluginTopBar.filter { it.pluginId == "immersive" }
+        val musicTopBar = pluginTopBar.filter { it.pluginId == "music" }
         ChatInputBar(
             input = input,
             onInput = onInput,
@@ -3028,6 +3061,39 @@ private fun ClassScreen(
             immersiveMode = immersiveMode,
             onImmersiveChange = onImmersiveChange,
             onQuickThemeToggle = onQuickThemeToggle,
+            immersiveButton = {
+                if (immersiveTopBar.isNotEmpty()) {
+                    PluginUiTopBarActions(
+                        bindings = immersiveTopBar,
+                        states = pluginStates,
+                        palette = palette,
+                        onEvent = onPluginUiEvent,
+                        stateVersions = pluginStateVersions,
+                        userImages = pluginUserImages,
+                        userImageFits = pluginUserImageFits,
+                    )
+                }
+            },
+            trailingActions = {
+                if (musicTopBar.isNotEmpty()) {
+                    PluginUiTopBarActions(
+                        bindings = musicTopBar,
+                        states = pluginStates,
+                        palette = palette,
+                        onEvent = onPluginUiEvent,
+                        stateVersions = pluginStateVersions,
+                        userImages = pluginUserImages,
+                        userImageFits = pluginUserImageFits,
+                    )
+                }
+                IconButton(
+                    onClick = onClassMenu,
+                    modifier = Modifier.size(34.dp),
+                    colors = IconButtonDefaults.iconButtonColors(contentColor = DesignTokens.Accent)
+                ) {
+                    Icon(Icons.Default.Tune, contentDescription = "打开课堂菜单", modifier = Modifier.size(20.dp))
+                }
+            },
             modifier = Modifier.align(Alignment.BottomCenter)
         )
         val failureNotice by remember {
@@ -3184,7 +3250,9 @@ private fun ChatControls(
     onReasoningEffortChange: (String) -> Unit,
     immersiveMode: Boolean,
     onImmersiveChange: (Boolean) -> Unit,
-    onQuickThemeToggle: () -> Unit
+    onQuickThemeToggle: () -> Unit,
+    /** 沉浸模式按钮（原顶栏那个）。为空时退回内置的 Visibility 开关 —— 插件停用后仍然进得去。 */
+    immersiveButton: (@Composable () -> Unit)? = null
 ) {
     Row(
         Modifier.fillMaxWidth().padding(bottom = 2.dp),
@@ -3211,11 +3279,25 @@ private fun ChatControls(
                 Icon(Icons.Default.ColorLens, contentDescription = "切换明暗", tint = palette.muted, modifier = Modifier.size(18.dp))
             }
         }
-        IconButton(onClick = { onImmersiveChange(!immersiveMode) }, modifier = Modifier.size(34.dp)) {
-            Icon(if (immersiveMode) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = if (immersiveMode) "退出沉浸模式" else "进入沉浸模式", tint = palette.muted, modifier = Modifier.size(18.dp))
+        // 沉浸模式：优先用插件提供的按钮（和顶栏那个是同一个）；
+        // 插件被停用时 immersiveButton 为空，退回内置开关，保证这个入口永远在。
+        if (immersiveButton != null) {
+            immersiveButton()
+        } else {
+            IconButton(onClick = { onImmersiveChange(!immersiveMode) }, modifier = Modifier.size(34.dp)) {
+                Icon(if (immersiveMode) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = if (immersiveMode) "退出沉浸模式" else "进入沉浸模式", tint = palette.muted, modifier = Modifier.size(18.dp))
+            }
         }
     }
 }
+
+/**
+ * 消息列表是否已经滚离顶部。
+ *
+ * 提到文件级的原因：顶栏画在 AIClassroomApp 的 Scaffold 里，而列表状态在 ClassScreen 内部，
+ * 两者不在同一个组合作用域。用文件级状态搭一座桥，比把 LazyListState 一路透传上来干净。
+ */
+private var conversationScrolled by mutableStateOf(false)
 
 /** 聊天控制条两个下拉的展开状态：提到文件级，供 ChatControls（触发端）与树内浮层（展示端）同读写。 */
 private var modelMenuOpen by mutableStateOf(false)
@@ -3336,6 +3418,10 @@ private fun ChatInputBar(
     onImmersiveChange: (Boolean) -> Unit = {},
     onQuickThemeToggle: () -> Unit = {},
     liftBottom: Boolean = true,
+    /** 沉浸模式按钮（原顶栏那个），放进控制行。null 时退回内置开关。 */
+    immersiveButton: (@Composable () -> Unit)? = null,
+    /** 发送键左侧的附加按钮（音乐 + 设置）。 */
+    trailingActions: @Composable RowScope.() -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -3345,8 +3431,11 @@ private fun ChatInputBar(
         shadowElevation = 0.dp,
         border = null
     ) {
-        Column(Modifier.fillMaxWidth().padding(8.dp)) {
-            if (roomConfig != null) ChatControls(roomConfig, palette, onModelChange, onDeepThinkingChange, onReasoningEffortChange, immersiveMode, onImmersiveChange, onQuickThemeToggle)
+        // 收紧卡片内边距：原来四面 8dp，视觉上白白吃掉一圈。
+        Column(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp)) {
+            // 原来这里有一整排 [模型][推理][沉浸]，白占一整行高度。
+            // 现在：模型与推理合并成一个键放进输入框右下（发送键上方），
+            // 沉浸改成侧边悬浮键 —— 输入卡片直接矮一排。
             Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -3368,7 +3457,8 @@ private fun ChatInputBar(
                 OutlinedTextField(
                     input,
                     onInput,
-                    Modifier.fillMaxWidth().padding(end = if (compact) 48.dp else 58.dp),
+                    // 右侧让出的宽度要同时容纳「音乐」「设置」「发送」三个键，否则文字会压到它们下面。
+                    Modifier.fillMaxWidth().padding(end = if (compact) 124.dp else 132.dp),
                     placeholder = { Text("输入学习目标或问题") },
                     minLines = if (compact) 1 else 3,
                     maxLines = if (compact) 1 else 5,
@@ -3382,10 +3472,32 @@ private fun ChatInputBar(
                         unfocusedContainerColor = palette.card
                     )
                 )
+                // 右侧一列：上面是「模型 + 推理」合并键，下面是「音乐 / 设置 / 发送」。
+                // 合并键正好坐在发送键上方那一片空白里，不额外占一行高度。
+                Column(
+                    Modifier.align(Alignment.BottomEnd).padding(end = 5.dp, bottom = 5.dp),
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    IconButton(
+                        onClick = { modelMenuOpen = true; reasoningMenuOpen = true },
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.Memory,
+                            contentDescription = "模型与推理",
+                            tint = palette.muted,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                    trailingActions()
                 Button(
                     onClick = onSend,
                     enabled = !isLoading,
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 5.dp, bottom = 5.dp).size(if (compact) 40.dp else 44.dp),
+                    modifier = Modifier.size(if (compact) 40.dp else 44.dp),
                     shape = AppShapes.button,
                     contentPadding = PaddingValues(0.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -3399,6 +3511,8 @@ private fun ChatInputBar(
                         CircularProgressIndicator(modifier = Modifier.size(18.dp), color = palette.onButton, strokeWidth = 2.dp)
                     } else {
                         Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp), tint = palette.onButton)
+                    }
+                }
                     }
                 }
             }
