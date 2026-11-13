@@ -6790,6 +6790,8 @@ private fun PluginImageField(
     onFitChange: (String) -> Unit,
 ) {
     val bitmap = rememberPluginImage(value)
+    // DIAG: 确认设置页拿到的值和解码结果（定位「缩略图空白」用）。
+    android.util.Log.i("PluginImage", "value=" + if (value.isBlank()) "<blank>" else value.takeLast(30) + " bitmap=" + (bitmap != null))
     Row(
         Modifier.fillMaxWidth().padding(top = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
