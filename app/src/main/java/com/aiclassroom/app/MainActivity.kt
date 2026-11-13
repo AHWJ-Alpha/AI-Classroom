@@ -215,6 +215,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.zIndex
@@ -6816,25 +6817,71 @@ private fun PluginImageField(
         }
     }
     if (value.isNotBlank()) {
-        Column(Modifier.fillMaxWidth()) {
-            // 无级裁切：滑条 0..100 直接决定保留画面的哪一段，
-            // 不再用「顶部/居中/底部」三档 —— 档与档之间的过渡只能靠猜。
-            val fraction = (fit.toFloatOrNull() ?: 50f).coerceIn(0f, 100f)
-            Slider(
-                value = fraction,
-                onValueChange = { if (!locked) onFitChange(it.roundToInt().toString()) },
-                valueRange = 0f..100f,
-                modifier = Modifier.fillMaxWidth(),
+        // 预览式裁切：直接看图拖，拖到哪儿就露出哪儿。
+        // 之前的无级滑条是盲调 —— 30 和 60 差多少全靠猜，等于没法用。
+        val previewBitmap = rememberPluginImage(value)
+        if (previewBitmap != null) {
+            ImageCropPreview(
+                bitmap = previewBitmap,
+                fraction = (fit.toFloatOrNull() ?: 50f) / 100f,
+                enabled = !locked,
+                onFractionChange = { onFitChange((it * 100).roundToInt().toString()) },
             )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("保留顶部", color = Muted, fontSize = DesignTokens.Type.Caption)
-                Text("保留底部", color = Muted, fontSize = DesignTokens.Type.Caption)
-            }
+            Text("上下拖动调整显示区域", color = Muted, fontSize = DesignTokens.Type.Caption)
         }
     }
 }
 
 /** 读设置里那张图的缩略图：路径来自 prefs，读不到就当作没选（不抛异常）。 */
+
+/**
+ * 图片裁切预览：按容器比例铺满，上下拖动决定保留画面的哪一段。
+ *
+ * 和渲染器里的 user: 图片走同一套算法（等比放大铺满，多余部分按比例切在上下），
+ * 所以这里看到什么，沉浸模式里就是什么。
+ */
+@Composable
+private fun ImageCropPreview(
+    bitmap: ImageBitmap,
+    fraction: Float,
+    enabled: Boolean,
+    onFractionChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var drag by remember { mutableStateOf(fraction) }
+    LaunchedEffect(fraction) { drag = fraction }
+    Canvas(
+        modifier
+            .fillMaxWidth()
+            .height(260.dp)
+            .clip(RoundedCornerShape(DesignTokens.Radius.Control))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectVerticalDragGestures { change, dy ->
+                    change.consume()
+                    val scale = maxOf(size.width / bitmap.width.toFloat(), size.height / bitmap.height.toFloat())
+                    val overflow = (bitmap.height * scale - size.height).coerceAtLeast(1f)
+                    drag = (drag - dy / overflow).coerceIn(0f, 1f)
+                    onFractionChange(drag)
+                }
+            },
+    ) {
+        val scale = maxOf(size.width / bitmap.width, size.height / bitmap.height)
+        val dw = bitmap.width * scale
+        val dh = bitmap.height * scale
+        val dx = (size.width - dw) / 2f
+        val dy = -(dh - size.height) * fraction
+        drawImage(
+            image = bitmap,
+            srcOffset = IntOffset.Zero,
+            srcSize = IntSize(bitmap.width, bitmap.height),
+            dstOffset = IntOffset(dx.roundToInt(), dy.roundToInt()),
+            dstSize = IntSize(dw.roundToInt(), dh.roundToInt()),
+        )
+    }
+}
+
 @Composable
 private fun rememberPluginImage(path: String): ImageBitmap? {
     val bitmap by produceState<ImageBitmap?>(initialValue = null, path) {
