@@ -154,7 +154,14 @@ function provideState(ctx) {
   if (mode === 'flip') mode = 'clock';
   // 手动切到 music 时就留在 music（即使没在播），否则用户想看看音乐界面都进不去。
 
+  // 背景图：设置里选了照片就用它，没选就退回包里自带的那张。
+  // 以前 root.json 写死了 assets/bg.png，manifest 里的 bgImage 设置项根本没人读，
+  // 所以用户选完照片界面上什么都不会变。
+  var userBg = (ctx.settings && ctx.settings.bgImage) ? String(ctx.settings.bgImage) : '';
   return {
+    bgPath: userBg,
+    useUserBg: userBg !== '' ? 'true' : 'false',
+    useDefaultBg: userBg === '' ? 'true' : 'false',
     mode: mode,
     scene: mode !== 'clock' && mode !== 'music' ? 'true' : 'false',
     flip: mode === 'clock' ? 'true' : 'false',
