@@ -6848,8 +6848,9 @@ private fun ImageCropPreview(
     onFractionChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var drag by remember { mutableStateOf(fraction) }
-    LaunchedEffect(fraction) { drag = fraction }
+    // 拖动过程用本地状态，别跟着 fraction 参数走 ——
+    // 参数要等设置保存后才回流，中间那段画面是死的，看起来就是「没反应」。
+    var drag by remember(bitmap) { mutableStateOf(fraction) }
     Canvas(
         modifier
             .fillMaxWidth()
@@ -6884,7 +6885,9 @@ private fun ImageCropPreview(
         val dw = bitmap.width * scale
         val dh = bitmap.height * scale
         val dx = (size.width - dw) / 2f
-        val dy = -(dh - size.height) * fraction
+        // 用 drag（拖动中的实时值）画，不是 fraction（保存后的值）：
+        // 之前这里写的是 fraction，所以手指在动、画面不动 —— 用户看到的就是「完全没反应」。
+        val dy = -(dh - size.height) * drag
         drawImage(
             image = bitmap,
             srcOffset = IntOffset.Zero,
