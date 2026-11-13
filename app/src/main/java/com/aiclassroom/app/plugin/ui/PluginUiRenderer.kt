@@ -1010,6 +1010,8 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
                         // 以前只有 card / bubble 有形状，image 上写了等于静默失效（封面只能是直角方块）。
                         .then(node.radius?.let { Modifier.clip(shapeOf(it)) } ?: Modifier),
                     contentScale = contentScaleOf(paint, path),
+                    // 裁切锚点：同一张图按 ContentScale.Crop 铺满，保留顶/中/底哪一段由设置决定。
+                    alignment = imageAlignmentOf(paint, path),
                 )
             }
         }
@@ -2129,14 +2131,18 @@ private fun imagePathOf(node: UiNode, paint: Paint): String? {
 
 /** 裁切方式：用户在设置里选「剪裁 / 适应 / 填充」，user: 图片默认按剪裁铺满。 */
 private fun contentScaleOf(paint: Paint, path: String?): ContentScale {
-    // 宿主刚落盘的封面是绝对路径：正方形封面框里要铺满，Fit 会在两边留黑边。
-    if (path != null && path.startsWith("/")) return ContentScale.Crop
-    if (path == null || !path.startsWith(USER_IMAGE_PREFIX)) return ContentScale.Fit
-    val key = path.removePrefix(USER_IMAGE_PREFIX)
-    return when (paint.userImageFit[key]) {
-        "fit" -> ContentScale.Fit
-        "fill" -> ContentScale.FillBounds
-        else -> ContentScale.Crop
+    // 用户图一律 **裁切**：拉伸（FillBounds）会把画面拉变形，适应（Fit）会留黑边，
+    // 两种都难看。取舍统一交给 imageAlignmentOf —— 只让用户选保留画面的哪一段。
+    return ContentScale.Crop
+}
+
+/** user: 图片的裁切锚点：顶部 / 居中 / 底部，默认居中。 */
+private fun imageAlignmentOf(paint: Paint, path: String?): Alignment {
+    if (path == null || !path.startsWith(USER_IMAGE_PREFIX)) return Alignment.Center
+    return when (paint.userImageFit[path.removePrefix(USER_IMAGE_PREFIX)]) {
+        "top" -> Alignment.TopCenter
+        "bottom" -> Alignment.BottomCenter
+        else -> Alignment.Center
     }
 }
 

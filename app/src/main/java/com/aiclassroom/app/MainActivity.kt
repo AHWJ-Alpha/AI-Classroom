@@ -6820,7 +6820,9 @@ private fun PluginImageField(
             Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            listOf("crop" to "居中裁切", "fit" to "适应", "fill" to "填充").forEach { (key, label) ->
+            // 三种都是「裁切」：不拉伸、不留黑边，区别只是保留画面的哪一段。
+            // 以前给的是 居中裁切 / 适应 / 填充 —— 适应会出黑边、填充会拉伸变形，没法用。
+            listOf("top" to "顶部", "center" to "居中", "bottom" to "底部").forEach { (key, label) ->
                 AppFilterChip((if (fit.isBlank()) "crop" else fit) == key, { if (!locked) onFitChange(key) }) { Text(label) }
             }
         }

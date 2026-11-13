@@ -445,7 +445,8 @@ class PluginManager(
         const val FIT_SUFFIX = "Fit"
 
         /** 允许的裁切方式：居中裁切（铺满）/ 适应（留边）/ 填充（拉伸）。 */
-        val IMAGE_FITS: Set<String> = linkedSetOf("crop", "fit", "fill")
+        /** 图片裁切锚点：都是裁切，只是保留画面顶/中/底哪一段。 */
+        val IMAGE_FITS: Set<String> = linkedSetOf("top", "center", "bottom")
 
         /** 用户图片落在插件私有目录的这个子目录里（包内 assets/ 是只读的插件包内容）。 */
         const val IMAGE_DIR = "user-images"
