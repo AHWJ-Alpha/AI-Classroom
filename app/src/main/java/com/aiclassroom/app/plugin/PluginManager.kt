@@ -265,7 +265,10 @@ class PluginManager(
             if (setting.type != PluginSettingType.IMAGE) continue
             val value = stored[setting.key + FIT_SUFFIX]
             if (value.isNullOrBlank()) continue
-            if (value !in IMAGE_FITS) continue
+            // 无级裁切：0..100 的数字（0=保留画面顶部，100=保留底部）。
+            // 旧的 top/center/bottom 也认，方便老配置继续用。
+            val ok = value in LEGACY_IMAGE_FITS || value.toIntOrNull()?.let { it in 0..100 } == true
+            if (!ok) continue
             result[setting.key] = value
         }
         return result
@@ -445,8 +448,8 @@ class PluginManager(
         const val FIT_SUFFIX = "Fit"
 
         /** 允许的裁切方式：居中裁切（铺满）/ 适应（留边）/ 填充（拉伸）。 */
-        /** 图片裁切锚点：都是裁切，只是保留画面顶/中/底哪一段。 */
-        val IMAGE_FITS: Set<String> = linkedSetOf("top", "center", "bottom")
+        /** 旧版的三档裁切，保留兼容。 */
+        val LEGACY_IMAGE_FITS: Set<String> = linkedSetOf("top", "center", "bottom")
 
         /** 用户图片落在插件私有目录的这个子目录里（包内 assets/ 是只读的插件包内容）。 */
         const val IMAGE_DIR = "user-images"

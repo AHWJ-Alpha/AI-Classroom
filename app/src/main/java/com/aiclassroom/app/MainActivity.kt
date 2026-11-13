@@ -6816,14 +6816,19 @@ private fun PluginImageField(
         }
     }
     if (value.isNotBlank()) {
-        Row(
-            Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            // 三种都是「裁切」：不拉伸、不留黑边，区别只是保留画面的哪一段。
-            // 以前给的是 居中裁切 / 适应 / 填充 —— 适应会出黑边、填充会拉伸变形，没法用。
-            listOf("top" to "顶部", "center" to "居中", "bottom" to "底部").forEach { (key, label) ->
-                AppFilterChip((if (fit.isBlank()) "crop" else fit) == key, { if (!locked) onFitChange(key) }) { Text(label) }
+        Column(Modifier.fillMaxWidth()) {
+            // 无级裁切：滑条 0..100 直接决定保留画面的哪一段，
+            // 不再用「顶部/居中/底部」三档 —— 档与档之间的过渡只能靠猜。
+            val fraction = (fit.toFloatOrNull() ?: 50f).coerceIn(0f, 100f)
+            Slider(
+                value = fraction,
+                onValueChange = { if (!locked) onFitChange(it.roundToInt().toString()) },
+                valueRange = 0f..100f,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("保留顶部", color = Muted, fontSize = DesignTokens.Type.Caption)
+                Text("保留底部", color = Muted, fontSize = DesignTokens.Type.Caption)
             }
         }
     }

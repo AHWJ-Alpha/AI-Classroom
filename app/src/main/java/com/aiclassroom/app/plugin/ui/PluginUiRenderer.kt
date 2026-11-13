@@ -1001,18 +1001,37 @@ private fun PaintContent(node: UiNode, paint: Paint, modifier: Modifier) {
             val path = if (sprite != null) spriteFrame(sprite) else imagePathOf(node, paint)
             val bitmap = rememberAsset(paint.assets, path, paint.userImages)
             if (bitmap != null) {
-                Image(
-                    bitmap = bitmap,
-                    contentDescription = null,
-                    modifier = modifier
-                        .then(if (node.width == null) Modifier.size(48.dp) else Modifier)
-                        // 写了 radius 就按圆角裁：radius 在协议里对所有组件都是同一个意思，
-                        // 以前只有 card / bubble 有形状，image 上写了等于静默失效（封面只能是直角方块）。
-                        .then(node.radius?.let { Modifier.clip(shapeOf(it)) } ?: Modifier),
-                    contentScale = contentScaleOf(paint, path),
-                    // 裁切锚点：同一张图按 ContentScale.Crop 铺满，保留顶/中/底哪一段由设置决定。
-                    alignment = imageAlignmentOf(paint, path),
-                )
+                val baseModifier = modifier
+                    .then(if (node.width == null) Modifier.size(48.dp) else Modifier)
+                    // 写了 radius 就按圆角裁：radius 在协议里对所有组件都是同一个意思，
+                    // 以前只有 card / bubble 有形状，image 上写了等于静默失效（封面只能是直角方块）。
+                    .then(node.radius?.let { Modifier.clip(shapeOf(it)) } ?: Modifier)
+                if (path != null && path.startsWith(USER_IMAGE_PREFIX)) {
+                    // 用户图：**无级裁切**。按比例把多余部分切在上下两侧，不拉伸也不留黑边；
+                    // 滑条停在哪儿，就露出画面的哪一段。
+                    val fraction = imageCropFraction(paint, path)
+                    Canvas(baseModifier) {
+                        val scale = maxOf(size.width / bitmap.width, size.height / bitmap.height)
+                        val dw = bitmap.width * scale
+                        val dh = bitmap.height * scale
+                        val dx = (size.width - dw) / 2f
+                        val dy = -(dh - size.height) * fraction
+                        drawImage(
+                            image = bitmap,
+                            srcOffset = IntOffset.Zero,
+                            srcSize = IntSize(bitmap.width, bitmap.height),
+                            dstOffset = IntOffset(dx.roundToInt(), dy.roundToInt()),
+                            dstSize = IntSize(dw.roundToInt(), dh.roundToInt()),
+                        )
+                    }
+                } else {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = null,
+                        modifier = baseModifier,
+                        contentScale = contentScaleOf(paint, path),
+                    )
+                }
             }
         }
 
@@ -2136,13 +2155,18 @@ private fun contentScaleOf(paint: Paint, path: String?): ContentScale {
     return ContentScale.Crop
 }
 
-/** user: 图片的裁切锚点：顶部 / 居中 / 底部，默认居中。 */
-private fun imageAlignmentOf(paint: Paint, path: String?): Alignment {
-    if (path == null || !path.startsWith(USER_IMAGE_PREFIX)) return Alignment.Center
-    return when (paint.userImageFit[path.removePrefix(USER_IMAGE_PREFIX)]) {
-        "top" -> Alignment.TopCenter
-        "bottom" -> Alignment.BottomCenter
-        else -> Alignment.Center
+/**
+ * user: 图片的**无级**裁切位置：0 = 保留画面顶部，0.5 = 居中，1 = 保留底部。
+ *
+ * 设置里存的是 0..100 的整数；旧配置里的 top/center/bottom 也认。
+ */
+private fun imageCropFraction(paint: Paint, path: String?): Float {
+    if (path == null || !path.startsWith(USER_IMAGE_PREFIX)) return 0.5f
+    val raw = paint.userImageFit[path.removePrefix(USER_IMAGE_PREFIX)] ?: return 0.5f
+    return when (raw) {
+        "top" -> 0f
+        "bottom" -> 1f
+        else -> (raw.toFloatOrNull() ?: 50f).div(100f).coerceIn(0f, 1f)
     }
 }
 
