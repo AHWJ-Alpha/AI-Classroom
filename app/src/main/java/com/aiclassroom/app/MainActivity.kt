@@ -2361,6 +2361,7 @@ private fun AIClassroomApp(
                     }
                     Tab.Knowledge -> KnowledgeScreen(current.files) { persist("知识库已保存") }
                     Tab.Model -> ModelScreen(
+                        pluginUserImages = uiUserImages,
                         config = current.config,
                         models = models,
                         modelStatus = modelStatus,
@@ -5264,6 +5265,8 @@ private fun ModelScreen(
     onPluginImagePick: (String, String) -> Unit,
     /** 清除某个图片字段（文件 + prefs 一起删）。 */
     onPluginImageClear: (String, String) -> Unit,
+    /** 各插件的图片设置文件（key -> File），来自 pluginManager.pluginImagePaths。 */
+    pluginUserImages: Map<String, Map<String, File>> = emptyMap(),
     onOpenManual: () -> Unit,
     onFetchModels: () -> Unit,
     /** 彩蛋：连击版本号 5 下时重放开屏 CG。 */
@@ -5824,6 +5827,7 @@ private fun ModelScreen(
                     samplePlugins.forEach { info ->
                         PluginPackageRow(
                             info = info,
+                            imageFiles = pluginUserImages[info.id].orEmpty(),
                             rowExpanded = info.id in expandedPluginCards,
                             onToggleRow = { expandedPluginCards = togglePluginConfig(expandedPluginCards, info.id) },
                             expanded = info.id in expandedPluginConfigs,
@@ -6477,6 +6481,8 @@ private fun PluginPackageRow(
     onUninstall: () -> Unit,
     /** 系统自带插件（沉浸模式 / 音乐）：可以停用，但不给卸载入口。 */
     system: Boolean = false,
+    /** 这个插件的图片设置：key -> 文件，来自 pluginManager.pluginImagePaths。 */
+    imageFiles: Map<String, File> = emptyMap(),
 ) {
     val unfinished = info.unfinishedSettings
     Column(
@@ -6533,6 +6539,9 @@ private fun PluginPackageRow(
                                 onPickImage = { onImagePick(setting.key) },
                                 onClearImage = { onImageClear(setting.key) },
                                 onFitChange = { onSettingChange(setting.key + PluginManager.FIT_SUFFIX, it) },
+                                // 图片文件从宿主已经解析好的那张家表里取 —— 和渲染器同一个来源，
+                                // 不依赖 settingValues 里的路径字符串。
+                                imageFile = imageFiles[setting.key],
                             )
                         }
                         Text(
@@ -6579,6 +6588,13 @@ private fun PluginSettingField(
     onClearImage: () -> Unit = {},
     /** 改了裁切方式：写 <key>Fit 这个辅助键，不动图片路径本身。 */
     onFitChange: (String) -> Unit = {},
+    /**
+     * 这张设置对应的图片文件，**直接来自 pluginManager.pluginImagePaths**。
+     *
+     * 为什么不从 `value` 里取路径：实测 settingValues 这条数据流里取不到值（两个缩略图全空白），
+     * 而渲染器用同一个 File 能正常画出背景 —— 所以缩略图也直接吃 File，绕开那段。
+     */
+    imageFile: File? = null,
 ) {
     // 表单自己持有草稿：宿主快照要等防抖后的 reload 才刷新，直接绑快照会把用户刚敲的
     // 每个字符立刻回滚掉。prefs 在每次改动时同步写入，所以草稿丢了也能从磁盘恢复。
@@ -6616,6 +6632,7 @@ private fun PluginSettingField(
             PluginSettingType.IMAGE -> PluginImageField(
                 value = draft,
                 fit = fit,
+                imageFile = imageFile,
                 locked = locked,
                 onPick = onPickImage,
                 onClear = {
@@ -6784,14 +6801,19 @@ private fun PluginSecretField(
 private fun PluginImageField(
     value: String,
     fit: String,
+    imageFile: File? = null,
     locked: Boolean,
     onPick: () -> Unit,
     onClear: () -> Unit,
     onFitChange: (String) -> Unit,
 ) {
-    val bitmap = rememberPluginImage(value)
-    // DIAG: 确认设置页拿到的值和解码结果（定位「缩略图空白」用）。
-    android.util.Log.i("PluginImage", "value=" + if (value.isBlank()) "<blank>" else value.takeLast(30) + " bitmap=" + (bitmap != null))
+    // 优先用宿主直接给的 File（和渲染器同源），拿不到才退回 settings 里的路径字符串。
+    val resolvedPath = imageFile?.absolutePath ?: value
+    val bitmap = rememberPluginImage(resolvedPath)
+    android.util.Log.i(
+        "PluginImage",
+        "file=" + (imageFile?.name ?: "<null>") + " value=" + if (value.isBlank()) "<blank>" else "set" + " bitmap=" + (bitmap != null),
+    )
     Row(
         Modifier.fillMaxWidth().padding(top = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
