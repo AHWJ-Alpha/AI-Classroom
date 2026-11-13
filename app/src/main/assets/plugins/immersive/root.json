@@ -8,15 +8,13 @@
       "type": "image",
       "src": "assets/bg.png",
       "width": "fill",
-      "height": "fill",
-      "visibleWhen": "state.useDefaultBg"
+      "height": "fill"
     },
     {
       "type": "image",
       "src": "user:bgImage",
       "width": "fill",
-      "height": "fill",
-      "visibleWhen": "state.useUserBg"
+      "height": "fill"
     },
     {
       "type": "column",

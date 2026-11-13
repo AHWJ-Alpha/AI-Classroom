@@ -24,7 +24,7 @@ internal object BuiltinPlugins {
     private const val KEY_REMOVED = "removed"
 
     /** 改了内置插件的内容就把这个数字 +1，升级后会自动重新释放。 */
-    private const val VERSION = 8
+    private const val VERSION = 9
 
     private const val ASSET_ROOT = "plugins"
 
