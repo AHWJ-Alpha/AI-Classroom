@@ -215,6 +215,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.focus.onFocusChanged
@@ -6854,14 +6856,27 @@ private fun ImageCropPreview(
             .height(260.dp)
             .clip(RoundedCornerShape(DesignTokens.Radius.Control))
             .background(MaterialTheme.colorScheme.surfaceVariant)
-            .pointerInput(enabled) {
+            // 必须自己观察事件：detectVerticalDragGestures 会被外层 LazyColumn 的
+            // 竖直滚动抢走（用户实测「根本无法上下拖动」）。
+            // 这里在 Initial 阶段就把 move 消费掉，滚动容器根本收不到。
+            .pointerInput(enabled, bitmap) {
                 if (!enabled) return@pointerInput
-                detectVerticalDragGestures { change, dy ->
-                    change.consume()
-                    val scale = maxOf(size.width / bitmap.width.toFloat(), size.height / bitmap.height.toFloat())
-                    val overflow = (bitmap.height * scale - size.height).coerceAtLeast(1f)
-                    drag = (drag - dy / overflow).coerceIn(0f, 1f)
-                    onFractionChange(drag)
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var lastY = down.position.y
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        val dy = change.position.y - lastY
+                        lastY = change.position.y
+                        if (dy == 0f) continue
+                        change.consume()
+                        val s = maxOf(size.width / bitmap.width.toFloat(), size.height / bitmap.height.toFloat())
+                        val overflow = (bitmap.height * s - size.height).coerceAtLeast(1f)
+                        drag = (drag - dy / overflow).coerceIn(0f, 1f)
+                        onFractionChange(drag)
+                    }
                 }
             },
     ) {
