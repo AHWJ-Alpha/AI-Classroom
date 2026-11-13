@@ -87,10 +87,18 @@ function coverPathOf(track) {
     artPath = '';
     artTries = 0;
   }
-  if (artPath !== '') return artPath;
+  // 宿主每次 provideState 都会给出**校验过存在性**的 artworkPath。
+  // 优先用它：文件被清掉时这里是空串，能立刻发现「封面没了」并重新去取。
+  // 只认自己缓存的 artPath 是另一个「一丢就回不来」的来源 —— 路径还在、文件没了，
+  // 界面就一直在加载一张不存在的图。
+  var fromHost = track.artworkPath ? String(track.artworkPath) : '';
+  if (fromHost !== '') {
+    artPath = fromHost;
+    return artPath;
+  }
+  artPath = '';
   // 以前这里是 `artTries >= 2` 就永久放弃 —— 播放器常常晚一两秒才给封面，
-  // 前两次没拿到，这首歌就再也没有封面了（用户反馈「一丢就回不来」）。
-  // 改成每 3 次 tick 重试一次，直到拿到为止；换歌时计数清零。
+  // 前两次没拿到，这首歌就再也没有封面了。改成每 3 次 tick 重试，直到拿到为止。
   if (artTries % 3 !== 0) {
     artTries = artTries + 1;
     return artPath;
