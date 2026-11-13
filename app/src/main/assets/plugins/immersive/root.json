@@ -8,13 +8,29 @@
       "type": "image",
       "src": "assets/bg.png",
       "width": "fill",
-      "height": "fill"
+      "height": "fill",
+      "visibleWhen": "state.scene"
     },
     {
       "type": "image",
       "src": "user:bgImage",
       "width": "fill",
-      "height": "fill"
+      "height": "fill",
+      "visibleWhen": "state.bgShow1"
+    },
+    {
+      "type": "image",
+      "src": "user:bgImage2",
+      "width": "fill",
+      "height": "fill",
+      "visibleWhen": "state.bgShow2"
+    },
+    {
+      "type": "image",
+      "src": "user:bgImage3",
+      "width": "fill",
+      "height": "fill",
+      "visibleWhen": "state.bgShow3"
     },
     {
       "type": "column",

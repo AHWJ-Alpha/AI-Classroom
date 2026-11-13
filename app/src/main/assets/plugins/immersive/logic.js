@@ -133,6 +133,14 @@ function onTick(ctx) {
   ctx.storage.set('time', pad(h) + ':' + pad(m));
   ctx.storage.set('date', d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日');
   ctx.storage.set('dateDigits', d.getFullYear() + '.' + pad(d.getMonth() + 1) + '.' + pad(d.getDate()));
+  // 多张背景轮播：每 8 秒切一张（1 → 2 → 3 → 1）。
+  // 没选图的槽位由渲染器解析成 null，那一拍就露出内置底图，不会白屏。
+  var slot = parseInt(ctx.storage.get('bgSlot') || '1', 10);
+  if (!(slot >= 1 && slot <= 3)) slot = 1;
+  if (d.getSeconds() % 8 === 0) {
+    slot = slot >= 3 ? 1 : slot + 1;
+    ctx.storage.set('bgSlot', String(slot));
+  }
   // 音乐形态下进度要每秒走，所以 tick 里也刷一次媒体。
   refreshMedia(ctx);
   ctx.storage.set('dbg', media.dbg);
@@ -158,12 +166,18 @@ function provideState(ctx) {
   // 以前 root.json 写死了 assets/bg.png，manifest 里的 bgImage 设置项根本没人读，
   // 所以用户选完照片界面上什么都不会变。
   var userBg = (ctx.settings && ctx.settings.bgImage) ? String(ctx.settings.bgImage) : '';
+  var bgSlotNow = parseInt(ctx.storage.get('bgSlot') || '1', 10);
+  if (!(bgSlotNow >= 1 && bgSlotNow <= 3)) bgSlotNow = 1;
   return {
     bgPath: userBg,
     useUserBg: userBg !== '' ? 'true' : 'false',
     useDefaultBg: userBg === '' ? 'true' : 'false',
     mode: mode,
     scene: mode !== 'clock' && mode !== 'music' ? 'true' : 'false',
+    // 轮播：只有「风景」形态才显示背景图，且一次只亮一张。
+    bgShow1: (mode !== 'clock' && mode !== 'music' && bgSlotNow === 1) ? 'true' : 'false',
+    bgShow2: (mode !== 'clock' && mode !== 'music' && bgSlotNow === 2) ? 'true' : 'false',
+    bgShow3: (mode !== 'clock' && mode !== 'music' && bgSlotNow === 3) ? 'true' : 'false',
     flip: mode === 'clock' ? 'true' : 'false',
     music: mode === 'music' ? 'true' : 'false',
     clock: ctx.storage.get('clock') || '--:--',

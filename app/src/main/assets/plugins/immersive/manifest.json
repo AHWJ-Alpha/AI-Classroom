@@ -21,6 +21,18 @@
       "description": "留空使用内置渐变背景"
     },
     {
+      "key": "bgImage2",
+      "type": "image",
+      "label": "背景照片 2（可选）",
+      "description": "多张时轮播"
+    },
+    {
+      "key": "bgImage3",
+      "type": "image",
+      "label": "背景照片 3（可选）",
+      "description": "多张时轮播"
+    },
+    {
       "key": "autoDim",
       "label": "像素钟夜间自动压暗",
       "type": "boolean",
