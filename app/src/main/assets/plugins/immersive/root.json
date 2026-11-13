@@ -6,17 +6,17 @@
   "children": [
     {
       "type": "image",
-      "src": "state.bgPath",
-      "width": "fill",
-      "height": "fill",
-      "visibleWhen": "state.useUserBg"
-    },
-    {
-      "type": "image",
       "src": "assets/bg.png",
       "width": "fill",
       "height": "fill",
       "visibleWhen": "state.useDefaultBg"
+    },
+    {
+      "type": "image",
+      "src": "user:bgImage",
+      "width": "fill",
+      "height": "fill",
+      "visibleWhen": "state.useUserBg"
     },
     {
       "type": "column",
