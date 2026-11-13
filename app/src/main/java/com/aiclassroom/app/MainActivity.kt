@@ -3914,7 +3914,6 @@ private fun MessageCard(
                 Spacer(Modifier.height(DesignTokens.Spacing.Xs))
                 if (message.text.isNotBlank()) Text(message.text, style = DesignTokens.TextStyles.Body, color = palette.ink)
                 MessageImages(message.images, palette)
-                TextButton(onClick = { onBranch(index) }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) { Text("↳ 从这里开分支", color = palette.secondary, fontSize = DesignTokens.Type.Small) }
             }
         }
     } else {
@@ -3954,7 +3953,6 @@ private fun MessageCard(
                         )
                     }
                 }
-                TextButton(onClick = { onBranch(index) }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) { Text("↳ 从这里开分支", color = palette.secondary, fontSize = DesignTokens.Type.Small) }
             }
         }
     }
