@@ -87,7 +87,14 @@ function coverPathOf(track) {
     artPath = '';
     artTries = 0;
   }
-  if (artPath !== '' || artTries >= 2) return artPath;
+  if (artPath !== '') return artPath;
+  // 以前这里是 `artTries >= 2` 就永久放弃 —— 播放器常常晚一两秒才给封面，
+  // 前两次没拿到，这首歌就再也没有封面了（用户反馈「一丢就回不来」）。
+  // 改成每 3 次 tick 重试一次，直到拿到为止；换歌时计数清零。
+  if (artTries % 3 !== 0) {
+    artTries = artTries + 1;
+    return artPath;
+  }
   artTries = artTries + 1;
   var art = host.mediaArtwork();
   artPath = (art && art.ok) ? String(art.path) : '';
