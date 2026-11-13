@@ -6810,10 +6810,6 @@ private fun PluginImageField(
     // 优先用宿主直接给的 File（和渲染器同源），拿不到才退回 settings 里的路径字符串。
     val resolvedPath = imageFile?.absolutePath ?: value
     val bitmap = rememberPluginImage(resolvedPath)
-    android.util.Log.i(
-        "PluginImage",
-        "file=" + (imageFile?.name ?: "<null>") + " value=" + if (value.isBlank()) "<blank>" else "set" + " bitmap=" + (bitmap != null),
-    )
     Row(
         Modifier.fillMaxWidth().padding(top = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
