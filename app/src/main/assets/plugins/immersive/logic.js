@@ -133,19 +133,34 @@ function onTick(ctx) {
   ctx.storage.set('time', pad(h) + ':' + pad(m));
   ctx.storage.set('date', d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日');
   ctx.storage.set('dateDigits', d.getFullYear() + '.' + pad(d.getMonth() + 1) + '.' + pad(d.getDate()));
-  // 多张背景轮播：每 8 秒切一张（1 → 2 → 3 → 1）。
-  // 没选图的槽位由渲染器解析成 null，那一拍就露出内置底图，不会白屏。
-  var slot = parseInt(ctx.storage.get('bgSlot') || '1', 10);
-  if (!(slot >= 1 && slot <= 3)) slot = 1;
-  if (d.getSeconds() % 8 === 0) {
-    slot = slot >= 3 ? 1 : slot + 1;
-    ctx.storage.set('bgSlot', String(slot));
+  // 多张背景轮播：只轮**用户真的设置了的**那几张。
+  // 以前是死循环 1→2→3，没设图的槽位那一拍就露出内置底图（看着像空白）。
+  var slots = bgSlotsOf(ctx);
+  if (slots.length > 1 && d.getSeconds() % 8 === 0) {
+    var idx = parseInt(ctx.storage.get('bgSlot') || '0', 10);
+    if (!(idx >= 0 && idx < slots.length)) idx = 0;
+    idx = (idx + 1) % slots.length;
+    ctx.storage.set('bgSlot', String(idx));
   }
   // 音乐形态下进度要每秒走，所以 tick 里也刷一次媒体。
   refreshMedia(ctx);
   ctx.storage.set('dbg', media.dbg);
   // 同上：ui_ticker 不自动刷新界面，必须显式请求，否则音乐形态的进度条不会动。
   host.requestUiRefresh();
+}
+
+/**
+ * 用户真正设置了图片的槽位号（1/2/3）。
+ * 一个都没设时返回 [1]，让内置底图照常显示，不会因为空数组算出 NaN。
+ */
+function bgSlotsOf(ctx) {
+  var s = ctx.settings || {};
+  var out = [];
+  if (s.bgImage) out.push(1);
+  if (s.bgImage2) out.push(2);
+  if (s.bgImage3) out.push(3);
+  if (out.length === 0) out.push(1);
+  return out;
 }
 
 function provideState(ctx) {
@@ -166,8 +181,12 @@ function provideState(ctx) {
   // 以前 root.json 写死了 assets/bg.png，manifest 里的 bgImage 设置项根本没人读，
   // 所以用户选完照片界面上什么都不会变。
   var userBg = (ctx.settings && ctx.settings.bgImage) ? String(ctx.settings.bgImage) : '';
-  var bgSlotNow = parseInt(ctx.storage.get('bgSlot') || '1', 10);
-  if (!(bgSlotNow >= 1 && bgSlotNow <= 3)) bgSlotNow = 1;
+  // bgSlot 存的是「在已设置列表里的下标」，不是槽位号 ——
+  // 这样只设了 1 张就恒显示那张，设了 2 张就在这两张之间轮，永远不会轮到空槽。
+  var slots = bgSlotsOf(ctx);
+  var idx = parseInt(ctx.storage.get('bgSlot') || '0', 10);
+  if (!(idx >= 0 && idx < slots.length)) idx = 0;
+  var bgSlotNow = slots[idx];
   return {
     bgPath: userBg,
     useUserBg: userBg !== '' ? 'true' : 'false',
