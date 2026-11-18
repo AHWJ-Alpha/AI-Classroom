@@ -106,6 +106,14 @@ sealed interface CommitRejection {
 
     /** 幂等键已提交过：重复回调不应该再造一版。 */
     data class AlreadyCommitted(val revisionId: RevisionId) : CommitRejection
+
+    /**
+     * 状态补丁里出现了未注册的角色。
+     *
+     * 「没有已注册角色」不等于「接受任意角色 id」：那会让状态表被模型编造的名字污染，
+     * 事后也没法判断那条状态属于谁。
+     */
+    data class UnknownCharacter(val ids: List<String>) : CommitRejection
 }
 
 /** 提交结果。 */

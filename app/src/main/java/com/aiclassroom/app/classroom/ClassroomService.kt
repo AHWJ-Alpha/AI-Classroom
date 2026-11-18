@@ -197,6 +197,13 @@ class ClassroomService(
             facts = facts,
         )
         store.saveSnapshot(snapshot)
+        // 人物也要真正注册进项目：否则状态校验那一侧不认识他们，
+        // 提示词里写着有这些人，校验却按空集合处理。
+        com.aiclassroom.classroom.domain.CharacterRegistration.register(
+            store = store,
+            projectId = projectId,
+            characters = snapshot.characters,
+        )
         return snapshot
     }
 

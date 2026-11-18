@@ -92,7 +92,8 @@ class UnitExecutorTest {
             ClassroomUnit(
                 id = unitId, projectId = projectId, index = 1, type = ProjectType.NOVEL,
                 chapter = "第一章", goal = "两人见面", dependsOn = emptyList(),
-                requiredCharacters = emptyList(), completionCriteria = listOf("见面"),
+                // 单元在总纲里声明了这个角色：状态补丁引用它才是合法的。
+                requiredCharacters = listOf(charId), completionCriteria = listOf("见面"),
                 inputStateVersion = 0, status = UnitStatus.PLANNED,
             ),
         )

@@ -58,6 +58,12 @@ class UnitCommitter(
 
         // 并发：状态补丁必须基于当前版本，否则拒绝并让调用方重新排任务。
         val patch = request.statePatch
+
+        // 角色边界：未注册的角色不能产生状态。
+        val unknown = if (patch != null) unknownCharacters(request.projectId, unit, patch) else emptyList()
+        if (unknown.isNotEmpty()) {
+            return CommitResult.Rejected(CommitRejection.UnknownCharacter(unknown))
+        }
         if (patch != null) {
             val actual = primaryStateVersion(request.projectId, patch)
             if (patch.baseVersion != actual) {
@@ -124,6 +130,29 @@ class UnitCommitter(
     private fun primaryStateVersion(projectId: ProjectId, patch: StatePatch): Int {
         val first = patch.changes.firstOrNull()?.actorId ?: return 0
         return store.characterState(projectId, first)?.version ?: 0
+    }
+
+    /**
+     * 补丁里引用的角色必须已经注册。
+     *
+     * 「没有已注册角色」不等于「接受任意角色 id」——那会让状态表被模型编造的
+     * 名字污染，事后也无法判断这条状态属于谁。
+     */
+    private fun unknownCharacters(
+        projectId: ProjectId,
+        unit: ClassroomUnit,
+        patch: StatePatch,
+    ): List<String> {
+        // 可接受的角色 = 项目档案里注册过的 ∪ 本单元在总纲里声明的。
+        // 后者是作者侧登记，不是模型当场编的；只认前者会让没有角色卡的教学项目寸步难行。
+        val registered = store.characters(projectId).map { it.id }.toSet() + unit.requiredCharacters.toSet()
+        val referenced = patch.changes.flatMap { change ->
+            when (change) {
+                is StateChange.SetRelationship -> listOf(change.actorId, change.target)
+                else -> listOf(change.actorId)
+            }
+        }
+        return referenced.filterNot { it in registered }.map { it.value }.distinct()
     }
 
     private fun applyPatch(projectId: ProjectId, patch: StatePatch, now: EpochMillis) {
