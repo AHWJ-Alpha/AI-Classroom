@@ -126,6 +126,7 @@ dependencies {
     implementation(project(":feature-tools-fs"))
     implementation(project(":feature-tools-net"))
     implementation(project(":feature-plugin"))
+    implementation(project(":feature-classroom"))
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
@@ -138,4 +139,5 @@ dependencies {
     // 纯 JVM 单测：视频抽帧的差异计算 / 选帧算法都只依赖 IntArray / List<Float>，
     // 不需要 Robolectric，直接在 JVM 上跑。
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
