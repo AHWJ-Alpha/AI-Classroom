@@ -57,8 +57,8 @@ fun ClassroomScreen(
     sourceConversationName: String? = null,
     /** 创建成功后由宿主拍来源上下文快照（人格/世界书/资料/事实边界）。 */
     onProjectCreated: (ProjectId) -> Unit = {},
-    /** 用户显式要求同步来源设定（会拍新快照并把已完成单元标为待复查）。 */
-    onSyncSource: (ProjectId) -> Unit = {},
+    /** 用户显式要求同步来源设定；返回给用户看的提示（null 表示成功）。 */
+    onSyncSource: (ProjectId) -> String? = { null },
 ) {
     val context = LocalContext.current
     val service = remember { ClassroomService(context) }
@@ -208,7 +208,11 @@ fun ClassroomScreen(
                     },
                     onRead = { readingUnitId = it },
                     onEditUnit = { editingUnit = it },
-                    onSync = { onSyncSource(project.id) },
+                    onSync = {
+                        notice = onSyncSource(project.id)
+                            ?: "已按来源对话同步设定，受影响的单元已标记待复查"
+                        reloadProjects()
+                    },
                     onRegenerate = {
                         val source = resolveSource(project.id)
                         if (source is SourceResolution.Ready) {

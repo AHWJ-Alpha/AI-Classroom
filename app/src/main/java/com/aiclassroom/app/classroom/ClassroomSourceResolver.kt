@@ -15,6 +15,17 @@ internal class ClassroomSourceResolver(
     private val store: ClassroomStore,
 ) {
 
+    /**
+     * 项目对应的来源对话本体。
+     *
+     * 同步来源设定时必须用**这个**对话的 config/files/记忆，
+     * 不能用用户此刻打开的对话 —— 否则在 B 打开 A 的项目点同步，会把 B 的资料写进 A。
+     */
+    fun conversationOf(projectId: ProjectId): Classroom? {
+        val sourceId = store.project(projectId)?.sourceConversationId ?: return null
+        return conversations().firstOrNull { it.id == sourceId }
+    }
+
     fun resolve(projectId: ProjectId): SourceResolution {
         val project = store.project(projectId) ?: return SourceResolution.SourceMissing
         val sourceId = project.sourceConversationId ?: return SourceResolution.Unbound

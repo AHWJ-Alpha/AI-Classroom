@@ -98,4 +98,22 @@ class ClassroomSourceResolverTest {
         val resolver = ClassroomSourceResolver({ emptyList() }, storeWith(project("conv-a")))
         assertTrue(resolver.resolve(ProjectId("nope")) is SourceResolution.SourceMissing)
     }
+
+    @Test
+    fun `同步取的是来源对话 不是当前打开的对话`() {
+        // 在 B 打开 A 的项目点同步，必须拿到 A —— 否则会把 B 的人设写进 A 的快照。
+        val a = conversation("conv-a", "数学", "https://a.example/v1", "model-a", "key-a")
+        val b = conversation("conv-b", "语文", "https://b.example/v1", "model-b", "key-b")
+        val resolver = ClassroomSourceResolver({ listOf(a, b) }, storeWith(project("conv-a")))
+
+        val source = resolver.conversationOf(ProjectId("p1"))
+        assertEquals("conv-a", source!!.id)
+        assertEquals("https://a.example/v1", source.config.baseUrl)
+    }
+
+    @Test
+    fun `来源不存在时同步拿不到对话`() {
+        val resolver = ClassroomSourceResolver({ emptyList() }, storeWith(project("gone")))
+        assertTrue(resolver.conversationOf(ProjectId("p1")) == null)
+    }
 }

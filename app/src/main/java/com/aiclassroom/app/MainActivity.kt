@@ -2705,48 +2705,58 @@ private fun AIClassroomApp(
                 },
                 // 显式同步：拍新快照并把已完成单元标为待复查。
                 // 刻意不做自动同步 —— 来源改了什么不该悄悄改写已有正文。
+                // 同步来源设定：必须用**项目自己的来源对话**取资料。
+                // 在 B 打开 A 的项目点同步时，绝不能把 B 的人设与资料写进 A 的快照。
                 onSyncSource = { pid ->
-                    runCatching {
-                        val svc = com.aiclassroom.app.classroom.ClassroomService(context)
-                        svc.syncSource(
-                            projectId = pid,
-                            mentorName = current.config.mentorName,
-                            mentorPrompt = current.config.mentorPrompt,
-                            userAlias = current.config.userAlias,
-                            viewMode = if (current.config.activeCharacterId.isBlank()) "author" else "character",
-                            activeCharacterId = current.config.activeCharacterId.takeIf { it.isNotBlank() },
-                            publicWorldBook = current.config.publicWorldBook,
-                            authorWorldBook = current.config.worldBook,
-                            characters = current.files
-                                .filter { it.kind == "character_card" }
-                                .map { f ->
-                                    val key = current.id + "|" + f.name
-                                    val id = java.util.UUID.nameUUIDFromBytes(
-                                        key.toByteArray(Charsets.UTF_8),
-                                    ).toString()
-                                    val split = com.aiclassroom.classroom.domain.CardSections.split(f.content)
-                                    com.aiclassroom.classroom.domain.SnapshotCharacter(
-                                        projectCharacterId = com.aiclassroom.classroom.domain.CharacterId(id),
-                                        sourceCharacterKey = f.name,
-                                        name = f.name.substringBeforeLast('.').ifBlank { f.name },
-                                        persona = split.persona,
-                                        authorPrivate = split.authorPrivate,
+                    val source = classroomSourceResolver.conversationOf(pid)
+                    if (source == null) {
+                        "这个项目还没有可用的来源对话，无法同步。"
+                    } else {
+                        runCatching {
+                            val svc = com.aiclassroom.app.classroom.ClassroomService(context)
+                            svc.syncSource(
+                                projectId = pid,
+                                mentorName = source.config.mentorName,
+                                mentorPrompt = source.config.mentorPrompt,
+                                userAlias = source.config.userAlias,
+                                viewMode = if (source.config.activeCharacterId.isBlank()) "author" else "character",
+                                activeCharacterId = source.config.activeCharacterId.takeIf { it.isNotBlank() },
+                                publicWorldBook = source.config.publicWorldBook,
+                                authorWorldBook = source.config.worldBook,
+                                characters = source.files
+                                    .filter { it.kind == "character_card" }
+                                    .map { f ->
+                                        val key = source.id + "|" + f.name
+                                        val id = java.util.UUID.nameUUIDFromBytes(
+                                            key.toByteArray(Charsets.UTF_8),
+                                        ).toString()
+                                        val split = com.aiclassroom.classroom.domain.CardSections.split(f.content)
+                                        com.aiclassroom.classroom.domain.SnapshotCharacter(
+                                            projectCharacterId = com.aiclassroom.classroom.domain.CharacterId(id),
+                                            sourceCharacterKey = f.name,
+                                            name = f.name.substringBeforeLast('.').ifBlank { f.name },
+                                            persona = split.persona,
+                                            authorPrivate = split.authorPrivate,
+                                        )
+                                    },
+                                materials = source.files.filter { it.kind != "character_card" }.map { f ->
+                                    com.aiclassroom.classroom.domain.SnapshotMaterial(
+                                        name = f.name,
+                                        type = f.type,
+                                        content = f.content.take(4000),
                                     )
                                 },
-                            materials = current.files.filter { it.kind != "character_card" }.map { f ->
-                                com.aiclassroom.classroom.domain.SnapshotMaterial(
-                                    name = f.name,
-                                    type = f.type,
-                                    content = f.content.take(4000),
-                                )
-                            },
-                            establishedFacts = current.memoryCards
-                                .filter { it.visibility != "author" }
-                                .map { it.title + "：" + it.summary }
-                                .take(20),
-                            historyThroughIndex = current.messages.lastIndex,
-                            sourceConversationId = current.id,
-                        )
+                                establishedFacts = source.memoryCards
+                                    .filter { it.visibility != "author" }
+                                    .map { it.title + "：" + it.summary }
+                                    .take(20),
+                                historyThroughIndex = source.messages.lastIndex,
+                                sourceConversationId = source.id,
+                            )
+                        }.exceptionOrNull()?.let {
+                            // 同步失败要告诉用户，不能静默当作已同步。
+                            "同步失败：" + (it.message ?: it::class.simpleName ?: "未知错误")
+                        }
                     }
                 },
             )
