@@ -23,3 +23,6 @@ captures/
 
 # 模拟器日志
 emulator.log
+
+# 宣传视频与素材（体积大，需要时单独用 LFS 管理）
+video/
