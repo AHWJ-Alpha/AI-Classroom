@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aiclassroom.app.classroom.ClassroomRunManager
 import com.aiclassroom.app.classroom.ClassroomService
+import com.aiclassroom.app.classroom.SourceResolution
 import com.aiclassroom.classroom.gateway.ModelPolicy
 import com.aiclassroom.classroom.domain.*
 import com.aiclassroom.classroom.domain.PlaythroughSave
@@ -41,9 +42,13 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ClassroomScreen(
-    /** 冻结的模型策略：来自来源对话，凭据单独传。 */
-    policy: ModelPolicy,
-    apiKey: String,
+    /**
+     * 按项目解析来源连接。
+     *
+     * 传函数而不是固定 policy：从「全部项目」打开别的对话的项目时，
+     * 必须用**那个项目自己的来源**，不能用当前对话的配置。
+     */
+    resolveSource: (ProjectId) -> SourceResolution,
     onClose: () -> Unit,
     /** 从通知点进来时要直接打开的项目。 */
     initialProjectId: ProjectId? = null,
@@ -184,13 +189,18 @@ fun ClassroomScreen(
                     notice = notice,
                     running = running,
                     onStart = {
-                        ClassroomRunManager.start(
-                            context = context,
-                            service = service,
-                            projectId = project.id,
-                            policy = policy,
-                            apiKey = apiKey,
-                        )
+                        val source = resolveSource(project.id)
+                        if (source is SourceResolution.Ready) {
+                            ClassroomRunManager.start(
+                                context = context,
+                                service = service,
+                                projectId = project.id,
+                                policy = source.connection.policy,
+                                apiKey = source.connection.apiKey,
+                            )
+                        } else {
+                            notice = source.describe()
+                        }
                     },
                     onPause = {
                         ClassroomRunManager.requestPause()
@@ -200,14 +210,19 @@ fun ClassroomScreen(
                     onEditUnit = { editingUnit = it },
                     onSync = { onSyncSource(project.id) },
                     onRegenerate = {
-                        ClassroomRunManager.start(
-                            context = context,
-                            service = service,
-                            projectId = project.id,
-                            policy = policy,
-                            apiKey = apiKey,
-                            staleOnly = true,
-                        )
+                        val source = resolveSource(project.id)
+                        if (source is SourceResolution.Ready) {
+                            ClassroomRunManager.start(
+                                context = context,
+                                service = service,
+                                projectId = project.id,
+                                policy = source.connection.policy,
+                                apiKey = source.connection.apiKey,
+                                staleOnly = true,
+                            )
+                        } else {
+                            notice = source.describe()
+                        }
                     },
                     onRefresh = { reloadProjects() },
                     planning = planning,
@@ -216,11 +231,18 @@ fun ClassroomScreen(
                         if (planning) return@OverviewView
                         planning = true
                         notice = "正在生成规格与总纲…"
+                        val source = resolveSource(project.id)
+                        if (source !is SourceResolution.Ready) {
+                            // 解析不到来源就不要发请求：宁可停下来说明原因，也不能借用别的对话。
+                            planning = false
+                            notice = source.describe()
+                            return@OverviewView
+                        }
                         scope.launch {
                             val outcome = service.plan(
                                 projectId = project.id,
-                                policy = policy,
-                                apiKey = apiKey,
+                                policy = source.connection.policy,
+                                apiKey = source.connection.apiKey,
                             )
                             planning = false
                             notice = when (outcome) {

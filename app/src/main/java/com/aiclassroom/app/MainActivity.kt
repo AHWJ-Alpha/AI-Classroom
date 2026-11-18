@@ -2046,6 +2046,12 @@ private fun AIClassroomApp(
     // 点结果卡时带上要打开的项目；优先级低于通知带来的项目。
     var classroomOpenProject by remember { mutableStateOf<String?>(null) }
 
+    // 课堂连接按项目来源解析；conversations 用 lambda 取最新，避免持有旧快照。
+    val classroomSourceResolver = com.aiclassroom.app.classroom.ClassroomSourceResolver(
+        conversations = { classes.toList() },
+        store = com.aiclassroom.app.classroom.ClassroomServiceProvider.store(context),
+    )
+
     // 结果卡/消息卡发来的打开意图：在这里消费，避免深层的参数穿透。
     LaunchedEffect(com.aiclassroom.app.classroom.ClassroomNavigation.requestSeq) {
         val pid = com.aiclassroom.app.classroom.ClassroomNavigation.pendingProjectId
@@ -2638,10 +2644,9 @@ private fun AIClassroomApp(
     ) {
         Surface(Modifier.fillMaxSize()) {
             com.aiclassroom.app.classroom.ui.ClassroomScreen(
-                // 完整策略（模型链/降级/温度/思考），不是单个模型名。
-                policy = com.aiclassroom.app.classroom.ClassroomGatewayFactory
-                    .policyOf(current.config),
-                apiKey = current.config.apiKey,
+                // 连接按**项目自己的来源对话**解析，而不是当前打开的对话：
+                // 从「全部项目」打开 A 的项目时，必须用 A 的模型与凭据。
+                resolveSource = { pid -> classroomSourceResolver.resolve(pid) },
                 onClose = { classroomOpen = false },
                 initialProjectId = (classroomOpenFromNotice ?: classroomOpenProject)
                     ?.let { com.aiclassroom.classroom.domain.ProjectId(it) },
