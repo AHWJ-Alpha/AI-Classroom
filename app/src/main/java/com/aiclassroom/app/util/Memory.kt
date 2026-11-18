@@ -44,76 +44,89 @@ internal fun parseLearningMemoryPack(raw: String, start: Int, end: Int): Learnin
             item.optInt("priority", 1).coerceIn(1, 5),
             start,
             end,
-            normalizeVisibility(item.optString("visibility", inferVisibility(summary))),
+            normalizeVisibility(item.optString("visibility", "author_private")),
             item.optJSONArray("knownBy").toStrings().map { name -> name.trim() }.filter { name -> name.isNotBlank() }.distinct().take(12),
             item.optJSONArray("unknownBy").toStrings().map { name -> name.trim() }.filter { name -> name.isNotBlank() }.distinct().take(12),
-            item.optString("evidence", "").replace(Regex("\\s+"), " ").trim().take(160)
+            item.optString("evidence", "").replace(Regex("\\s+"), " ").trim().take(160),
+            item.optString("id", "").trim().take(100)
         )
     }.filter { it.summary.isNotBlank() }
     LearningMemoryPack(premises, cards)
 }.getOrNull()
 
-internal fun localLearningMemoryPack(messages: List<ChatMessage>): LearningMemoryPack {
-    val recent = messages.takeLast(MEMORY_CARD_BUILD_MESSAGE_LIMIT)
-    val topicLine = recent.lastOrNull { it.role == "user" }?.text?.replace(Regex("\\s+"), " ")?.take(80).orEmpty()
-    val fullText = recent.joinToString(" ") { it.text }
-    val keywords = extractKeywords(fullText)
-    val visibility = inferVisibility(fullText)
-    val premises = listOfNotNull(
-        topicLine.takeIf { it.isNotBlank() }?.let { "最近用户正在围绕“$it”继续学习。" },
-        keywords.take(5).joinToString("、").takeIf { it.isNotBlank() }?.let { "近期高频主题包括：$it。" }
-    )
-    val card = MemoryCard(
-        title = topicLine.ifBlank { "近期课堂内容" }.take(28),
-        summary = recent.joinToString(" ") { it.text }.replace(Regex("\\s+"), " ").take(220).ifBlank { "暂无可整理内容。" },
-        keywords = keywords.take(12),
-        type = if (visibility == "public") "concept" else "narrative",
-        priority = 1,
-        startIndex = (messages.size - recent.size).coerceAtLeast(0),
-        endIndex = messages.lastIndex.coerceAtLeast(0),
-        visibility = visibility,
-        knownBy = if (visibility == "public") emptyList() else listOf("作者"),
-        unknownBy = if (visibility == "public") emptyList() else listOf("未获知该秘密的角色"),
-        evidence = if (visibility == "public") "公开课堂内容" else "用户叙述中出现心理、暗中、幕后或对方不知道等私密信号"
-    )
-    return LearningMemoryPack(premises, listOf(card).filter { it.summary.isNotBlank() })
-}
-
-internal fun mergeMemoryCards(cards: List<MemoryCard>): List<MemoryCard> = cards
-    .filter { it.summary.isNotBlank() }
-    .groupBy { "${it.title.lowercase(Locale.ROOT)}|${it.visibility}|${it.knownBy.joinToString(",")}|${it.unknownBy.joinToString(",")}" }
-    .map { (_, group) ->
-        val latest = group.last()
-        latest.copy(
-            keywords = group.flatMap { it.keywords }.distinct().take(14),
-            priority = group.maxOf { it.priority },
-            knownBy = group.flatMap { it.knownBy }.distinct().take(16),
-            unknownBy = group.flatMap { it.unknownBy }.distinct().take(16),
-            evidence = group.map { it.evidence }.lastOrNull { it.isNotBlank() }.orEmpty()
+/** 本地兜底只保存用户原话，不把模型自己的回复猜测成已确认事实。 */
+internal fun localLearningMemoryPack(
+    messages: List<ChatMessage>, startIndex: Int = (messages.size - MEMORY_CARD_BUILD_MESSAGE_LIMIT).coerceAtLeast(0)
+): LearningMemoryPack {
+    val cards = messages.drop(startIndex).mapIndexedNotNull { offset, message ->
+        if (message.role != "user" || message.text.isBlank()) return@mapIndexedNotNull null
+        val index = startIndex + offset
+        MemoryCard(
+            title = "用户原话 $index",
+            summary = message.text.replace(Regex("\\s+"), " ").take(260),
+            keywords = extractKeywords(message.text).take(12),
+            type = "quotation", priority = 1, startIndex = index, endIndex = index,
+            visibility = "character_private",
+            knownBy = message.audience,
+            evidence = "用户在第 ${index + 1} 条消息中直接表达；原话中的假设不是已发生事实",
+            factId = "quotation:$index"
         )
     }
+    return LearningMemoryPack(emptyList(), cards)
+}
 
-internal fun recallMemoryCards(cards: List<MemoryCard>, query: String, limit: Int): List<MemoryCard> {
+internal fun memoryFactKey(card: MemoryCard): String = card.factId.ifBlank {
+    "${card.type}:${card.title.trim().lowercase(Locale.ROOT)}"
+}
+
+/** 保存事实修订历史，供从旧消息创建分支时按时间取状态；同窗口重试幂等。 */
+internal fun mergeMemoryCards(cards: List<MemoryCard>): List<MemoryCard> = cards
+    .filter { it.summary.isNotBlank() }
+    .groupBy { "${memoryFactKey(it)}@${it.endIndex}" }
+    .values.map { versions -> versions.last().copy(
+        keywords = versions.flatMap { it.keywords }.distinct().take(14),
+        knownBy = versions.last().knownBy.distinct(), unknownBy = versions.last().unknownBy.distinct()
+    ) }.sortedBy { it.endIndex }
+
+/** 必须先选事实最新版本，再做可见性过滤，防止已失效的公开版本重新浮出。 */
+internal fun latestMemoryCards(cards: List<MemoryCard>): List<MemoryCard> = cards
+    .groupBy(::memoryFactKey).values.map { versions -> versions.maxByOrNull { it.endIndex }!! }
+
+internal fun memoryVisibleTo(card: MemoryCard, viewerIds: Set<String>?): Boolean {
+    if (viewerIds == null) return true // 作者视角
+    fun matches(names: List<String>) = names.any { name -> viewerIds.any { it.equals(name, true) } }
+    if (matches(card.unknownBy)) return false
+    return when (normalizeVisibility(card.visibility)) {
+        "public" -> true
+        "character_private" -> matches(card.knownBy)
+        else -> false
+    }
+}
+
+/** 先筛可见范围，再按相关性排序；优先级不能让零命中的卡片挤进上下文。 */
+internal fun recallMemoryCards(
+    cards: List<MemoryCard>, query: String, limit: Int, viewerIds: Set<String>? = null
+): List<MemoryCard> {
+    val visible = latestMemoryCards(cards).filter { memoryVisibleTo(it, viewerIds) }
     val queryWords = extractKeywords(query).toSet()
-    if (queryWords.isEmpty()) return cards.sortedByDescending { it.priority }.take(limit)
-    return cards.map { card ->
-        val titleWords = extractKeywords(card.title).toSet()
-        val summaryWords = extractKeywords(card.summary).toSet()
-        val keywordHits = card.keywords.count { it in queryWords } * 4
-        val titleHits = titleWords.count { it in queryWords } * 3
-        val summaryHits = summaryWords.count { it in queryWords }
-        val score = keywordHits + titleHits + summaryHits + card.priority
-        card to score
-    }.filter { it.second > 0 }
-        .sortedWith(compareByDescending<Pair<MemoryCard, Int>> { it.second }.thenByDescending { it.first.endIndex })
-        .map { it.first }
-        .take(limit)
+    if (queryWords.isEmpty()) return visible.sortedWith(
+        compareByDescending<MemoryCard> { it.priority }.thenByDescending { it.endIndex }
+    ).take(limit)
+    return visible.mapNotNull { card ->
+        val haystack = "${card.title} ${card.summary} ${card.keywords.joinToString(" ")}".lowercase(Locale.ROOT)
+        val hits = queryWords.count { haystack.contains(it) }
+        if (hits == 0) null else card to (hits * 4 + card.priority)
+    }.sortedWith(compareByDescending<Pair<MemoryCard, Int>> { it.second }.thenByDescending { it.first.endIndex })
+        .take(limit).map { it.first }
 }
 
 internal fun extractKeywords(text: String): List<String> {
     val cleaned = text.lowercase(Locale.ROOT)
     val latin = Regex("[a-zA-Z][a-zA-Z0-9_+#.-]{1,28}").findAll(cleaned).map { it.value }.toList()
-    val chinese = Regex("[\\u4e00-\\u9fa5]{2,8}").findAll(cleaned).map { it.value }.toList()
+    val chinese = Regex("[\\u4e00-\\u9fa5]{2,8}").findAll(cleaned).flatMap { match ->
+        // 中文没有空格；保留整段及二字词，使“钥匙在哪里”能召回“钥匙藏在阁楼”。
+        (listOf(match.value) + match.value.windowed(2)).asSequence()
+    }.toList()
     val stop = setOf("这个", "那个", "什么", "为什么", "怎么", "如何", "可以", "进行", "一个", "我们", "你是", "用户", "讲师", "回答", "问题", "课堂", "学习", "内容", "需要")
     return (latin + chinese)
         .map { it.trim('，', '。', '、', '：', ':', ';', '；', '.', ',', '?', '？', '!', '！', '“', '”', '"') }
@@ -151,12 +164,48 @@ internal fun extractPngCardText(bytes: ByteArray): String {
     return hits.joinToString("\n").replace(Regex("[^\\u0009\\u000A\\u000D\\u0020-\\u007E\\u4E00-\\u9FFF]"), " ").trim()
 }
 
-internal fun formatCharacterCards(cards: List<KnowledgeFile>): String {
+/** 索引只保留名字，避免把未出场角色的秘密作为索引注入。 */
+internal fun formatCharacterCardIndex(cards: List<KnowledgeFile>): String =
+    truncatePromptSection(cards.joinToString("、") { characterCardName(it) }, 1200)
+
+/** 每个设定小节公平分配预算，避免口吻、边界、对话示例因排在末尾而被整体裁掉。 */
+internal fun compactCharacterCard(content: String, budget: Int): String {
+    if (content.length <= budget) return content
+    val sections = content.split(Regex("(?m)(?=^#{1,3}\\s)" )).filter { it.isNotBlank() }
+    if (sections.size <= 1) {
+        val marker = "\n[设定已节选]\n"
+        val available = (budget - marker.length).coerceAtLeast(0)
+        return content.take(available * 2 / 3) + marker + content.takeLast(available - available * 2 / 3)
+    }
+    val allowance = ((budget - sections.size * 2) / sections.size).coerceAtLeast(0)
+    return sections.joinToString("\n\n") { it.trim().take(allowance) }.take(budget)
+}
+
+internal fun formatCharacterCards(cards: List<KnowledgeFile>, query: String = ""): String {
     if (cards.isEmpty()) return ""
-    val perCardLimit = (CHARACTER_CARD_CONTEXT_LIMIT / cards.size).coerceIn(700, 2200)
-    return truncatePromptSection(cards.joinToString("\n\n") { file ->
-        "[角色：${characterCardName(file)}｜来源：${file.name}]\n" + truncatePromptSection(file.content, perCardLimit)
-    }, CHARACTER_CARD_CONTEXT_LIMIT)
+    val words = extractKeywords(query)
+    val ranked = cards.map { file ->
+        val name = characterCardName(file)
+        val named = if (query.contains(name, ignoreCase = true)) 100 else 0
+        val text = file.content.lowercase(Locale.ROOT)
+        file to (named + words.count { text.contains(it) })
+    }.sortedByDescending { it.second }
+    val namedCards = cards.filter { query.contains(characterCardName(it), ignoreCase = true) }
+    // “角色12”不能同时被当成“角色1”出场；优先最长的显式名字。
+    val exact = namedCards.filter { candidate ->
+        val name = characterCardName(candidate)
+        namedCards.none { other ->
+            val longer = characterCardName(other)
+            longer.length > name.length && longer.contains(name, ignoreCase = true)
+        }
+    }
+    val selected = if (exact.isNotEmpty()) exact.take(4) else ranked.filter { it.second > 0 }.take(4).map { it.first }
+        .ifEmpty { if (cards.size == 1) cards else emptyList() }
+    if (selected.isEmpty()) return ""
+    val budget = (CHARACTER_CARD_CONTEXT_LIMIT / selected.size - 100).coerceAtLeast(200)
+    return selected.joinToString("\n\n") { file ->
+        "[角色：${characterCardName(file)}]\n" + compactCharacterCard(file.content, budget)
+    }.take(CHARACTER_CARD_CONTEXT_LIMIT)
 }
 
 internal fun splitKnowledgeChunks(text: String, chunkSize: Int = KNOWLEDGE_CHUNK_SIZE): List<String> {
@@ -192,13 +241,7 @@ internal fun recallKnowledgeSnippets(files: List<KnowledgeFile>, query: String, 
     }
     if (candidates.isEmpty()) return emptyList()
     val ranked = candidates.sortedByDescending { it.score }
-    val selected = if (ranked.first().score > 0) {
-        ranked
-    } else {
-        candidates.groupBy { it.fileName }
-            .values
-            .mapNotNull { it.firstOrNull() }
-    }
+    val selected = ranked.filter { it.score > 0 }
     val output = mutableListOf<KnowledgeSnippet>()
     var used = 0
     selected.forEach { snippet ->
@@ -213,10 +256,11 @@ internal fun recallKnowledgeSnippets(files: List<KnowledgeFile>, query: String, 
 internal fun normalizeVisibility(raw: String): String = when (raw.trim().lowercase(Locale.ROOT)) {
     "author_private", "private", "author", "作者私密", "幕后", "幕后设定" -> "author_private"
     "character_private", "character", "角色私密", "心理", "心理活动" -> "character_private"
-    else -> "public"
+    "public", "公开" -> "public"
+    else -> "author_private"
 }
 internal fun inferVisibility(text: String): String {
-    val privateSignals = listOf("作者私密", "幕后", "暗中", "偷偷", "秘密", "心理", "内心", "策划", "计划", "对方不知道", "不知道", "不可让", "不能让", "隐瞒", "伪装", "假装", "背叛")
+    val privateSignals = listOf("作者私密", "幕后", "暗中", "偷偷", "心理活动", "内心独白", "对方不知道", "不可让", "不能让", "隐瞒", "伪装", "假装", "背叛")
     val characterSignals = listOf("心理", "内心", "想法", "打算", "盘算")
     if (privateSignals.none { text.contains(it, ignoreCase = true) }) return "public"
     return if (characterSignals.any { text.contains(it, ignoreCase = true) }) "character_private" else "author_private"

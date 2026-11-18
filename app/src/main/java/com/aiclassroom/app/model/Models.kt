@@ -22,9 +22,27 @@ internal data class ChatMessage(
     val text: String,
     val toolCallsJson: String? = null,
     val toolCallId: String? = null,
-    val images: List<String> = emptyList()
+    val images: List<String> = emptyList(),
+    /** 空列表为作者对话；角色模式使用角色卡文件名作为稳定标识。 */
+    val audience: List<String> = emptyList()
 )
-internal data class BranchClass(val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String, val context: MutableList<ChatMessage> = mutableStateListOf())
+internal data class BranchClass(
+    val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String,
+    val context: MutableList<ChatMessage> = mutableStateListOf(), val snapshot: BranchSnapshot? = null,
+    val memoryCards: MutableList<MemoryCard> = mutableStateListOf(), var memoryProcessedCount: Int = 0
+)
+/** 分支只保存内容快照，不复制 API 密钥。 */
+internal data class BranchSnapshot(
+    val mentorName: String,
+    val userAlias: String,
+    val mentorPrompt: String,
+    val worldBook: String,
+    val publicWorldBook: String,
+    val activeCharacterId: String,
+    val files: List<KnowledgeFile>,
+    val memoryCards: List<MemoryCard>,
+    val sourceMessageCount: Int
+)
 internal data class KnowledgeFile(
     val name: String,
     val type: String,
@@ -45,7 +63,8 @@ internal data class MemoryCard(
     val visibility: String = "public",
     val knownBy: List<String> = emptyList(),
     val unknownBy: List<String> = emptyList(),
-    val evidence: String = ""
+    val evidence: String = "",
+    val factId: String = ""
 )
 internal data class LearningMemoryPack(val corePremises: List<String>, val cards: List<MemoryCard>)
 internal data class UpdateInfo(val version: String, val name: String, val url: String, val notes: String)
@@ -91,6 +110,8 @@ internal data class ClassroomConfig(
     val userAlias: String = "同学",
     val mentorPrompt: String = DEFAULT_MENTOR_PROMPT,
     val worldBook: String = "",
+    val activeCharacterId: String = "",
+    val publicWorldBook: String = "",
     val efficientMode: Boolean = true,
     val reverseConversation: Boolean = false,
     val themeMode: String = "custom",
@@ -159,7 +180,14 @@ internal data class Classroom(
     /** 该课堂的考试存档（未提交 / 已提交都留在这里），随课堂一起持久化；旧存档没有该字段时为 null。 */
     val exam: ExamSession? = null,
     /** 历次考试记录，最新的在最后；旧存档没有该字段 → 空列表。 */
-    val examRecords: List<ExamRecord> = emptyList()
+    val examRecords: List<ExamRecord> = emptyList(),
+    var memoryProcessedCount: Int = 0,
+    /**
+     * 稳定身份。课堂项目靠它判断归属，不能每次读取重新生成。
+     *
+     * 旧存档没有这个字段：第一次读到时补齐并立刻写回（见 ClassroomStore.load）。
+     */
+    val id: String = "",
 )
 
 

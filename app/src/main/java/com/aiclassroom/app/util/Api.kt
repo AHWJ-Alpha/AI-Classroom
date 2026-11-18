@@ -113,13 +113,14 @@ internal fun buildVisionJson(model: String, system: String, prompt: String, data
     val imageBlocks = dataUrls.joinToString(",") { url ->
         "{\"type\":\"image_url\",\"image_url\":{\"url\":\"" + url.escapeJson() + "\"}}"
     }
-    // 只带 user / assistant 气泡：history 里那条 system 是课堂状态包，已经有了自己的 system 槽位。
+    // 视觉请求保留已经按角色筛选的状态包。
+    val combinedSystem = (listOf(system) + history.filter { it.role == "system" }.map { it.text }).joinToString("\n")
     val historyBlocks = history.filter { it.role == "user" || it.role == "assistant" }
         .joinToString("") { message ->
             ",{\"role\":\"" + message.role + "\",\"content\":\"" + message.text.take(2000).escapeJson() + "\"}"
         }
     return "{\"model\":\"" + model.escapeJson() +
-        "\",\"messages\":[{\"role\":\"system\",\"content\":\"" + system.escapeJson() + "\"}" +
+        "\",\"messages\":[{\"role\":\"system\",\"content\":\"" + combinedSystem.escapeJson() + "\"}" +
         historyBlocks +
         ",{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"" + prompt.escapeJson() + "\"}," +
         imageBlocks + "]}],\"temperature\":0.7}"
