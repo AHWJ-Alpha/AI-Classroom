@@ -6,3 +6,20 @@ local.properties
 *.iml
 .idea/
 signing/
+
+# 本地验证产物：截图、临时解包、迁移脚本与备份，不进版本库
+.evidence/
+.tmp_aa/
+backup_migration/
+design-preview/
+shots/
+
+# 构建与工具产物
+*.apk
+*.aab
+*.hprof
+captures/
+.cxx/
+
+# 模拟器日志
+emulator.log
