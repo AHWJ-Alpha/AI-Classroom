@@ -25,6 +25,8 @@ data class ProjectContext(
     val projectTitle: String,
     val workVersion: Int,
     val excerpts: List<ProjectExcerpt>,
+    /** 非空表示这次没有给内容，并说明原因（例如角色视角不允许检索全文）。 */
+    val refusedReason: String = "",
 ) {
     val isEmpty: Boolean get() = excerpts.isEmpty()
 
@@ -53,8 +55,24 @@ object ProjectRetrieval {
         projectId: ProjectId,
         question: String,
         maxExcerpts: Int = 3,
+        /**
+         * 是否作者视角。
+         *
+         * 正文是按单元提交的，没有逐句的可见性元信息；
+         * 所以角色视角下**保守拒绝**全文检索，而不是把整章正文交给一个不该知道的人。
+         */
+        authorView: Boolean = true,
     ): ProjectContext? {
         val project = store.project(projectId) ?: return null
+        if (!authorView) {
+            return ProjectContext(
+                projectId = projectId,
+                projectTitle = project.title,
+                workVersion = project.workVersion,
+                excerpts = emptyList(),
+                refusedReason = "作品正文没有逐句可见范围，角色视角不检索全文",
+            )
+        }
         val pairs = store.units(projectId).sortedBy { it.index }.map { unit ->
             val revision = unit.currentRevisionId?.let { store.revision(it) }
             unit to revision?.content

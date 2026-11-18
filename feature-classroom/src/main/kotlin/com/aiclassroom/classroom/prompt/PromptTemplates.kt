@@ -120,6 +120,40 @@ object PromptTemplates {
         }
         appendLine("[/DATA:FIXED_CHARACTER_PROFILES]")
         appendLine()
+        if (snap != null && snap.facts.isNotEmpty()) {
+            // 作者视角拿全量并标注可见范围；角色视角只拿它确实知道的那几条。
+            val viewerKeys: Set<String>? = if (snap.viewMode == "author") {
+                null
+            } else {
+                val active = snap.characters.firstOrNull {
+                    it.projectCharacterId.value == snap.activeCharacterId
+                }
+                buildSet {
+                    active?.sourceCharacterKey?.takeIf { it.isNotBlank() }?.let { add(it) }
+                    active?.name?.takeIf { it.isNotBlank() }?.let { add(it) }
+                }
+            }
+            val visibleFacts = snap.facts.filter { it.visibleTo(viewerKeys) }
+            if (visibleFacts.isNotEmpty()) {
+                appendLine("[DATA:ESTABLISHED_FACTS]")
+                if (viewerKeys == null) {
+                    appendLine("作者视角：下列事实带可见范围，写台词时只有知情人能说出来。")
+                } else {
+                    appendLine("当前视角只能使用下列已知事实，其余内容此人并不知道。")
+                }
+                visibleFacts.forEach { f ->
+                    val tag = when (f.visibility) {
+                        Visibility.PUBLIC -> "公开"
+                        Visibility.RESTRICTED -> "限定"
+                        Visibility.AUTHOR_ONLY -> "仅作者"
+                    }
+                    val evidence = if (f.evidence.isNotBlank()) "（依据：" + f.evidence + "）" else ""
+                    appendLine("- （" + tag + "）" + f.content + evidence)
+                }
+                appendLine("[/DATA:ESTABLISHED_FACTS]")
+                appendLine()
+            }
+        }
         if (snap != null && snap.materials.isNotEmpty()) {
             appendLine("[DATA:MATERIALS]")
             snap.materials.forEach { m ->

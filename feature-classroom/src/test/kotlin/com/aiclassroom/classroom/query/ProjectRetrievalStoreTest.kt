@@ -72,4 +72,13 @@ class ProjectRetrievalStoreTest {
     fun `项目不存在返回 null`() {
         assertNull(ProjectRetrieval.forProject(store(), ProjectId("nope"), "随便问"))
     }
+
+    @Test
+    fun `角色视角不检索全文 并说明原因`() {
+        val s = store()
+        seed(s)
+        val ctx = ProjectRetrieval.forProject(s, pid, "解释第三节", authorView = false)!!
+        assertTrue(ctx.isEmpty, "角色视角不该拿到正文")
+        assertTrue(ctx.refusedReason.contains("角色视角"), "要说明为什么没给")
+    }
 }

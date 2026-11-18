@@ -1603,7 +1603,9 @@ private fun AIClassroomApp(
                 else bound.firstOrNull { question.contains(it.title) }
                 ?: return ""
 
-            val ctx = svc.projectContext(target.id, question)
+            // 角色视角不检索全文：正文没有逐句可见范围，给了就是泄密。
+            val authorView = room.config.activeCharacterId.isBlank()
+            val ctx = svc.projectContext(target.id, question, authorView = authorView)
             if (ctx == null || ctx.isEmpty) return ""
 
             buildString {
@@ -2694,10 +2696,17 @@ private fun AIClassroomApp(
                             },
                             // 记忆卡只有摘要，没有全文：这里只带「已确立的事实摘要」，
                             // 需要原文时回查消息，不把摘要当原文用。
-                            establishedFacts = current.memoryCards
-                                .filter { it.visibility != "author" }
-                                .map { it.title + "：" + it.summary }
-                                .take(20),
+                            // 事实带可见性与知情人：字符过滤（旧代码用 != "author"，而那个值从来不存在）
+                            facts = current.memoryCards.map { c ->
+                                com.aiclassroom.classroom.domain.SnapshotFact(
+                                    content = c.title + "：" + c.summary,
+                                    visibility = com.aiclassroom.classroom.domain.VisibilityRules
+                                        .fromLegacy(c.visibility),
+                                    knownBy = c.knownBy.toSet(),
+                                    unknownBy = c.unknownBy.toSet(),
+                                    evidence = c.evidence,
+                                )
+                            }.take(40),
                             historyThroughIndex = current.messages.lastIndex,
                             sourceConversationId = current.id,
                         )
@@ -2746,10 +2755,17 @@ private fun AIClassroomApp(
                                         content = f.content.take(4000),
                                     )
                                 },
-                                establishedFacts = source.memoryCards
-                                    .filter { it.visibility != "author" }
-                                    .map { it.title + "：" + it.summary }
-                                    .take(20),
+                                // 事实带可见性与知情人：字符过滤（旧代码用 != "author"，而那个值从来不存在）
+                            facts = source.memoryCards.map { c ->
+                                com.aiclassroom.classroom.domain.SnapshotFact(
+                                    content = c.title + "：" + c.summary,
+                                    visibility = com.aiclassroom.classroom.domain.VisibilityRules
+                                        .fromLegacy(c.visibility),
+                                    knownBy = c.knownBy.toSet(),
+                                    unknownBy = c.unknownBy.toSet(),
+                                    evidence = c.evidence,
+                                )
+                            }.take(40),
                                 historyThroughIndex = source.messages.lastIndex,
                                 sourceConversationId = source.id,
                             )

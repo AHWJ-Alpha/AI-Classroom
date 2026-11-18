@@ -136,12 +136,18 @@ class ClassroomService(
      *
      * 只读已提交的 revision（不读草稿、不调模型）；取不到就返回空。
      */
-    fun projectContext(projectId: ProjectId, question: String, maxExcerpts: Int = 3): ProjectContext? =
+    fun projectContext(
+        projectId: ProjectId,
+        question: String,
+        maxExcerpts: Int = 3,
+        authorView: Boolean = true,
+    ): ProjectContext? =
         com.aiclassroom.classroom.query.ProjectRetrieval.forProject(
             store = store,
             projectId = projectId,
             question = question,
             maxExcerpts = maxExcerpts,
+            authorView = authorView,
         )
 
     /** 当前对话下可讨论的项目（用于消歧：多个项目并存时不要偷偷选最后一个）。 */
@@ -165,7 +171,7 @@ class ClassroomService(
         authorWorldBook: String,
         characters: List<SnapshotCharacter>,
         materials: List<SnapshotMaterial>,
-        establishedFacts: List<String>,
+        facts: List<com.aiclassroom.classroom.domain.SnapshotFact>,
         historyThroughIndex: Int,
         sourceConversationId: String?,
     ): ContextSnapshot {
@@ -188,7 +194,7 @@ class ClassroomService(
             characters = characters.ifEmpty { previous?.characters.orEmpty() },
             materials = materials,
             historyThroughIndex = historyThroughIndex,
-            establishedFacts = establishedFacts,
+            facts = facts,
         )
         store.saveSnapshot(snapshot)
         return snapshot
@@ -210,7 +216,7 @@ class ClassroomService(
         authorWorldBook: String,
         characters: List<SnapshotCharacter>,
         materials: List<SnapshotMaterial>,
-        establishedFacts: List<String>,
+        facts: List<com.aiclassroom.classroom.domain.SnapshotFact>,
         historyThroughIndex: Int,
         sourceConversationId: String?,
     ): Pair<ContextSnapshot, Int> {
@@ -225,7 +231,7 @@ class ClassroomService(
             authorWorldBook = authorWorldBook,
             characters = characters,
             materials = materials,
-            establishedFacts = establishedFacts,
+            facts = facts,
             historyThroughIndex = historyThroughIndex,
             sourceConversationId = sourceConversationId,
         )

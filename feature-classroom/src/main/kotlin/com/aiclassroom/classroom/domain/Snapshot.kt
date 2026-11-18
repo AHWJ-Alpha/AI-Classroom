@@ -32,8 +32,13 @@ data class ContextSnapshot(
     val materials: List<SnapshotMaterial> = emptyList(),
     /** 纳入的历史边界（消息下标）；之后的新消息不在快照里。 */
     val historyThroughIndex: Int = -1,
-    /** 创建时已经确立的事实摘要，供生成参考。 */
-    val establishedFacts: List<String> = emptyList(),
+    /**
+     * 创建时已经确立的事实，带可见性与知情人。
+     *
+     * 不能退回成纯字符串列表：那样就无法按角色边界过滤，
+     * 只能全给或全不给 —— 前者泄密，后者模型没有依据。
+     */
+    val facts: List<SnapshotFact> = emptyList(),
 )
 
 /**

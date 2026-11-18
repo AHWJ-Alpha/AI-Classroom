@@ -292,7 +292,15 @@ object StoreCodec {
         "publicWorldBook" to Json.of(s.publicWorldBook),
         "authorWorldBook" to Json.of(s.authorWorldBook),
         "historyThroughIndex" to Json.of(s.historyThroughIndex),
-        "establishedFacts" to Json.arr(s.establishedFacts.map { Json.of(it) }),
+        "facts" to Json.arr(s.facts.map { f ->
+            Json.obj(
+                "content" to Json.of(f.content),
+                "visibility" to Json.of(f.visibility.name),
+                "knownBy" to Json.arr(f.knownBy.map { Json.of(it) }),
+                "unknownBy" to Json.arr(f.unknownBy.map { Json.of(it) }),
+                "evidence" to Json.of(f.evidence),
+            )
+        }),
         "characters" to Json.arr(s.characters.map { c ->
             Json.obj(
                 "projectCharacterId" to Json.of(c.projectCharacterId.value),
@@ -329,7 +337,20 @@ object StoreCodec {
             publicWorldBook = o["publicWorldBook"].asString() ?: "",
             authorWorldBook = o["authorWorldBook"].asString() ?: "",
             historyThroughIndex = o["historyThroughIndex"].asInt() ?: -1,
-            establishedFacts = o["establishedFacts"].asArray().mapNotNull { it.asString() },
+            // 旧存档只有字符串数组：来历不明的可见性一律按作者私密处理，
+            // 宁可少给角色，也不能把作者秘密当公开事实交给人物。
+            facts = o["facts"].asArray().map { item ->
+                val f = item.asObject()
+                SnapshotFact(
+                    content = f["content"].asString() ?: "",
+                    visibility = enumOr(f["visibility"].asString(), Visibility.AUTHOR_ONLY),
+                    knownBy = f["knownBy"].asArray().mapNotNull { it.asString() }.toSet(),
+                    unknownBy = f["unknownBy"].asArray().mapNotNull { it.asString() }.toSet(),
+                    evidence = f["evidence"].asString() ?: "",
+                )
+            } + o["establishedFacts"].asArray().mapNotNull { it.asString() }.map {
+                SnapshotFact(content = it, visibility = Visibility.AUTHOR_ONLY)
+            },
             characters = o["characters"].asArray().map { item ->
                 val c = item.asObject()
                 SnapshotCharacter(
