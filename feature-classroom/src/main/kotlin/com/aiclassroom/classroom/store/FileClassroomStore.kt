@@ -22,7 +22,11 @@ import java.nio.file.StandardCopyOption
  *
  * 事务：内存快照 + 失败回滚；只有最外层事务成功才落盘。
  */
-class FileClassroomStore(private val root: File) : ClassroomStore {
+class FileClassroomStore(
+    private val root: File,
+    /** 测试用：注入写盘失败，验证事务回滚与深度不被破坏。 */
+    private val writeText: (File, String) -> Unit = { file, text -> file.writeText(text) },
+) : ClassroomStore {
 
     private val mainFile = File(root, FILE_NAME)
     private val tmpFile = File(root, FILE_NAME + ".tmp")
@@ -84,7 +88,14 @@ class FileClassroomStore(private val root: File) : ClassroomStore {
 
     private fun load() {
         if (!mainFile.exists()) return
-        val parsed = runCatching { JsonParser.parse(mainFile.readText()) }.getOrNull() ?: return
+        val text = runCatching { mainFile.readText() }.getOrNull()
+        val parsed = text?.let { runCatching { JsonParser.parse(it) }.getOrNull() }
+        if (parsed == null) {
+            // 存档读不出来时先留档，再从空状态启动：
+            // 直接当空仓库继续写会把唯一副本覆盖掉，用户的正文就真的没了。
+            preserveCorruptFile()
+            return
+        }
         val o = parsed.asObject()
         state.projects.clear(); o["projects"].asArray().forEach { state.projects[StoreCodec.project(it).id.value] = StoreCodec.project(it) }
         state.specs.clear(); o["specs"].asArray().forEach { val s = specOf(it); state.specs[s.projectId.value + "#" + s.version] = s }
@@ -116,6 +127,13 @@ class FileClassroomStore(private val root: File) : ClassroomStore {
         }
     }
 
+    /** 把读不出来的存档改名保留，供人工恢复；不删除、不覆盖。 */
+    private fun preserveCorruptFile() {
+        val stamp = System.currentTimeMillis()
+        val target = File(root, FILE_NAME + ".corrupt-" + stamp)
+        runCatching { mainFile.renameTo(target) }
+    }
+
     private fun persist() {
         val doc = Json.obj(
             "schemaVersion" to Json.of(1),
@@ -141,7 +159,7 @@ class FileClassroomStore(private val root: File) : ClassroomStore {
             "snapshots" to Json.arr(state.snapshots.values.map(StoreCodec::snapshot)),
             "events" to Json.arr(state.events.values.map(StoreCodec::event)),
         )
-        tmpFile.writeText(JsonWriter.write(doc))
+        writeText(tmpFile, JsonWriter.write(doc))
         Files.move(
             tmpFile.toPath(), mainFile.toPath(),
             StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE,
@@ -150,130 +168,203 @@ class FileClassroomStore(private val root: File) : ClassroomStore {
 
     /** 只有最外层事务结束才落盘；嵌套事务交给最外层统一提交。 */
     private fun mutate(block: () -> Unit) {
-        block()
-        if (depth == 0) persist()
-    }
-
-    override fun <T> transaction(block: () -> T): T {
+        if (depth > 0) {
+            // 事务内部：交给最外层统一提交。
+            block()
+            return
+        }
         val snapshot = state.snapshot()
-        depth++
-        return try {
-            val result = block()
-            depth--
-            if (depth == 0) persist()
-            result
+        block()
+        try {
+            persist()
         } catch (t: Throwable) {
-            depth--
+            // 落盘失败不能留下「内存改了、磁盘没改」的假成功。
             state = snapshot
             rollbackCount++
             throw t
         }
     }
 
+    @Synchronized
+    override fun <T> transaction(block: () -> T): T {
+        val snapshot = state.snapshot()
+        depth++
+        val result: T
+        try {
+            result = block()
+        } catch (t: Throwable) {
+            // 只在这里递减一次：以前 persist 失败会走进下面的 catch 再减一次，
+            // depth 变成 -1 之后所有写入都不再落盘，现象是「改动看着在、重启就没了」。
+            depth--
+            state = snapshot
+            rollbackCount++
+            throw t
+        }
+        depth--
+        if (depth == 0) {
+            try {
+                persist()
+            } catch (t: Throwable) {
+                // 落盘失败：内存回到事务前，磁盘仍是上一份完整数据，两边一致。
+                state = snapshot
+                rollbackCount++
+                throw t
+            }
+        }
+        return result
+    }
+
     // ---------- 项目 ----------
 
+    @Synchronized
     override fun createProject(project: ClassroomProject) = mutate { state.projects[project.id.value] = project }
+    @Synchronized
     override fun project(id: ProjectId) = state.projects[id.value]
+    @Synchronized
     override fun projects() = state.projects.values.toList()
+    @Synchronized
     override fun updateProject(project: ClassroomProject) = mutate { state.projects[project.id.value] = project }
 
+    @Synchronized
     override fun saveSpec(spec: ProjectSpec) = mutate { state.specs[spec.projectId.value + "#" + spec.version] = spec }
+    @Synchronized
     override fun spec(id: ProjectId, version: Int) = state.specs[id.value + "#" + version]
+    @Synchronized
     override fun latestSpec(id: ProjectId) =
         state.specs.filterKeys { it.startsWith(id.value + "#") }.values.maxByOrNull { it.version }
 
+    @Synchronized
     override fun saveSnapshot(snapshot: ContextSnapshot) = mutate {
         state.snapshots[snapshot.projectId.value + "#" + snapshot.version] = snapshot
     }
 
+    @Synchronized
     override fun latestSnapshot(projectId: ProjectId) =
         state.snapshots.filterKeys { it.startsWith(projectId.value + "#") }.values.maxByOrNull { it.version }
 
+    @Synchronized
     override fun saveOutline(outline: ProjectOutline) = mutate { state.outlines[outline.projectId.value + "#" + outline.version] = outline }
+    @Synchronized
     override fun outline(id: ProjectId, version: Int) = state.outlines[id.value + "#" + version]
+    @Synchronized
     override fun latestOutline(id: ProjectId) =
         state.outlines.filterKeys { it.startsWith(id.value + "#") }.values.maxByOrNull { it.version }
 
+    @Synchronized
     override fun upsertUnit(unit: ClassroomUnit) = mutate { state.units[unit.id.value] = unit }
+    @Synchronized
     override fun unit(unitId: UnitId) = state.units[unitId.value]
+    @Synchronized
     override fun units(projectId: ProjectId) =
         state.units.values.filter { it.projectId == projectId }.sortedBy { it.index }
 
     // ---------- 版本 ----------
 
+    @Synchronized
     override fun saveRevision(revision: UnitRevision) = mutate { state.revisions[revision.id.value] = revision }
+    @Synchronized
     override fun revision(revisionId: RevisionId) = state.revisions[revisionId.value]
+    @Synchronized
     override fun revisions(unitId: UnitId) =
         state.revisions.values.filter { it.unitId == unitId }.sortedBy { it.version }
 
+    @Synchronized
     override fun officialRevision(unitId: UnitId) =
         state.revisions.values.filter { it.unitId == unitId && it.committedAt != null }.maxByOrNull { it.version }
 
     // ---------- 事实与角色 ----------
 
+    @Synchronized
     override fun saveFact(fact: FactRevision) = mutate { state.facts[fact.factId.value + "#" + fact.version] = fact }
+    @Synchronized
     override fun facts(projectId: ProjectId) = state.facts.values.filter { it.projectId == projectId }
+    @Synchronized
     override fun latestFactVersion(factId: FactId, projectId: ProjectId) =
-        state.facts.filterKeys { it.startsWith(factId.value + "#") }.values.maxByOrNull { it.version }
+        state.facts.values
+            .filter { it.factId == factId && it.projectId == projectId }
+            .maxByOrNull { it.version }
 
     // 角色按「项目#角色」分区：不同项目里同名的角色是两个不同的人，
     // 只按 characterId 存会让 A 项目的状态覆盖 B 项目。
     private fun charKey(projectId: ProjectId?, characterId: CharacterId) =
         (projectId?.value ?: "") + "#" + characterId.value
 
+    @Synchronized
     override fun saveCharacterState(s: CharacterState) = mutate {
         state.charStates[charKey(s.projectId, s.characterId)] = s
     }
 
+    @Synchronized
     override fun characterStates(projectId: ProjectId) =
         state.charStates.values.filter { it.projectId == projectId }
 
+    @Synchronized
     override fun characterState(projectId: ProjectId, characterId: CharacterId) =
         state.charStates[charKey(projectId, characterId)]
 
+    @Synchronized
     override fun saveCharacter(profile: CharacterProfile) = mutate {
         state.chars[charKey(profile.projectId, profile.id)] = profile
     }
 
+    @Synchronized
     override fun characters(projectId: ProjectId) =
         state.chars.values.filter { it.projectId == projectId }
 
     // ---------- 任务 ----------
 
+    @Synchronized
     override fun saveRun(run: GenerationRun) = mutate { state.runs[run.id.value] = run }
+    @Synchronized
     override fun run(runId: RunId) = state.runs[runId.value]
+    @Synchronized
     override fun activeRun(projectId: ProjectId) =
         state.runs.values.firstOrNull { it.projectId == projectId && it.status == RunStatus.RUNNING }
 
+    @Synchronized
     override fun runs(projectId: ProjectId) =
         state.runs.values.filter { it.projectId == projectId }
 
+    @Synchronized
     override fun saveAttempt(attempt: GenerationAttempt) = mutate { state.attempts[attempt.id.value] = attempt }
+    @Synchronized
     override fun attempts(runId: RunId) = state.attempts.values.filter { it.runId == runId }
 
+    @Synchronized
     override fun saveCheckpoint(checkpoint: Checkpoint) = mutate { state.checkpoints[checkpoint.runId.value] = checkpoint }
+    @Synchronized
     override fun checkpoint(runId: RunId) = state.checkpoints[runId.value]
 
     // ---------- 进度 ----------
 
+    @Synchronized
     override fun saveEvent(event: ClassroomEvent) = mutate { state.events[event.eventId] = event }
+    @Synchronized
     override fun event(eventId: String) = state.events[eventId]
+    @Synchronized
     override fun pendingEvents(sourceConversationId: String) =
         state.events.values.filter {
             it.sourceConversationId == sourceConversationId && it.delivery == DeliveryState.PENDING
         }.sortedBy { it.createdAt }
 
+    @Synchronized
     override fun saveReaderProgress(progress: ReaderProgress) = mutate { state.reader[progress.projectId.value] = progress }
+    @Synchronized
     override fun readerProgress(projectId: ProjectId) = state.reader[projectId.value]
 
+    @Synchronized
     override fun saveLearningProgress(progress: LearningProgress) =
         mutate { state.learning[progress.projectId.value + "#" + progress.objectiveId] = progress }
 
+    @Synchronized
     override fun learningProgress(projectId: ProjectId, objectiveId: String) =
         state.learning[projectId.value + "#" + objectiveId]
 
+    @Synchronized
     override fun savePlaythrough(save: PlaythroughSave) = mutate { state.saves[save.id.value] = save }
+    @Synchronized
     override fun playthroughs(projectId: ProjectId) = state.saves.values.filter { it.projectId == projectId }
+    @Synchronized
     override fun playthrough(id: SaveId) = state.saves[id.value]
 
     // ---------- 规格/总纲的 JSON（字段多，单独放） ----------
