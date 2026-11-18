@@ -43,6 +43,8 @@ object ClassroomRunManager {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO) // 进程级，不随界面销毁
     private val paused = AtomicBoolean(false)
+    /** 用户明确取消（区别于暂停）：引擎据此写入 CANCELLED 而不是 PAUSED。 */
+    private val cancelRequested = AtomicBoolean(false)
     private var cancelJob: Job? = null
 
     private val _running = MutableStateFlow(false)
@@ -53,6 +55,7 @@ object ClassroomRunManager {
 
     val control = object : RunControl {
         override fun shouldContinue() = !paused.get()
+        override fun isCancelled() = cancelRequested.get()
     }
 
     fun requestPause() { paused.set(true) }
@@ -60,8 +63,10 @@ object ClassroomRunManager {
     /** 取消：只停后续，已提交内容一律保留。 */
     fun cancel() {
         paused.set(true)
+        cancelRequested.set(true)
+        // 不在这里清 running：旧协程可能还在提交当前单元。
+        // 提前放行会让新任务与旧任务同时跑，而且旧任务的收尾会覆盖新任务状态。
         cancelJob?.cancel()
-        _running.value = false
     }
 
     /**
@@ -104,11 +109,23 @@ object ClassroomRunManager {
                     delay(2000)
                 }
             }
-            val outcome = runCatching {
+            val committedNow = { service.store.units(projectId).count { it.status == UnitStatus.READY } }
+
+            // 取消不是失败，异常也不是「没有待处理单元」 —— 这两种都必须留下真实原因。
+            val outcome = try {
                 if (staleOnly) service.regenerateStale(projectId, policy, apiKey, control)
                 else service.run(projectId, policy, apiKey, control)
-            }.getOrNull()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                RunOutcome.Cancelled(committedNow())
+            } catch (e: Throwable) {
+                RunOutcome.NeedsAttention(
+                    committedNow(),
+                    e.message ?: e::class.simpleName ?: "未知错误",
+                )
+            }
             _running.value = false
+            cancelRequested.set(false)
+            paused.set(false)
             watcher.cancel()
             _notice.value = when (outcome) {
                 null -> "没有待处理的单元"

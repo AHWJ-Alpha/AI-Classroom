@@ -12,6 +12,14 @@ interface UnitRunner {
 interface RunControl {
     /** 返回 false 表示应当停下来（暂停或取消）。 */
     fun shouldContinue(): Boolean
+
+    /**
+     * 本次停下是用户**明确取消**，而不是暂停。
+     *
+     * 分开是必要的：暂停可以继续，取消不该被恢复成「还有待办」；
+     * 两者的事件类型与界面文案也不一样。
+     */
+    fun isCancelled(): Boolean = false
 }
 
 sealed interface RunOutcome {
@@ -49,9 +57,13 @@ class RunEngine(
 
         while (true) {
             if (!control.shouldContinue()) {
-                val pausedRun = store.run(runId)?.copy(status = RunStatus.PAUSED, updatedAt = clock())
-                if (pausedRun != null) store.saveRun(pausedRun)
-                return RunOutcome.Paused(committed)
+                // 取消与暂停必须分开：状态、事件和界面文案都不一样。
+                val cancelled = control.isCancelled()
+                val status = if (cancelled) RunStatus.CANCELLED else RunStatus.PAUSED
+                val stoppedRun = store.run(runId)?.copy(status = status, updatedAt = clock())
+                if (stoppedRun != null) store.saveRun(stoppedRun)
+                return if (cancelled) RunOutcome.Cancelled(committed)
+                else RunOutcome.Paused(committed)
             }
             if (executed >= maxUnitsPerRun) {
                 return RunOutcome.Stalled(committed, "超过单次任务的单元上限 " + maxUnitsPerRun)
