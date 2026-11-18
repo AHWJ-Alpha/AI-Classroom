@@ -12,6 +12,8 @@
     </queries>
     <!-- Used by Android's system haptic feedback for key knowledge-base actions. -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 课堂生成进度通知（Android 13+ 需运行时授予，未授予时任务照常跑，只是没有通知）。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- 本地生图（SD WebUI / 自定义）与局域网服务只提供 http，targetSdk 35 默认拦明文，
          所以全局放开；https 仍走系统信任链校验。 -->
@@ -56,6 +58,14 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+        <receiver
+            android:name=".classroom.RunActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.aiclassroom.app.classroom.PAUSE" />
+                <action android:name="com.aiclassroom.app.classroom.CANCEL" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>
