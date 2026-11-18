@@ -57,4 +57,18 @@ object RunRecovery {
         }
         return Report(paused, reset)
     }
+
+    /**
+     * 把仍然处于运行态的任务标记为已取消。
+     *
+     * 用在「用户在网络请求途中取消」这条路径上：协程被直接取消，
+     * 引擎的循环来不及写状态，落盘的 run 会一直停在 RUNNING。
+     */
+    fun markCancelled(store: ClassroomStore, projectId: ProjectId, clock: () -> EpochMillis): Int {
+        val active = store.runs(projectId).filter { it.status == RunStatus.RUNNING }
+        for (run in active) {
+            store.saveRun(run.copy(status = RunStatus.CANCELLED, updatedAt = clock()))
+        }
+        return active.size
+    }
 }

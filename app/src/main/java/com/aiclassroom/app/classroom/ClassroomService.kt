@@ -29,7 +29,8 @@ import java.io.File
  */
 class ClassroomService(
     context: Context,
-    private val clock: () -> EpochMillis = { System.currentTimeMillis() },
+    /** 对外可见：取消落盘等收尾逻辑需要同一时钟。 */
+    val clock: () -> EpochMillis = { System.currentTimeMillis() },
     /**
      * 仓库实例由 [ClassroomServiceProvider] 统一提供。
      *

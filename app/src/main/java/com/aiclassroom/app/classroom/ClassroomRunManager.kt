@@ -116,6 +116,13 @@ object ClassroomRunManager {
                 if (staleOnly) service.regenerateStale(projectId, policy, apiKey, control)
                 else service.run(projectId, policy, apiKey, control)
             } catch (e: kotlinx.coroutines.CancellationException) {
+                // 协程被直接取消时引擎来不及写状态：这里补上，
+                // 否则重建仓库后任务会一直是 RUNNING，看起来像还在跑。
+                runCatching {
+                    com.aiclassroom.classroom.exec.RunRecovery.markCancelled(
+                        service.store, projectId, service.clock,
+                    )
+                }
                 RunOutcome.Cancelled(committedNow())
             } catch (e: Throwable) {
                 RunOutcome.NeedsAttention(
