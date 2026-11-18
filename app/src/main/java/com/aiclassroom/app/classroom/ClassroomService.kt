@@ -11,6 +11,7 @@ import com.aiclassroom.classroom.exec.RunRecovery
 import com.aiclassroom.classroom.exec.UnitExecutor
 import com.aiclassroom.classroom.gateway.FinishReason
 import com.aiclassroom.classroom.gateway.ModelPolicy
+import com.aiclassroom.classroom.gateway.ModelRequests
 import com.aiclassroom.classroom.query.ProjectContext
 import com.aiclassroom.classroom.gateway.ModelMessage
 import com.aiclassroom.classroom.gateway.ModelRequest
@@ -251,9 +252,8 @@ class ClassroomService(
 
         val gateway = ClassroomGatewayFactory.create(policy, apiKey)
         val call = gateway.complete(
-            ModelRequest(
-                model = policy.primaryModel,
-                fallbackModels = policy.fallbackModels,
+            ModelRequests.fromPolicy(
+                policy = policy,
                 messages = listOf(
                     ModelMessage(
                         ModelMessage.Role.USER,
@@ -381,8 +381,7 @@ class ClassroomService(
             store = store,
             committer = committer,
             clock = clock,
-            model = policy.primaryModel,
-            fallbacks = policy.fallbackModels,
+            policy = policy,
         )
         return RunEngine(store, executor, control, clock).run(projectId, runId)
     }

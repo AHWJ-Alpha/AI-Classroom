@@ -9,6 +9,8 @@ import com.aiclassroom.classroom.domain.*
 import com.aiclassroom.classroom.gateway.FinishReason
 import com.aiclassroom.classroom.gateway.ModelCallResult
 import com.aiclassroom.classroom.gateway.ModelGateway
+import com.aiclassroom.classroom.gateway.ModelPolicy
+import com.aiclassroom.classroom.gateway.ModelRequests
 import com.aiclassroom.classroom.gateway.ModelMessage
 import com.aiclassroom.classroom.gateway.ModelRequest
 import com.aiclassroom.classroom.prompt.PromptTemplates
@@ -40,9 +42,8 @@ class UnitExecutor(
     private val committer: UnitCommitter,
     private val clock: () -> EpochMillis,
     private val maxReviseAttempts: Int = 2,
-    private val model: String = "default",
-    /** 降级顺序：主模型失败时按这个顺序换。 */
-    private val fallbacks: List<String> = emptyList(),
+    /** 冻结的模型策略：所有阶段的请求都由它构造，避免各调用点漏参数。 */
+    private val policy: ModelPolicy = ModelPolicy("", "", "default"),
 ) : UnitRunner {
 
     override suspend fun execute(projectId: ProjectId, unitId: UnitId, runId: RunId): UnitOutcome {
@@ -107,9 +108,8 @@ class UnitExecutor(
             }
 
             val result = gateway.complete(
-                ModelRequest(
-                    model = model,
-                    fallbackModels = fallbacks,
+                ModelRequests.fromPolicy(
+                    policy = policy,
                     messages = listOf(ModelMessage(ModelMessage.Role.USER, prompt)),
                     expectJson = true,
                 ),
@@ -131,9 +131,8 @@ class UnitExecutor(
 
             // 审查是独立的一次模型调用：不能拿「生成器自己觉得没问题」当通过。
             val reviewCall = gateway.complete(
-                ModelRequest(
-                    model = model,
-                    fallbackModels = fallbacks,
+                ModelRequests.fromPolicy(
+                    policy = policy,
                     messages = listOf(
                         ModelMessage(
                             ModelMessage.Role.USER,
@@ -220,9 +219,8 @@ class UnitExecutor(
             ),
         )
         val call = gateway.complete(
-            ModelRequest(
-                model = model,
-                fallbackModels = fallbacks,
+            ModelRequests.fromPolicy(
+                policy = policy,
                 messages = listOf(ModelMessage(ModelMessage.Role.USER, prompt)),
                 expectJson = true,
             ),
