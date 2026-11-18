@@ -215,6 +215,10 @@ object PromptTemplates {
         val spec: ProjectSpec,
         val unit: PlannedUnit,
         val text: String,
+        /** 来源设定：审查要判断一致性，没有设定就只能靠猜。 */
+        val snapshot: ContextSnapshot? = null,
+        /** 用户对本章已生效的补充要求。 */
+        val directiveNotes: String = "",
 )
 
     fun reviewer(input: ReviewerInput): String = buildString {
@@ -223,6 +227,43 @@ object PromptTemplates {
         appendLine("[TASK_ROLE]")
         appendLine("你是审查者。只指出问题，不重写正文。")
         appendLine()
+        if (input.directiveNotes.isNotBlank()) {
+            // 用户改过目标时，审查必须按**新目标**判，否则报告永远是旧口径。
+            appendLine("[USER_DIRECTIVE]")
+            appendLine(input.directiveNotes)
+            appendLine()
+        }
+        val snap = input.snapshot
+        if (snap != null) {
+            if (snap.publicWorldBook.isNotBlank()) {
+                appendLine("[DATA:PUBLIC_WORLD]")
+                appendLine(snap.publicWorldBook)
+                appendLine("[/DATA:PUBLIC_WORLD]")
+                appendLine()
+            }
+            if (snap.characters.isNotEmpty()) {
+                appendLine("[DATA:CHARACTERS]")
+                snap.characters.forEach { c ->
+                    appendLine("- " + c.name + "：" + c.persona.replace("\n", " "))
+                }
+                appendLine("[/DATA:CHARACTERS]")
+                appendLine()
+            }
+            if (snap.facts.isNotEmpty()) {
+                appendLine("[DATA:ESTABLISHED_FACTS]")
+                appendLine("以下事实带可见范围，用来判断一致性；不要把只有作者知道的内容当成人人都知道。")
+                snap.facts.forEach { f ->
+                    val tag = when (f.visibility) {
+                        Visibility.PUBLIC -> "公开"
+                        Visibility.RESTRICTED -> "限定"
+                        Visibility.AUTHOR_ONLY -> "仅作者"
+                    }
+                    appendLine("- （" + tag + "）" + f.content)
+                }
+                appendLine("[/DATA:ESTABLISHED_FACTS]")
+                appendLine()
+            }
+        }
         appendLine("[CURRENT_UNIT_PLAN]")
         appendLine("目标：" + input.unit.goal)
         input.unit.completionCriteria.forEach { appendLine("完成条件：" + it) }

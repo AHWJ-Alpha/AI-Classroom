@@ -137,7 +137,13 @@ class UnitExecutor(
                         ModelMessage(
                             ModelMessage.Role.USER,
                             PromptTemplates.reviewer(
-                                PromptTemplates.ReviewerInput(spec = spec, unit = planned, text = text),
+                                PromptTemplates.ReviewerInput(
+                                    spec = spec,
+                                    unit = planned,
+                                    text = text,
+                                    snapshot = snapshot,
+                                    directiveNotes = unit.directive?.notes.orEmpty(),
+                                ),
                             ),
                         ),
                     ),

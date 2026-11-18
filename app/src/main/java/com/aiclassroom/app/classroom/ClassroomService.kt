@@ -271,7 +271,12 @@ class ClassroomService(
                 messages = listOf(
                     ModelMessage(
                         ModelMessage.Role.USER,
-                        PlannerPrompt.build(rawRequest, project.type, desiredUnits),
+                        PlannerPrompt.build(
+                            rawRequest = rawRequest,
+                            type = project.type,
+                            desiredUnits = desiredUnits,
+                            snapshot = store.latestSnapshot(projectId),
+                        ),
                     ),
                 ),
                 expectJson = true,
