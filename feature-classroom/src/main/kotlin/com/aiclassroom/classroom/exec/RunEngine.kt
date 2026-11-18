@@ -1,0 +1,104 @@
+package com.aiclassroom.classroom.exec
+
+import com.aiclassroom.classroom.domain.*
+import com.aiclassroom.classroom.repository.ClassroomStore
+
+/** 单个单元的执行能力。抽成接口，编排器就能用假实现测各种路径。 */
+interface UnitRunner {
+    suspend fun execute(projectId: ProjectId, unitId: UnitId, runId: RunId): UnitOutcome
+}
+
+/** 任务控制：暂停与取消都由外部信号决定，编排器每轮检查一次。 */
+interface RunControl {
+    /** 返回 false 表示应当停下来（暂停或取消）。 */
+    fun shouldContinue(): Boolean
+}
+
+sealed interface RunOutcome {
+    /** 所有单元都提交完成。 */
+    data class Completed(val committedUnits: Int) : RunOutcome
+    /** 被暂停：已完成的内容保留，任务可恢复。 */
+    data class Paused(val committedUnits: Int) : RunOutcome
+    /** 被取消：保留已提交内容，不等于删除项目。 */
+    data class Cancelled(val committedUnits: Int) : RunOutcome
+    /** 需要人处理：某个单元反复失败，后面的依赖单元不该继续硬跑。 */
+    data class NeedsAttention(val committedUnits: Int, val reason: String) : RunOutcome
+    /** 无单元可跑但也没全部完成（通常是依赖链断了）。 */
+    data class Stalled(val committedUnits: Int, val reason: String) : RunOutcome
+}
+
+/**
+ * 多单元编排。
+ *
+ * 三条硬规则：
+ * 1. 依赖没满足的单元绝不跳过 —— 跳过一章还说「整部完成」是最糟的谎。
+ * 2. 单个单元需要人处理时整个任务停下来，而不是继续往下跑把错误放大。
+ * 3. 暂停/取消只停止后续，已提交内容一律保留。
+ */
+class RunEngine(
+    private val store: ClassroomStore,
+    private val runner: UnitRunner,
+    private val control: RunControl,
+    private val clock: () -> EpochMillis,
+    private val maxUnitsPerRun: Int = 200,
+) {
+
+    suspend fun run(projectId: ProjectId, runId: RunId): RunOutcome {
+        var committed = 0
+        var executed = 0
+
+        while (true) {
+            if (!control.shouldContinue()) {
+                val pausedRun = store.run(runId)?.copy(status = RunStatus.PAUSED, updatedAt = clock())
+                if (pausedRun != null) store.saveRun(pausedRun)
+                return RunOutcome.Paused(committed)
+            }
+            if (executed >= maxUnitsPerRun) {
+                return RunOutcome.Stalled(committed, "超过单次任务的单元上限 " + maxUnitsPerRun)
+            }
+
+            val units = store.units(projectId)
+            val next = UnitExecutor.nextReadyUnit(units)
+            if (next == null) {
+                val remaining = units.filter { it.status != UnitStatus.READY }
+                return when {
+                    remaining.isEmpty() -> {
+                        store.run(runId)?.let {
+                            store.saveRun(it.copy(status = RunStatus.COMPLETED, updatedAt = clock(), completedUnits = committed))
+                        }
+                        store.project(projectId)?.let {
+                            store.updateProject(it.copy(lifecycle = ProjectLifecycle.READY, updatedAt = clock()))
+                        }
+                        RunOutcome.Completed(committed)
+                    }
+                    else -> RunOutcome.Stalled(
+                        committed,
+                        "还有 " + remaining.size + " 个单元无法开始（依赖未完成）",
+                    )
+                }
+            }
+
+            executed++
+            when (val outcome = runner.execute(projectId, next.id, runId)) {
+                is UnitOutcome.Committed -> {
+                    committed++
+                    store.run(runId)?.let {
+                        store.saveRun(it.copy(completedUnits = committed, currentUnitId = next.id, updatedAt = clock()))
+                    }
+                }
+                is UnitOutcome.AlreadyDone -> Unit
+                is UnitOutcome.Failed -> {
+                    store.run(runId)?.let { store.saveRun(it.copy(status = RunStatus.RETRY_WAIT, error = outcome.reason, updatedAt = clock())) }
+                    return RunOutcome.NeedsAttention(committed, outcome.reason)
+                }
+                is UnitOutcome.NeedsAttention -> {
+                    store.run(runId)?.let { store.saveRun(it.copy(status = RunStatus.WAITING_INPUT, error = outcome.reason, updatedAt = clock())) }
+                    store.project(projectId)?.let {
+                        store.updateProject(it.copy(lifecycle = ProjectLifecycle.NEEDS_ATTENTION, updatedAt = clock()))
+                    }
+                    return RunOutcome.NeedsAttention(committed, outcome.reason)
+                }
+            }
+        }
+    }
+}
