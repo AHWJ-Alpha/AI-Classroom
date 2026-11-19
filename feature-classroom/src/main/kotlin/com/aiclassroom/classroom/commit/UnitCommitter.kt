@@ -77,11 +77,21 @@ class UnitCommitter(
         }
         if (patch != null) {
             // 逐个人物核对基础版本：多人物补丁不能拿第一个人的版本代表全部。
+            // 正常生成按当前状态校验；重写早期章节时，补丁是基于「当时」的状态构建的，
+            // 因此历史基础版本同样合法 —— 否则重写永远提交不上去。
+            val isRewrite = StateTimeline.isRewrite(store, request.projectId, unit.index)
+            val historical = if (isRewrite) {
+                StateTimeline.statesBefore(store, request.projectId, unit.index)
+            } else {
+                emptyMap()
+            }
             for (actor in patch.changes.map { it.actorId }.distinct()) {
                 val expected = patch.baseVersions[actor] ?: patch.baseVersion
-                val actual = store.characterState(request.projectId, actor)?.version ?: 0
-                if (expected != actual) {
-                    return CommitResult.Rejected(CommitRejection.StaleBaseVersion(expected, actual))
+                val current = store.characterState(request.projectId, actor)?.version ?: 0
+                // 重写早期章节时，补丁基于「那一章之前」的状态：没有历史快照就表示当时还没有状态。
+                val past = if (isRewrite) (historical[actor]?.version ?: 0) else current
+                if (expected != current && expected != past) {
+                    return CommitResult.Rejected(CommitRejection.StaleBaseVersion(expected, current))
                 }
             }
         }
@@ -120,6 +130,17 @@ class UnitCommitter(
             }
 
             store.saveRevision(committedRevision)
+            // 每章留一份状态快照：重写早期章节时要取「当时」的状态，而不是全书最新状态。
+            store.saveStateSnapshot(
+                UnitStateSnapshot(
+                    projectId = request.projectId,
+                    unitId = unit.id,
+                    unitIndex = unit.index,
+                    states = store.characterStates(request.projectId).associateBy { it.characterId },
+                    createdAt = now,
+                ),
+            )
+
             // 摘要与 revision 绑定：跨章上下文靠它，不再靠「上一节尾部 1500 字」。
             store.saveSummary(
                 SummaryBuilder.from(unit, committedRevision, clock),

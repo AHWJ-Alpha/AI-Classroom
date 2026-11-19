@@ -60,7 +60,13 @@ class UnitExecutor(
         // 来源快照：人格、角色、资料都以它为准，不随来源后来的修改漂移。
         val snapshot = store.latestSnapshot(projectId)
         val characters = store.characters(projectId)
-        val states = store.characterStates(projectId)
+        // 重写早期章节时用「当时的」状态：否则第 2 章会用第 5 章结束时的关系与情绪说话。
+        val isRewrite = StateTimeline.isRewrite(store, projectId, unit.index)
+        val states = if (isRewrite) {
+            StateTimeline.statesBefore(store, projectId, unit.index).values.toList()
+        } else {
+            store.characterStates(projectId)
+        }
         val knownCharacters = characters.map { it.id }.toSet()
 
         var revisionId = RevisionId.new()
@@ -291,8 +297,14 @@ class UnitExecutor(
         }
 
         // 每个涉及角色各自记下当前版本：多人物补丁不能拿第一个人的版本代表全部。
-        val baseVersions = parsed.changes.map { it.actorId }.distinct()
-            .associateWith { store.characterState(projectId, it)?.version ?: 0 }
+        val historical = if (StateTimeline.isRewrite(store, projectId, planned.index)) {
+            StateTimeline.statesBefore(store, projectId, planned.index)
+        } else {
+            emptyMap()
+        }
+        val baseVersions = parsed.changes.map { it.actorId }.distinct().associateWith { actor ->
+            historical[actor]?.version ?: store.characterState(projectId, actor)?.version ?: 0
+        }
         val first = parsed.changes.first().actorId
         val base = baseVersions[first] ?: 0
         return PatchResult.Ready(StatePatch(

@@ -243,6 +243,28 @@ object StoreCodec {
 
     // ---------- 兜底 ----------
 
+    // ---------- 状态快照 ----------
+
+    fun stateSnapshot(s: UnitStateSnapshot): Json = Json.obj(
+        "projectId" to Json.of(s.projectId.value),
+        "unitId" to Json.of(s.unitId.value),
+        "unitIndex" to Json.of(s.unitIndex),
+        "createdAt" to Json.of(s.createdAt),
+        "states" to Json.arr(s.states.values.map(StoreCodec::characterState)),
+    )
+
+    fun stateSnapshot(j: Json): UnitStateSnapshot {
+        val o = j.asObject()
+        val states = o["states"].asArray().map(StoreCodec::characterState)
+        return UnitStateSnapshot(
+            projectId = ProjectId(o["projectId"].asString() ?: ""),
+            unitId = UnitId(o["unitId"].asString() ?: ""),
+            unitIndex = o["unitIndex"].asInt() ?: 0,
+            states = states.associateBy { it.characterId },
+            createdAt = o["createdAt"].asLong() ?: 0,
+        )
+    }
+
     // ---------- 章节摘要 ----------
 
     fun summary(s: ChapterSummary): Json = Json.obj(

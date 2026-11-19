@@ -69,6 +69,10 @@ interface ClassroomStore {
     fun saveCheckpoint(checkpoint: Checkpoint)
     fun checkpoint(runId: RunId): Checkpoint?
 
+    /** 每章提交时的角色状态快照：用于早期重写取前置状态。 */
+    fun saveStateSnapshot(snapshot: UnitStateSnapshot)
+    fun stateSnapshots(projectId: ProjectId): List<UnitStateSnapshot>
+
     /** 章节摘要：提交时生成，绑定到 revision。 */
     fun saveSummary(summary: ChapterSummary)
     fun summaries(projectId: ProjectId): List<ChapterSummary>
