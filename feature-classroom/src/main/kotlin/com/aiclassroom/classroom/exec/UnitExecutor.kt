@@ -87,6 +87,8 @@ class UnitExecutor(
             store.characterStates(projectId)
         }
         val knownCharacters = characters.map { it.id }.toSet()
+        // 角色视角只给可见事实；作者视角给全量。
+        val visibleFacts = FactsForView.factsFor(snapshot, store.facts(projectId))
 
         var revisionId = RevisionId.new()
         var attempt = 0
@@ -107,7 +109,7 @@ class UnitExecutor(
                         unit = planned,
                         characters = characters,
                         characterStates = states,
-                        facts = store.facts(projectId),
+                        facts = visibleFacts,
                         previousText = previousText(projectId, unit, outline),
                         directive = unit.directive,
                         projectType = unit.type,
@@ -124,7 +126,7 @@ class UnitExecutor(
                         unit = planned,
                         characters = characters,
                         characterStates = states,
-                        facts = store.facts(projectId),
+                        facts = visibleFacts,
                         previousText = text.take(4000),
                         directive = unit.directive,
                         projectType = unit.type,

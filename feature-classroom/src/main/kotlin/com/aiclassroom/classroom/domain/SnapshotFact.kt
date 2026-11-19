@@ -41,6 +41,23 @@ data class SnapshotFact(
  * 而课堂快照曾经用 != "author" 去过滤 —— 那个值从来不存在，
  * 结果作者私密记忆被当成公开写进了快照。这里统一成一处映射。
  */
+object FactsForView {
+
+    /**
+     * 按快照视角筛选 store 里的事实。
+     *
+     * 之前 store facts 是**完全不过滤**直接进提示词的：
+     * 快照里的事实按视角过滤了，store 里的事实却全都给了角色视角，
+     * 等于把作者私密内容从另一条路漏了出去。
+     */
+    fun factsFor(snapshot: ContextSnapshot?, facts: List<FactRevision>): List<FactRevision> {
+        if (snapshot == null) return facts          // 没有快照：保持旧行为，作者侧
+        if (snapshot.viewMode != "character") return facts
+        val viewer = snapshot.projectCharacterFor(snapshot.activeCharacterId)?.projectCharacterId
+        return facts.filter { it.visibleTo(viewer) }
+    }
+}
+
 object VisibilityRules {
 
     fun fromLegacy(raw: String?): Visibility = when (raw?.trim()?.lowercase()) {

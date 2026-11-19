@@ -90,11 +90,30 @@ data class FactRevision(
     val knownBy: Set<CharacterId> = emptySet(),
     val unknownBy: Set<CharacterId> = emptySet(),
     val evidence: String = "",
-    /** 获知事件：谁在什么时候知道的。 */
+    /** 在哪条事件上获知/变更。 */
     val learnedAtEventId: String? = null,
+    /** 生效时间（GAL/时间线用）。 */
     val effectiveAt: EpochMillis = 0,
+    /** 取代的旧版本号；null 表示没有取代。 */
     val supersedes: Int? = null,
-)
+) {
+    /**
+     * 某个观众能不能看到这条事实。
+     *
+     * viewer 为 null 表示作者视角（全知）。
+     * 之前 store facts 是**完全不过滤**直接塞进生成提示词的 ——
+     * 于是作者私密事实会出现在角色视角的正文里。
+     */
+    fun visibleTo(viewer: CharacterId?): Boolean {
+        if (viewer == null) return true
+        if (unknownBy.contains(viewer)) return false
+        return when (visibility) {
+            Visibility.PUBLIC -> true
+            Visibility.RESTRICTED -> knownBy.contains(viewer)
+            Visibility.AUTHOR_ONLY -> false
+        }
+    }
+}
 
 /** 状态补丁的操作：只允许白名单字段的增量修改。 */
 sealed interface StateChange {
