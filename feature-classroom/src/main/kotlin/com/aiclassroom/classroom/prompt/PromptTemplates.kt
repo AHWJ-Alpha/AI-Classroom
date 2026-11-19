@@ -235,6 +235,8 @@ object PromptTemplates {
         val snapshot: ContextSnapshot? = null,
         /** 用户对本章已生效的补充要求。 */
         val directiveNotes: String = "",
+        /** 应用 directive 之后的**有效目标**；审查必须按它判，而不是原计划目标。 */
+        val effectiveGoal: String? = null,
 )
 
     fun reviewer(input: ReviewerInput): String = buildString {
@@ -281,7 +283,7 @@ object PromptTemplates {
             }
         }
         appendLine("[CURRENT_UNIT_PLAN]")
-        appendLine("目标：" + input.unit.goal)
+        appendLine("目标：" + (input.effectiveGoal ?: input.unit.goal))
         input.unit.completionCriteria.forEach { appendLine("完成条件：" + it) }
         appendLine()
         appendLine("[DATA:CANDIDATE_TEXT]")

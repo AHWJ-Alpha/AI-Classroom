@@ -18,8 +18,21 @@ object StatePatchParser {
         val evidenceEventIds: List<String>,
         val reason: String,
         val dropped: List<String>,
+        /** 输出结构是否可读（能拿到 JSON、字段类型正确）。 */
+        val wellFormed: Boolean = false,
+        /** 模型原本给了几条变化（含被丢弃的）。 */
+        val rawChangeCount: Int = 0,
     ) {
-        val usable: Boolean get() = changes.isNotEmpty()
+        /**
+         * 能不能当成「合法的结果」继续走。
+         *
+         * 以前是 changes.isNotEmpty()：合法空补丁（本单元确实没变化）被当成失败，
+         * 而「全部变化被校验器丢弃」又可能被当成空补丁放行 —— 两头都错。
+         */
+        val usable: Boolean get() = wellFormed
+        val hasChanges: Boolean get() = changes.isNotEmpty()
+        /** 模型给了变化但没有一条通过校验：这是失败，不是「没有变化」。 */
+        val allDropped: Boolean get() = rawChangeCount > 0 && changes.isEmpty()
     }
 
     fun parse(
@@ -37,12 +50,32 @@ object StatePatchParser {
         val evidence = o["evidenceEventIds"].asArray().mapNotNull { it.asString() }
         val dropped = mutableListOf<String>()
 
-        // 没有事件证据的补丁整体不可信 —— 状态变更必须能指回已发生的剧情。
+        // 先看模型到底给了几条变化：
+        // - 0 条 = 合法的「本单元没有状态变化」，不需要证据；
+        // - >0 条却不引用事件 = 违反协议，整份不可用（不能伪装成空补丁）。
+        val rawChangeCount = o["changes"].asArray().size
+        if (rawChangeCount == 0) {
+            return Parsed(
+                emptyList(), evidence, reason, dropped,
+                wellFormed = true, rawChangeCount = 0,
+            )
+        }
         if (evidence.isEmpty()) {
-            dropped += "补丁没有引用任何事件"
-            return Parsed(emptyList(), evidence, reason, dropped)
+            dropped += "补丁声明了变化却没有引用任何事件"
+            return Parsed(
+                emptyList(), evidence, reason, dropped,
+                wellFormed = true, rawChangeCount = rawChangeCount,
+            )
         }
         evidence.filterNot { it in knownEventIds }.forEach { dropped += "引用了不存在的事件：" + it }
+        // 一条真实事件都引不到时，变化没有依据：整份丢弃，不能当作空补丁放行。
+        if (evidence.none { it in knownEventIds }) {
+            dropped += "证据里没有一条是本单元真实发生的事件"
+            return Parsed(
+                emptyList(), evidence, reason, dropped,
+                wellFormed = true, rawChangeCount = rawChangeCount,
+            )
+        }
 
         val changes = o["changes"].asArray().mapNotNull { item ->
             val m = item.asObject()
@@ -86,6 +119,9 @@ object StatePatchParser {
             }
         }
 
-        return Parsed(changes, evidence, reason, dropped)
+        return Parsed(
+            changes, evidence, reason, dropped,
+            wellFormed = true, rawChangeCount = rawChangeCount,
+        )
     }
 }

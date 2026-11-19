@@ -2722,7 +2722,8 @@ private fun AIClassroomApp(
                                 com.aiclassroom.classroom.domain.SnapshotMaterial(
                                     name = f.name,
                                     type = f.type,
-                                    content = f.content.take(4000),
+                                    // 存全文：检索要能翻到后半份资料；截断会让后面的内容永远进不了上下文。
+                                    content = f.content,
                                 )
                             },
                             // 记忆卡只有摘要，没有全文：这里只带「已确立的事实摘要」，
@@ -2783,7 +2784,8 @@ private fun AIClassroomApp(
                                     com.aiclassroom.classroom.domain.SnapshotMaterial(
                                         name = f.name,
                                         type = f.type,
-                                        content = f.content.take(4000),
+                                        // 存全文：检索要能翻到后半份资料；截断会让后面的内容永远进不了上下文。
+                                    content = f.content,
                                     )
                                 },
                                 // 事实带可见性与知情人：字符过滤（旧代码用 != "author"，而那个值从来不存在）

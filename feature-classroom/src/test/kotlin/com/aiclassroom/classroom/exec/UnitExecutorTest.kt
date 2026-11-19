@@ -251,7 +251,9 @@ class UnitExecutorTest {
     fun `本单元没有事件时属于合法的无状态变化`() = runBlocking {
         val store = storeWithProject()
         val noEvents = """{"unitId":"u1","title":"开场","planVersion":1,"blocks":[{"id":"b1","type":"narration","text":"雨夜。"}],"events":[]}""".trimIndent()
-        val gateway = FakeGateway(ok(noEvents), ok(cleanReview))
+        // 即使没有事件也要问一次状态提取：模型可能漏写事件，静默跳过会丢变化。
+        val emptyPatch = "{\"changes\":[],\"reason\":\"本单元没有状态变化\",\"evidenceEventIds\":[]}"
+        val gateway = FakeGateway(ok(noEvents), ok(cleanReview), ok(emptyPatch))
 
         val outcome = executor(store, gateway).execute(projectId, unitId, runId)
 

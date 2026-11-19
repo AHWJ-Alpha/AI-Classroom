@@ -146,6 +146,7 @@ class UnitExecutor(
                                     text = text,
                                     snapshot = snapshot,
                                     directiveNotes = unit.directive?.notes.orEmpty(),
+                                    effectiveGoal = unit.directive?.effectiveGoal(planned.goal),
                                 ),
                             ),
                         ),
@@ -242,7 +243,8 @@ class UnitExecutor(
         knownCharacters: Set<CharacterId>,
         planned: PlannedUnit,
     ): PatchResult {
-        if (content.events.isEmpty()) return PatchResult.NoChange
+        // 不因为 events 为空就直接判定「没有变化」：模型可能漏写事件，
+        // 静默跳过会把真实变化丢掉。仍然问一次，让解析器和校验器说话。
         val prompt = PromptTemplates.stateUpdater(
             PromptTemplates.StateInput(
                 unit = planned,
@@ -268,6 +270,14 @@ class UnitExecutor(
         )
         if (!parsed.usable) {
             return PatchResult.Failed("状态提取输出无法解析：" + parsed.dropped.take(2).joinToString("；"))
+        }
+        if (parsed.allDropped) {
+            // 模型声明了变化，但没有一条通过校验：这是失败，不是「没有变化」。
+            return PatchResult.Failed("状态提取的变化全部未通过校验：" + parsed.dropped.take(2).joinToString("；"))
+        }
+        if (!parsed.hasChanges) {
+            // 合法的「本单元确实没有状态变化」，正文与检查点可以正常提交。
+            return PatchResult.NoChange
         }
 
         val first = parsed.changes.first().actorId
