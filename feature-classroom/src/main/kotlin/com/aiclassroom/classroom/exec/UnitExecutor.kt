@@ -127,7 +127,10 @@ class UnitExecutor(
                         characters = characters,
                         characterStates = states,
                         facts = visibleFacts,
-                        previousText = text.take(4000),
+                        // 修订也要拿到同一份跨章上下文：只给候选正文的话，
+                        // 改这一节时会把前面几章的摘要与伏笔全丢掉。
+                        previousText = previousText(projectId, unit, outline) +
+                            "\n\n[待修订的当前稿]\n" + text.take(4000),
                         directive = unit.directive,
                         projectType = unit.type,
                         unitIndex = outline.units.map { it.index to it.unitId },
