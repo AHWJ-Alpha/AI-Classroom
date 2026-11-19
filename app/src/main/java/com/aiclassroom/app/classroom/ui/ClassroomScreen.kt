@@ -501,6 +501,13 @@ private fun ReaderView(
         is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Legacy -> resolved.revision
         is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Missing -> null
     }
+    // 记录阅读位置：重启后回到这一节。
+    androidx.compose.runtime.LaunchedEffect(unitId, workVersion) {
+        val version = (resolved as? com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Found)
+            ?.manifest?.workVersion ?: service.store.project(projectId)?.workVersion ?: 0
+        runCatching { service.saveReaderProgress(projectId, unitId, version) }
+    }
+
     val versionLabel = when (resolved) {
         is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Found ->
             "第 " + resolved.manifest.workVersion + " 版"

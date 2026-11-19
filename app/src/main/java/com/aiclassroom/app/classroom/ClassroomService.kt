@@ -133,6 +133,21 @@ class ClassroomService(
         data class Failed(val reason: String) : PlanResult
     }
 
+    /** 阅读进度：重启后回到上次那一节。 */
+    fun readerProgress(projectId: ProjectId) = store.readerProgress(projectId)
+
+    fun saveReaderProgress(projectId: ProjectId, unitId: UnitId, workVersion: Int) {
+        store.saveReaderProgress(
+            ReaderProgress(
+                projectId = projectId,
+                workVersion = workVersion,
+                unitId = unitId,
+                offset = 0,
+                updatedAt = clock(),
+            ),
+        )
+    }
+
     /** 已发布版本号（新到旧）。 */
     fun workVersions(projectId: ProjectId): List<Int> =
         com.aiclassroom.classroom.domain.ManifestResolver.versions(store, projectId)
