@@ -61,11 +61,13 @@ object ClassroomRunManager {
     fun requestPause() { paused.set(true) }
 
     /** 取消：只停后续，已提交内容一律保留。 */
-    fun cancel() {
+    fun cancel(context: Context? = null, projectId: ProjectId? = null) {
         paused.set(true)
         cancelRequested.set(true)
-        // 不在这里清 running：旧协程可能还在提交当前单元。
-        // 提前放行会让新任务与旧任务同时跑，而且旧任务的收尾会覆盖新任务状态。
+        // 取消要真的停掉 Worker：只取消本地轮询的话，任务在后台会继续跑。
+        if (context != null && projectId != null) {
+            ClassroomRunWorker.cancel(context, projectId)
+        }
         cancelJob?.cancel()
     }
 

@@ -10,7 +10,14 @@ class RunActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
             ACTION_PAUSE -> ClassroomRunManager.requestPause()
-            ACTION_CANCEL -> ClassroomRunManager.cancel()
+            ACTION_CANCEL -> {
+                // 必须带上项目 id：只发本地信号的话，后台 Worker 会继续跑。
+                val pid = intent.getStringExtra(EXTRA_PROJECT)
+                ClassroomRunManager.cancel(
+                    context = context.applicationContext,
+                    projectId = pid?.let { com.aiclassroom.classroom.domain.ProjectId(it) },
+                )
+            }
         }
     }
 
