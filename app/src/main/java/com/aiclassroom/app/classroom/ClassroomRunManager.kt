@@ -80,109 +80,23 @@ object ClassroomRunManager {
         apiKey: String,
         staleOnly: Boolean = false,
     ) {
-        if (_running.value) return
-        paused.set(false)
-        _running.value = true
+        // 执行交给持久 Worker：进程被杀后任务还能继续。
+        // 这里只负责入队与状态投影，不再自己跑协程 —— 避免双执行。
         _notice.value = if (staleOnly) "正在重写待复查的单元…" else "正在生成…"
-        ensureChannel(context)
-        notify(
-            context,
-            "课堂生成中",
-            "准备开始",
-            indeterminate = true,
-            openProjectId = projectId.value,
-        )
+        _running.value = true
+        ClassroomRunWorker.schedule(context, projectId, staleOnly)
 
-        val appContext = context.applicationContext
+        // 状态以仓库为准：Worker 结束后自然收敛，不依赖 Activity 存活。
         cancelJob = scope.launch {
-            // 进度轮询：任务是别人在跑，这里只盯着存储里的完成数。
-            val watcher = scope.launch {
-                while (_running.value) {
-                    val units = service.store.units(projectId)
-                    val done = units.count { it.status == UnitStatus.READY }
-                    notify(
-                        appContext,
-                        "课堂生成中",
-                        "已完成 " + done + " / " + units.size + " 节",
-                        indeterminate = false,
-                    )
-                    delay(2000)
+            while (true) {
+                delay(1500)
+                val active = service.store.runs(projectId).any { it.status == RunStatus.RUNNING }
+                if (!active) {
+                    _running.value = false
+                    _notice.value = null
+                    return@launch
                 }
             }
-            val committedNow = { service.store.units(projectId).count { it.status == UnitStatus.READY } }
-
-            // 取消不是失败，异常也不是「没有待处理单元」 —— 这两种都必须留下真实原因。
-            val outcome = try {
-                if (staleOnly) service.regenerateStale(projectId, policy, apiKey, control)
-                else service.run(projectId, policy, apiKey, control)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                // 协程被直接取消时引擎来不及写状态：这里补上，
-                // 否则重建仓库后任务会一直是 RUNNING，看起来像还在跑。
-                runCatching {
-                    com.aiclassroom.classroom.exec.RunRecovery.markCancelled(
-                        service.store, projectId, service.clock,
-                    )
-                }
-                RunOutcome.Cancelled(committedNow())
-            } catch (e: Throwable) {
-                RunOutcome.NeedsAttention(
-                    committedNow(),
-                    e.message ?: e::class.simpleName ?: "未知错误",
-                )
-            }
-            _running.value = false
-            cancelRequested.set(false)
-            paused.set(false)
-            watcher.cancel()
-            _notice.value = when (outcome) {
-                null -> "没有待处理的单元"
-                is RunOutcome.Completed -> "全部单元完成，共 " + outcome.committedUnits + " 个"
-                is RunOutcome.Paused -> "已暂停，已完成 " + outcome.committedUnits + " 个单元"
-                is RunOutcome.Cancelled -> "已取消，已完成内容保留"
-                is RunOutcome.NeedsAttention -> "需要处理：" + outcome.reason
-                is RunOutcome.Stalled -> "无法继续：" + outcome.reason
-            }
-            // 入队事件：真正的投递由宿主（那个对话自己）完成，这里只落库。
-            runCatching {
-                val project = service.store.project(projectId)
-                val type = when (outcome) {
-                    is RunOutcome.Completed -> EventType.COMPLETED
-                    is RunOutcome.Paused -> EventType.PAUSED
-                    is RunOutcome.Cancelled -> EventType.CANCELLED
-                    is RunOutcome.NeedsAttention -> EventType.NEEDS_ATTENTION
-                    is RunOutcome.Stalled -> EventType.FAILED
-                    null -> EventType.NEEDS_ATTENTION
-                }
-                val conversationId = project?.sourceConversationId
-                if (conversationId != null && type.isTerminal) {
-                    val run = service.store.runs(projectId).maxByOrNull { it.startedAt }
-                    EventOutbox.enqueue(
-                        service.store,
-                        ClassroomEvent(
-                            eventId = EventOutbox.eventIdOf(run?.id, projectId, type),
-                            sourceConversationId = conversationId,
-                            projectId = projectId,
-                            projectTitle = project.title,
-                            runId = run?.id,
-                            workVersion = project.workVersion,
-                            type = type,
-                            summary = _notice.value.orEmpty(),
-                            detail = (outcome as? RunOutcome.NeedsAttention)?.reason
-                                ?: (outcome as? RunOutcome.Stalled)?.reason.orEmpty(),
-                            createdAt = System.currentTimeMillis(),
-                        ),
-                    )
-                }
-            }
-
-            notify(
-                appContext,
-                "课堂任务结束",
-                _notice.value.orEmpty(),
-                indeterminate = false,
-                ongoing = false,
-                openProjectId = projectId.value,
-            )
         }
     }
 
