@@ -70,6 +70,8 @@ class UnitExecutor(
         var content: UnitContent? = null
         // 只有审查明确说过「没有阻断问题」才允许提交；循环跑完但没通过，仍是未通过。
         var approved = false
+        // 审查报告必须随正式版本保存：否则用户看不到「这章为什么被判有问题」。
+        var approvedReview: ReviewReport? = null
 
         while (attempt <= maxReviseAttempts) {
             val prompt = if (attempt == 0) {
@@ -114,6 +116,7 @@ class UnitExecutor(
                     expectJson = true,
                 ),
             )
+            recordAttempt(runId, unitId, RunPhase.GENERATING, prompt.hashCode().toString(), result)
             if (result.error != null) return UnitOutcome.Failed(describe(result))
             // 截断的输出不能当作完整正文：宁可重试，也不要写进正式内容。
             if (result.finishReason is FinishReason.Length) {
@@ -150,6 +153,7 @@ class UnitExecutor(
                     expectJson = true,
                 ),
             )
+            recordAttempt(runId, unitId, RunPhase.REVIEWING, text.hashCode().toString(), reviewCall)
             if (reviewCall.error != null) return UnitOutcome.Failed(describe(reviewCall))
             val review = ReviewParser.parse(reviewCall.content, revisionId, clock())
             // 审查输出读不懂 = 没有通过审查，不能放行。
@@ -160,6 +164,7 @@ class UnitExecutor(
             }
             if (!review.report.hasBlocking) {
                 approved = true
+                approvedReview = review.report
                 break
             }
 
@@ -185,7 +190,8 @@ class UnitExecutor(
             version = 0,
             draftText = text,
             content = content,
-            review = null,
+            review = approvedReview,
+            modelName = policy.primaryModel,
             createdAt = clock(),
             sourceHash = text.hashCode().toString(),
         )
@@ -272,6 +278,39 @@ class UnitExecutor(
             .maxByOrNull { it.index } ?: return ""
         val rev = store.officialRevision(previous.id) ?: return ""
         return rev.draftText.takeLast(1500)
+    }
+
+    /**
+     * 每次模型调用都留一条尝试记录。
+     *
+     * 之前只有 GenerationAttempt 这个类型，从来没写进存储 ——
+     * 于是「这一版是哪个模型、为什么被截断、重试了几次」都无据可查。
+     */
+    private fun recordAttempt(
+        runId: RunId,
+        unitId: UnitId?,
+        phase: RunPhase,
+        inputHash: String,
+        result: ModelCallResult,
+    ) {
+        store.saveAttempt(
+            GenerationAttempt(
+                id = AttemptId.new(),
+                runId = runId,
+                unitId = unitId,
+                phase = phase,
+                inputHash = inputHash,
+                requestedModel = policy.primaryModel,
+                actualModel = result.actualModel,
+                finishReason = result.finishReason?.let { it::class.simpleName },
+                transportCompleted = result.transportCompleted,
+                error = result.error?.let { it::class.simpleName },
+                promptTokens = result.usage?.prompt,
+                completionTokens = result.usage?.completion,
+                diagnosticRef = result.diagnosticId,
+                createdAt = clock(),
+            ),
+        )
     }
 
     private fun describe(result: ModelCallResult): String =

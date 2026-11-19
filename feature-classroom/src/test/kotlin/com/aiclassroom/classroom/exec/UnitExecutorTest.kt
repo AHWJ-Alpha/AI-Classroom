@@ -212,4 +212,34 @@ class UnitExecutorTest {
         // a 完成后，第 3 个和第 2 个都满足依赖，取序号小的那个
         assertEquals(UnitId("b"), UnitExecutor.nextReadyUnit(listOf(u1.copy(status = UnitStatus.READY), u2, u3))!!.id)
     }
+
+    @Test
+    fun `正式版本保留审查报告与模型名`() = runBlocking {
+        // 之前 revision.review 写死为 null：审完就丢，用户看不到判据。
+        val store = storeWithProject()
+        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok(validPatch))
+
+        executor(store, gateway).execute(projectId, unitId, runId)
+
+        val official = store.officialRevision(unitId)!!
+        // 注意：assertNotNull 返回的是值本身，最后一句会让方法返回非 void，
+        // JUnit 4 会直接忽略这种测试（这里踩过一次）。所以断言后显式收尾。
+        val review = assertNotNull(official.review, "审查报告应随正式版本保存")
+        assertEquals(false, review.hasBlocking)
+        val modelName = assertNotNull(official.modelName)
+        assertTrue(modelName.isNotBlank())
+    }
+
+    @Test
+    fun `每次模型调用都留下尝试记录`() = runBlocking {
+        val store = storeWithProject()
+        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok(validPatch))
+
+        executor(store, gateway).execute(projectId, unitId, runId)
+
+        val attempts = store.attempts(runId)
+        assertTrue(attempts.size >= 2, "生成与审查都应留痕，实际 " + attempts.size)
+        assertTrue(attempts.any { it.phase == RunPhase.GENERATING })
+        assertTrue(attempts.any { it.phase == RunPhase.REVIEWING })
+    }
 }
