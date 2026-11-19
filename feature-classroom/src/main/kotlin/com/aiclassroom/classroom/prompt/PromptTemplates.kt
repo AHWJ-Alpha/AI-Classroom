@@ -69,6 +69,14 @@ object PromptTemplates {
             appendLine("这条约束描述的是讲课/叙述的口吻，不覆盖每个角色自己的说话方式。")
             appendLine()
         }
+        if (snap != null && snap.viewMode == "author" && snap.authorWorldBook.isNotBlank()) {
+            // 作者视角才给：角色视角看到作者秘密就等于泄密。
+            appendLine("[DATA:AUTHOR_WORLD]")
+            appendLine("作者侧设定（写作时可用；不要让不知情的角色说出来）：")
+            appendLine(snap.authorWorldBook)
+            appendLine("[/DATA:AUTHOR_WORLD]")
+            appendLine()
+        }
         if (snap != null && snap.publicWorldBook.isNotBlank()) {
             appendLine("[DATA:PUBLIC_WORLD]")
             appendLine(snap.publicWorldBook)
@@ -125,9 +133,9 @@ object PromptTemplates {
             val viewerKeys: Set<String>? = if (snap.viewMode == "author") {
                 null
             } else {
-                val active = snap.characters.firstOrNull {
-                    it.projectCharacterId.value == snap.activeCharacterId
-                }
+                // activeCharacterId 是**来源**标识（角色卡文件名），必须经过映射，
+                // 不能直接和 projectCharacterId 比较。
+                val active = snap.projectCharacterFor(snap.activeCharacterId)
                 buildSet {
                     active?.sourceCharacterKey?.takeIf { it.isNotBlank() }?.let { add(it) }
                     active?.name?.takeIf { it.isNotBlank() }?.let { add(it) }
@@ -257,6 +265,13 @@ object PromptTemplates {
                 appendLine("[DATA:PUBLIC_WORLD]")
                 appendLine(snap.publicWorldBook)
                 appendLine("[/DATA:PUBLIC_WORLD]")
+                appendLine()
+            }
+            if (snap.authorWorldBook.isNotBlank()) {
+                appendLine("[DATA:AUTHOR_WORLD]")
+                appendLine("作者侧设定：审查时用来判断一致性，不要把其中内容判成人人都知道。")
+                appendLine(snap.authorWorldBook)
+                appendLine("[/DATA:AUTHOR_WORLD]")
                 appendLine()
             }
             if (snap.characters.isNotEmpty()) {

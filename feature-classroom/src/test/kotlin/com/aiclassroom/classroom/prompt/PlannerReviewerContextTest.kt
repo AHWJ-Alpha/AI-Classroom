@@ -27,6 +27,7 @@ class PlannerReviewerContextTest {
         id = SnapshotId("s1"), projectId = ProjectId("p1"), version = 1, createdAt = now,
         mentorName = "老周", mentorPrompt = "说话短促，先问再答",
         publicWorldBook = "这门课只讲 Python 3",
+        authorWorldBook = "校长是幕后黑手",
         characters = listOf(
             SnapshotCharacter(
                 projectCharacterId = CharacterId("c1"), sourceCharacterKey = "林夏.md",
@@ -48,6 +49,7 @@ class PlannerReviewerContextTest {
         assertTrue(text.contains("林夏"))
         assertTrue(text.contains("老师是退役军人"), "作者侧事实要给规划器")
         assertTrue(text.contains("第一章 对象与类"))
+        assertTrue(text.contains("校长是幕后黑手"), "作者世界书要参与规划")
     }
 
     @Test
@@ -71,6 +73,7 @@ class PlannerReviewerContextTest {
         assertTrue(text.contains("多举一个例子"), "审查要按用户改过的目标判")
         assertTrue(text.contains("林夏"))
         assertTrue(text.contains("仅作者"), "事实要带可见范围，审查才能判泄密")
+        assertTrue(text.contains("校长是幕后黑手"), "作者世界书要参与审查")
     }
 
     @Test

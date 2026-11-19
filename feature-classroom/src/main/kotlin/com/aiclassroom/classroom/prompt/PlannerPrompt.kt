@@ -45,6 +45,15 @@ object PlannerPrompt {
                 appendLine("[/DATA:PUBLIC_WORLD]")
                 appendLine()
             }
+            if (snapshot.authorWorldBook.isNotBlank()) {
+                // 作者世界书是规划与审查的依据；但它只给作者侧，
+                // 角色视角的正文生成绝不能看到。
+                appendLine("[DATA:AUTHOR_WORLD]")
+                appendLine("作者侧设定（规划可用；不要假设每个角色都知道）：")
+                appendLine(snapshot.authorWorldBook)
+                appendLine("[/DATA:AUTHOR_WORLD]")
+                appendLine()
+            }
             if (snapshot.characters.isNotEmpty()) {
                 appendLine("[DATA:CHARACTERS]")
                 snapshot.characters.forEach { c ->

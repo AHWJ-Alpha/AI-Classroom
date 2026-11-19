@@ -66,9 +66,10 @@ class SnapshotPromptTest {
     }
 
     @Test
-    fun `作者世界书任何视角都不直接注入`() {
-        // 作者世界书只作为作者侧的规划资料，不进生成正文
-        assertFalse(build("author").contains("校长其实是幕后黑手"))
+    fun `作者世界书给作者视角 角色视角看不到`() {
+        // v3 要求：作者世界书是规划与审查的依据，不能为了防泄漏把它从所有阶段丢掉；
+        // 边界落在「角色视角看不到」，而不是「谁都不给」。
+        assertTrue(build("author").contains("校长其实是幕后黑手"))
         assertFalse(build("character").contains("校长其实是幕后黑手"))
     }
 

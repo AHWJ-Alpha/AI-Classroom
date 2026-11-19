@@ -39,7 +39,26 @@ data class ContextSnapshot(
      * 只能全给或全不给 —— 前者泄密，后者模型没有依据。
      */
     val facts: List<SnapshotFact> = emptyList(),
-)
+
+
+) {
+
+    /**
+    * 用**来源标识**（角色卡文件名 / 明确姓名）找项目角色。
+    *
+    * 这是本轮修的身份命名空间问题：宿主侧的 activeCharacterId 存的是角色卡文件名，
+    * 而项目角色 ID 是 UUID。拿两者直接比较永远不相等 ——
+    * 结果角色视角拿到一个空的知识集合，相当于「谁都不认识」。
+    *
+    * 兼容旧快照：也接受直接传 projectCharacterId。
+    */
+    fun projectCharacterFor(sourceRef: String?): SnapshotCharacter? {
+    if (sourceRef.isNullOrBlank()) return null
+    return characters.firstOrNull { it.sourceCharacterKey == sourceRef }
+    ?: characters.firstOrNull { it.name == sourceRef }
+    ?: characters.firstOrNull { it.projectCharacterId.value == sourceRef }
+    }
+}
 
 /**
  * 快照里的角色。
