@@ -24,5 +24,6 @@ class RunActionReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION_PAUSE = "com.aiclassroom.app.classroom.PAUSE"
         const val ACTION_CANCEL = "com.aiclassroom.app.classroom.CANCEL"
+        const val EXTRA_PROJECT = "classroom_project_id"
     }
 }
