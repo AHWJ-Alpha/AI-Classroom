@@ -72,6 +72,17 @@ object EventText {
 
     fun isEventMessage(text: String): Boolean = text.startsWith(MARKER)
 
+    /**
+     * 这条消息是不是某次事件的卡片。
+     *
+     * 投递重放时先问这个：消息写成功、确认没落时崩过一次的话，
+     * 重放只该补确认，不该再插一张。
+     */
+    fun mentionsEvent(text: String, eventId: String): Boolean {
+        if (eventId.isBlank()) return false
+        return isEventMessage(text) && text.contains("event=" + eventId)
+    }
+
     /** 从标记里取回项目 id；解析不出来返回 null，界面就退化成普通文本。 */
     fun parseProjectId(text: String): String? {
         if (!isEventMessage(text)) return null

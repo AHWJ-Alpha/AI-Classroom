@@ -544,9 +544,10 @@ private fun AIClassroomApp(
     val memoryJobs = remember { java.util.IdentityHashMap<Classroom, Job>() }
     val branchMemoryJobs = remember { java.util.IdentityHashMap<BranchClass, Job>() }
     val memoryWatermarks = remember { java.util.IdentityHashMap<Classroom, Int>() }
-    fun persist(message: String = "已保存到本机") {
-        store.save(classes, classIndex)
-        saveNotice = message
+    fun persist(message: String = "已保存到本机"): Boolean {
+        val ok = store.save(classes, classIndex)
+        saveNotice = if (ok) message else "保存失败：改动还在内存里，请重试或先导出备份"
+        return ok
     }
 
     fun replaceCurrent(room: Classroom, message: String = "已保存到本机") {
@@ -2078,14 +2079,28 @@ private fun AIClassroomApp(
                     val index = classes.indexOfFirst { it.id == room.id }
                     if (index < 0) continue
                     for (event in pending) {
+                        // 聊天侧幂等：上次「消息已写、确认未落」崩了的话，这里只补确认。
+                        val alreadyWritten = classes[index].messages.any { m ->
+                            com.aiclassroom.classroom.domain.EventText.mentionsEvent(m.text, event.eventId)
+                        }
+                        if (alreadyWritten) {
+                            com.aiclassroom.classroom.event.EventOutbox.markDelivered(eventStore, event.eventId)
+                            continue
+                        }
                         classes[index].messages.add(
                             ChatMessage("assistant", com.aiclassroom.classroom.domain.EventText.render(event)),
                         )
-                        com.aiclassroom.classroom.event.EventOutbox.markDelivered(eventStore, event.eventId)
-                        appended = true
+                        // 顺序是关键：先确认聊天真的落盘，再标记已投递。
+                        // 反过来的话，崩在两者之间就会「投递记为成功、卡片却没了」。
+                        if (persist("课堂任务已回写")) {
+                            com.aiclassroom.classroom.event.EventOutbox.markDelivered(eventStore, event.eventId)
+                            appended = true
+                        } else {
+                            // 没存下去就撤回内存里的这条，事件保持待投递，下一轮重试。
+                            classes[index].messages.removeAt(classes[index].messages.lastIndex)
+                        }
                     }
                 }
-                if (appended) persist("课堂任务已回写")
             }
         }
     }
@@ -7621,21 +7636,31 @@ private class ClassroomStore(context: Context) {
         prefs.edit().putLong("last_update_prompt_day", System.currentTimeMillis() / DAY_MS).apply()
     }
 
-    fun save(classes: List<Classroom>, classIndex: Int) {
+    /**
+     * 返回是否真的写进了主文件。
+     *
+     * 以前这里返回 Unit，失败只把内容塞进 prefs 备份就算了 —— 调用方（事件投递）
+     * 无法知道聊天保存成功没有，于是「先确认已投递、后保存聊天」的崩溃窗口被掩盖。
+     */
+    fun save(classes: List<Classroom>, classIndex: Int): Boolean {
         val payload = JSONArray(classes.map { it.toJson() }).toString()
-        runCatching {
+        val ok = runCatching {
             tempFile.writeText(payload, Charsets.UTF_8)
             runCatching {
                 Files.move(tempFile.toPath(), dataFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             }.getOrElse {
                 Files.move(tempFile.toPath(), dataFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
-        }.onFailure {
+            true
+        }.getOrElse {
+            // 主文件写不进去时至少留一份备份，但必须如实返回失败。
             prefs.edit().putString("classes_backup", payload).apply()
+            false
         }
         prefs.edit()
             .putInt("class_index", classIndex)
             .apply()
+        return ok
     }
 }
 
