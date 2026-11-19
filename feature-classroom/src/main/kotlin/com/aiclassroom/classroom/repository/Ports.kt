@@ -117,6 +117,9 @@ sealed interface CommitRejection {
 
     /** 状态补丁引用了本单元并不存在的事件：没有证据的变化不能生效。 */
     data class UnknownEvent(val ids: List<String>) : CommitRejection
+
+    /** 生成输入已经过期（规格/总纲被改过）：旧候选不能覆盖新输入。 */
+    data class StaleInput(val reason: String) : CommitRejection
 }
 
 /** 提交结果。 */

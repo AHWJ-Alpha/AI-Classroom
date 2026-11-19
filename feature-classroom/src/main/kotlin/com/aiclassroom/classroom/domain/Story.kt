@@ -122,6 +122,13 @@ data class StatePatch(
     val unitId: UnitId,
     val revisionId: RevisionId,
     val baseVersion: Int,
+    /**
+     * 每个涉及角色各自的基础版本。
+     *
+     * 只用一个 baseVersion 时，第一个人的版本被当成所有人的版本：
+     * 多人物补丁要么误拒、要么放过已经过期的角色。这里按角色逐个记。
+     */
+    val baseVersions: Map<CharacterId, Int> = emptyMap(),
     val changes: List<StateChange>,
     val reason: String,
     /** 必须引用本单元实际发生的事件。 */

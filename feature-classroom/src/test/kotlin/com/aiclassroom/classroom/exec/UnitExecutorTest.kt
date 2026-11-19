@@ -260,4 +260,21 @@ class UnitExecutorTest {
         assertIs<UnitOutcome.Committed>(outcome)
         assertEquals(UnitStatus.READY, store.unit(unitId)!!.status)
     }
+
+    @Test
+    fun `部分变化未通过校验时整体停下`() = runBlocking {
+        // 一条合法 + 一条非法：只提交合法那条会造成「正文已生效、状态只变一半」，
+        // 比整体失败更难排查。
+        val store = storeWithProject()
+        val mixed = """{"changes":[" + 
+            "{\"op\":\"SetEmotion\",\"characterId\":\"c1\",\"value\":\"紧张\"}," + 
+            "{\"op\":\"SetEmotion\",\"characterId\":\"c404\",\"value\":\"x\"}]," + 
+            "\"reason\":\"混合\",\"evidenceEventIds\":[\"e1\"]}""".trimIndent()
+        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok(mixed))
+
+        val outcome = executor(store, gateway).execute(projectId, unitId, runId)
+
+        assertIs<UnitOutcome.NeedsAttention>(outcome)
+        assertNull(store.officialRevision(unitId), "有被丢弃的变化就不该提交")
+    }
 }

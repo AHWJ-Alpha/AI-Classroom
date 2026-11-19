@@ -11,6 +11,9 @@ data class CommitRequest(
     val statePatch: StatePatch?,
     val runId: RunId,
     val idempotencyKey: String,
+    /** 生成时冻结的规格版本；提交时若已变化则说明输入过期。 */
+    val expectedSpecVersion: Int? = null,
+    val expectedOutlineVersion: Int? = null,
 )
 
 /**
@@ -73,9 +76,13 @@ class UnitCommitter(
             return CommitResult.Rejected(CommitRejection.UnknownCharacter(unknown))
         }
         if (patch != null) {
-            val actual = primaryStateVersion(request.projectId, patch)
-            if (patch.baseVersion != actual) {
-                return CommitResult.Rejected(CommitRejection.StaleBaseVersion(patch.baseVersion, actual))
+            // 逐个人物核对基础版本：多人物补丁不能拿第一个人的版本代表全部。
+            for (actor in patch.changes.map { it.actorId }.distinct()) {
+                val expected = patch.baseVersions[actor] ?: patch.baseVersion
+                val actual = store.characterState(request.projectId, actor)?.version ?: 0
+                if (expected != actual) {
+                    return CommitResult.Rejected(CommitRejection.StaleBaseVersion(expected, actual))
+                }
             }
         }
 
@@ -87,6 +94,24 @@ class UnitCommitter(
         )
 
         return store.transaction {
+            // 输入过期：模型响应回来之前用户可能改过规格或总纲，
+            // 旧候选不能覆盖新输入。校验放在事务里，避免检查与写入之间被插队。
+            request.expectedSpecVersion?.let { expected ->
+                val actual = store.latestSpec(request.projectId)?.version ?: 0
+                if (actual != expected) {
+                    return@transaction CommitResult.Rejected(
+                        CommitRejection.StaleInput("规格已更新（期望 " + expected + "，实际 " + actual + "）"),
+                    )
+                }
+            }
+            request.expectedOutlineVersion?.let { expected ->
+                val actual = store.latestOutline(request.projectId)?.version ?: 0
+                if (actual != expected) {
+                    return@transaction CommitResult.Rejected(
+                        CommitRejection.StaleInput("总纲已更新（期望 " + expected + "，实际 " + actual + "）"),
+                    )
+                }
+            }
             // 旧版本标记为被替代，历史仍然保留。
             unit.currentRevisionId?.let { oldId ->
                 store.revision(oldId)?.let { old ->

@@ -209,8 +209,11 @@ class UnitExecutor(
                     revision = revision,
                     statePatch = patch,
                     runId = runId,
-                idempotencyKey = runId.value + ":" + unitId.value + ":" + revisionId.value,
-            ),
+                    idempotencyKey = runId.value + ":" + unitId.value + ":" + revisionId.value,
+                    // 生成时冻结的版本：提交前若被改过，说明这次候选已经过期。
+                    expectedSpecVersion = spec.version,
+                    expectedOutlineVersion = outline.version,
+                ),
         )
         return when (outcome) {
             is CommitResult.Committed -> UnitOutcome.Committed(outcome.revision.id, outcome.checkpoint)
@@ -275,19 +278,30 @@ class UnitExecutor(
             // 模型声明了变化，但没有一条通过校验：这是失败，不是「没有变化」。
             return PatchResult.Failed("状态提取的变化全部未通过校验：" + parsed.dropped.take(2).joinToString("；"))
         }
+        if (parsed.dropped.isNotEmpty()) {
+            // 部分变化没通过校验时，剩下的那部分提交上去会造成「正文已生效、状态只变一半」，
+            // 比整体失败更难排查。宁可停下。
+            return PatchResult.Failed(
+                "状态提取有变化未通过校验：" + parsed.dropped.take(2).joinToString(";"),
+            )
+        }
         if (!parsed.hasChanges) {
             // 合法的「本单元确实没有状态变化」，正文与检查点可以正常提交。
             return PatchResult.NoChange
         }
 
+        // 每个涉及角色各自记下当前版本：多人物补丁不能拿第一个人的版本代表全部。
+        val baseVersions = parsed.changes.map { it.actorId }.distinct()
+            .associateWith { store.characterState(projectId, it)?.version ?: 0 }
         val first = parsed.changes.first().actorId
-        val base = store.characterState(projectId, first)?.version ?: 0
+        val base = baseVersions[first] ?: 0
         return PatchResult.Ready(StatePatch(
             id = revisionId.value + ":patch",
             projectId = projectId,
             unitId = unitId,
             revisionId = revisionId,
             baseVersion = base,
+            baseVersions = baseVersions,
             changes = parsed.changes,
             reason = parsed.reason,
             evidenceEventIds = parsed.evidenceEventIds,
