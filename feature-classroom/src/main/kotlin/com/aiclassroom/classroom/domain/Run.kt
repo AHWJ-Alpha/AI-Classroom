@@ -26,6 +26,17 @@ data class GenerationRun(
     val frozenProvider: String? = null,
     val frozenPrimaryModel: String? = null,
     val frozenFallbackModels: List<String> = emptyList(),
+
+    /** 当前持有执行权的执行者标识；null 表示没有有效执行者。 */
+    val owner: String? = null,
+    /** 租约到期时间；0 表示没有租约。 */
+    val leaseUntil: EpochMillis = 0,
+    /**
+     * 单调递增的 fencing token。
+     *
+     * 每次换执行者就 +1：旧执行者即使恢复网络，它的提交也会因为 token 落后而被拒。
+     */
+    val fencingToken: Long = 0,
 )
 
 data class BudgetUsage(

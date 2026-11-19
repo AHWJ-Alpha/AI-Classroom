@@ -134,6 +134,9 @@ sealed interface CommitRejection {
 
     /** 生成输入已经过期（规格/总纲被改过）：旧候选不能覆盖新输入。 */
     data class StaleInput(val reason: String) : CommitRejection
+
+    /** 执行者已过期（租约被换人或令牌落后）：旧执行者不能提交。 */
+    data class StaleExecutor(val reason: String) : CommitRejection
 }
 
 /** 提交结果。 */

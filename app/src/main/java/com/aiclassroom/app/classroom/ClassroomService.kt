@@ -27,6 +27,8 @@ import java.io.File
  * 刻意不持有 Compose 状态：任务生命周期不能被界面决定。
  * 界面（阶段 G）只调用这里的方法并观察返回值。
  */
+private const val LEASE_TTL_MS = 30 * 60 * 1000L
+
 class ClassroomService(
     context: Context,
     /** 对外可见：取消落盘等收尾逻辑需要同一时钟。 */
@@ -274,6 +276,7 @@ class ClassroomService(
         val rawRequest = store.latestSpec(projectId)?.rawRequest.orEmpty()
         if (rawRequest.isBlank()) return PlanResult.Failed("没有原始需求")
 
+
         val gateway = ClassroomGatewayFactory.create(policy, apiKey)
         val call = gateway.complete(
             ModelRequests.fromPolicy(
@@ -375,6 +378,7 @@ class ClassroomService(
         RunRecovery.recover(store, clock())
         val now = clock()
         val runId = RunId.new()
+
         val units = store.units(projectId)
         store.saveRun(
             GenerationRun(
@@ -405,13 +409,29 @@ class ClassroomService(
 
         val gateway = ClassroomGatewayFactory.create(policy, apiKey)
         val committer = UnitCommitter(store, clock)
+        // 任务已落库，现在抢执行权：同一任务同时只能有一个有效提交者。
+        val owner = "owner-" + java.util.UUID.randomUUID()
+        val leaseToken = when (val granted = RunLease.acquire(store, runId, owner, LEASE_TTL_MS, clock)) {
+            is RunLease.Acquired.Granted -> granted.lease.token
+            is RunLease.Acquired.Busy ->
+                return RunOutcome.NeedsAttention(0, "这个项目已有任务在跑（" + granted.owner + "）")
+            is RunLease.Acquired.NotFound -> return RunOutcome.NeedsAttention(0, granted.reason)
+        }
+
         val executor = UnitExecutor(
             gateway = gateway,
             store = store,
             committer = committer,
             clock = clock,
             policy = policy,
+            runOwner = owner,
+            fencingToken = leaseToken,
         )
-        return RunEngine(store, executor, control, clock).run(projectId, runId)
+        return try {
+            RunEngine(store, executor, control, clock).run(projectId, runId)
+        } finally {
+            // 无论正常结束还是被取消都要释放，否则这个任务再也抢不到执行权。
+            RunLease.release(store, runId, owner, clock)
+        }
     }
 }

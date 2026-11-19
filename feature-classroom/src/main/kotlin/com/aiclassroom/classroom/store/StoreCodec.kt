@@ -565,6 +565,9 @@ object StoreCodec {
         "frozenProvider" to Json.of(r.frozenProvider),
         "frozenPrimaryModel" to Json.of(r.frozenPrimaryModel),
         "frozenFallbackModels" to Json.arr(r.frozenFallbackModels.map { Json.of(it) }),
+        "owner" to Json.of(r.owner),
+        "leaseUntil" to Json.of(r.leaseUntil),
+        "fencingToken" to Json.of(r.fencingToken),
     )
 
     fun run(j: Json): GenerationRun {
@@ -591,6 +594,9 @@ object StoreCodec {
             frozenProvider = o["frozenProvider"].asString(),
             frozenPrimaryModel = o["frozenPrimaryModel"].asString(),
             frozenFallbackModels = o["frozenFallbackModels"].asArray().mapNotNull { it.asString() },
+            owner = o["owner"].asString(),
+            leaseUntil = o["leaseUntil"].asLong() ?: 0,
+            fencingToken = o["fencingToken"].asLong() ?: 0,
         )
     }
 

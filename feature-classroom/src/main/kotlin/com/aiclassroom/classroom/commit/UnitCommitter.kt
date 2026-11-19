@@ -14,6 +14,9 @@ data class CommitRequest(
     /** 生成时冻结的规格版本；提交时若已变化则说明输入过期。 */
     val expectedSpecVersion: Int? = null,
     val expectedOutlineVersion: Int? = null,
+    /** 执行者标识与令牌；两者都给出时才校验，用于挡住过期执行者。 */
+    val owner: String? = null,
+    val fencingToken: Long? = null,
 )
 
 /**
@@ -104,6 +107,23 @@ class UnitCommitter(
         )
 
         return store.transaction {
+            // 执行者校验：租约被换人或令牌落后时，旧执行者的提交必须被拒 ——
+            // 否则「重启后旧任务恢复，把新任务的结果盖掉」就会真的发生。
+            if (request.owner != null && request.fencingToken != null) {
+                val check = RunLease.validate(
+                    store = store,
+                    runId = request.runId,
+                    owner = request.owner,
+                    token = request.fencingToken,
+                    clock = clock,
+                )
+                if (check is RunLease.Validation.Invalid) {
+                    return@transaction CommitResult.Rejected(
+                        CommitRejection.StaleExecutor(check.reason),
+                    )
+                }
+            }
+
             // 输入过期：模型响应回来之前用户可能改过规格或总纲，
             // 旧候选不能覆盖新输入。校验放在事务里，避免检查与写入之间被插队。
             request.expectedSpecVersion?.let { expected ->

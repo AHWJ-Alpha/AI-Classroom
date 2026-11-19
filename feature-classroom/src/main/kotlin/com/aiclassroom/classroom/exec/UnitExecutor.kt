@@ -44,6 +44,9 @@ class UnitExecutor(
     private val maxReviseAttempts: Int = 2,
     /** 冻结的模型策略：所有阶段的请求都由它构造，避免各调用点漏参数。 */
     private val policy: ModelPolicy = ModelPolicy("", "", "default"),
+    /** 执行者与令牌：随提交一起校验，挡住过期执行者。 */
+    private val runOwner: String? = null,
+    private val fencingToken: Long? = null,
 ) : UnitRunner {
 
     override suspend fun execute(projectId: ProjectId, unitId: UnitId, runId: RunId): UnitOutcome {
@@ -219,6 +222,8 @@ class UnitExecutor(
                     // 生成时冻结的版本：提交前若被改过，说明这次候选已经过期。
                     expectedSpecVersion = spec.version,
                     expectedOutlineVersion = outline.version,
+                    owner = runOwner,
+                    fencingToken = fencingToken,
                 ),
         )
         return when (outcome) {
