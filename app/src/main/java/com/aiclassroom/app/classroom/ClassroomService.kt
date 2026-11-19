@@ -369,10 +369,11 @@ class ClassroomService(
         policy: ModelPolicy,
         apiKey: String,
         control: RunControl,
+        forceLease: Boolean = false,
     ): RunOutcome? {
         val reset = Regeneration.resetStale(store, projectId)
         if (!reset.any) return null
-        return run(projectId, policy, apiKey, control)
+        return run(projectId, policy, apiKey, control, forceLease = forceLease)
     }
 
     /** 当前项目里待复查的单元数。 */
@@ -387,6 +388,8 @@ class ClassroomService(
         policy: ModelPolicy,
         apiKey: String,
         control: RunControl,
+        /** Worker 传 true：uniqueWork 已保证唯一执行者，可以接管被杀进程留下的租约。 */
+        forceLease: Boolean = false,
     ): RunOutcome {
         // 开跑之前先把上次遗留的「生成中 / 草稿待提交」放回队列，
         // 否则那些单元永远不会被重新选中，后面的依赖链会整体卡死。
@@ -426,7 +429,7 @@ class ClassroomService(
         val committer = UnitCommitter(store, clock)
         // 任务已落库，现在抢执行权：同一任务同时只能有一个有效提交者。
         val owner = "owner-" + java.util.UUID.randomUUID()
-        val leaseToken = when (val granted = RunLease.acquire(store, runId, owner, LEASE_TTL_MS, clock)) {
+        val leaseToken = when (val granted = RunLease.acquire(store, runId, owner, LEASE_TTL_MS, clock, force = forceLease)) {
             is RunLease.Acquired.Granted -> granted.lease.token
             is RunLease.Acquired.Busy ->
                 return RunOutcome.NeedsAttention(0, "这个项目已有任务在跑（" + granted.owner + "）")

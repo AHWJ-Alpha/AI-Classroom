@@ -36,7 +36,7 @@ class RunLeaseTest {
     }
 
     private fun acquire(s: InMemoryStore, owner: String, ttl: Long = 1000) =
-        RunLease.acquire(s, runId, owner, ttl) { now }
+        RunLease.acquire(s, runId, owner, ttl, { now })
 
     @Test
     fun `第一个执行者拿到租约并把任务置为运行中`() {

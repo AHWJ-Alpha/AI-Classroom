@@ -47,16 +47,29 @@ class ClassroomRunWorker(
             override fun isCancelled() = isStopped
         }
 
+        // 生成期间给一条常驻通知：Worker 没有界面，用户看不到进度会以为卡死。
+        ClassroomNotify.show(
+            context, ProjectId(projectId), "课堂生成中",
+            if (staleOnly) "正在重写待复查的单元…" else "正在生成…",
+            indeterminate = true, showCancel = true,
+        )
+
         return try {
             if (staleOnly) {
                 service.regenerateStale(
                     ProjectId(projectId), source.connection.policy, source.connection.apiKey, control,
+                    forceLease = true,
                 )
             } else {
                 service.run(
                     ProjectId(projectId), source.connection.policy, source.connection.apiKey, control,
+                    forceLease = true,
                 )
             }
+            ClassroomNotify.show(
+                context, ProjectId(projectId), "课堂任务结束", "正式内容已保存",
+                indeterminate = false,
+            )
             Result.success()
         } catch (e: CancellationException) {
             // 被取消时协程直接结束，引擎来不及写状态：这里补上，避免重启后一直显示运行中。

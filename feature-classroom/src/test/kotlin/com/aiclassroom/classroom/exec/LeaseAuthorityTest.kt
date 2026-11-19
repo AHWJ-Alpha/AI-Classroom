@@ -59,10 +59,10 @@ class LeaseAuthorityTest {
     fun `执行权被接管后旧执行者直接停下 不再烧模型`() = runBlocking {
         val s = store()
         val first = assertIs<RunLease.Acquired.Granted>(
-            RunLease.acquire(s, runId, "A", 100) { now },
+            RunLease.acquire(s, runId, "A", 100, { now }),
         )
         now += 500
-        RunLease.acquire(s, runId, "B", 100_000) { now }   // 换人
+        RunLease.acquire(s, runId, "B", 100_000, { now })   // 换人
 
         val gateway = FakeGateway()   // 一个响应都没准备：一旦发请求就会抛错
         val executor = UnitExecutor(
@@ -81,10 +81,10 @@ class LeaseAuthorityTest {
     fun `旧执行者不能写终态`() {
         val s = store()
         val first = assertIs<RunLease.Acquired.Granted>(
-            RunLease.acquire(s, runId, "A", 100) { now },
+            RunLease.acquire(s, runId, "A", 100, { now }),
         )
         now += 500
-        RunLease.acquire(s, runId, "B", 100_000) { now }
+        RunLease.acquire(s, runId, "B", 100_000, { now })
 
         val event = RunFinalizer.finish(
             store = s,

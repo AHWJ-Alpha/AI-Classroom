@@ -32,12 +32,20 @@ object RunLease {
         owner: String,
         ttlMillis: Long,
         clock: () -> EpochMillis,
+        /**
+         * 强制接管。
+         *
+         * 只给 WorkManager 用：uniqueWork 保证同一任务只有一个执行者，
+         * 但进程被杀后旧 owner 的租约还在有效期内 —— 不强抢的话，
+         * 重启后的 Worker 会被自己上一次的租约挡在门外，任务永远恢复不了。
+         */
+        force: Boolean = false,
     ): Acquired {
         val now = clock()
         return store.transaction {
             val run = store.run(runId) ?: return@transaction Acquired.NotFound("任务不存在")
             val held = run.owner
-            val valid = held != null && held != owner && run.leaseUntil > now
+            val valid = !force && held != null && held != owner && run.leaseUntil > now
             if (valid) {
                 return@transaction Acquired.Busy(held!!, run.leaseUntil)
             }

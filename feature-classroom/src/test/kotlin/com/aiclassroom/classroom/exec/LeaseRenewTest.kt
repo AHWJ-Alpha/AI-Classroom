@@ -72,7 +72,7 @@ class LeaseRenewTest {
                 totalUnits = 1, startedAt = now, updatedAt = now,
             ),
         )
-        val granted = RunLease.acquire(store, runId, "A", 100) { now }
+        val granted = RunLease.acquire(store, runId, "A", 100, { now })
         val token = (granted as RunLease.Acquired.Granted).lease.token
         val before = store.run(runId)!!.leaseUntil
 
