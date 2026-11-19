@@ -151,10 +151,24 @@ class UnitCommitter(
             RevisionImpact.markDownstreamStale(store, request.projectId, unit.id)
 
             store.project(request.projectId)?.let { project ->
+                val newVersion = project.workVersion + 1
                 store.updateProject(
                     project.copy(
-                        workVersion = project.workVersion + 1,
+                        workVersion = newVersion,
                         updatedAt = now,
+                    ),
+                )
+                // 每一版写一份**不可变清单**：之后重写只产生新版本，不动这一份。
+                // 没有它的话，用户打开「第 2 版」看到的其实是当前正文。
+                store.saveManifest(
+                    ManifestBuilder.build(
+                        project = project,
+                        specVersion = store.latestSpec(request.projectId)?.version ?: 0,
+                        outlineVersion = store.latestOutline(request.projectId)?.version ?: 0,
+                        snapshotId = store.latestSnapshot(request.projectId)?.id?.value,
+                        units = store.units(request.projectId),
+                        workVersion = newVersion,
+                        clock = clock,
                     ),
                 )
             }

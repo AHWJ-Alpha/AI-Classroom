@@ -52,6 +52,7 @@ class FileClassroomStore(
         val saves: MutableMap<String, PlaythroughSave> = linkedMapOf(),
         val snapshots: MutableMap<String, ContextSnapshot> = linkedMapOf(),
         val events: MutableMap<String, ClassroomEvent> = linkedMapOf(),
+        val manifests: MutableMap<String, WorkManifest> = linkedMapOf(),
     ) {
         fun snapshot(): State = State(
             LinkedHashMap(projects), LinkedHashMap(specs), LinkedHashMap(outlines),
@@ -59,7 +60,7 @@ class FileClassroomStore(
             LinkedHashMap(charStates), LinkedHashMap(chars), LinkedHashMap(runs),
             LinkedHashMap(attempts), LinkedHashMap(checkpoints), LinkedHashMap(reader),
             LinkedHashMap(learning), LinkedHashMap(saves), LinkedHashMap(snapshots),
-            LinkedHashMap(events),
+            LinkedHashMap(events), LinkedHashMap(manifests),
         )
     }
 
@@ -117,6 +118,10 @@ class FileClassroomStore(
         state.saves.clear(); o["saves"].asArray().forEach { val s = StoreCodec.playthrough(it); state.saves[s.id.value] = s }
         state.reader.clear(); o["reader"].asArray().forEach { val p = StoreCodec.readerProgress(it); state.reader[p.projectId.value] = p }
         state.learning.clear(); o["learning"].asArray().forEach { val p = StoreCodec.learningProgress(it); state.learning[p.projectId.value + "#" + p.objectiveId] = p }
+        state.manifests.clear(); o["manifests"].asArray().forEach {
+            val m = StoreCodec.manifest(it)
+            state.manifests[m.projectId.value + "#" + m.workVersion] = m
+        }
         state.events.clear(); o["events"].asArray().forEach {
             val e = StoreCodec.event(it)
             state.events[e.eventId] = e
@@ -158,6 +163,7 @@ class FileClassroomStore(
             "learning" to Json.arr(state.learning.values.map(StoreCodec::learningProgress)),
             "snapshots" to Json.arr(state.snapshots.values.map(StoreCodec::snapshot)),
             "events" to Json.arr(state.events.values.map(StoreCodec::event)),
+            "manifests" to Json.arr(state.manifests.values.map(StoreCodec::manifest)),
         )
         writeText(tmpFile, JsonWriter.write(doc))
         Files.move(
@@ -338,6 +344,17 @@ class FileClassroomStore(
     // ---------- 进度 ----------
 
     @Synchronized
+    override fun saveManifest(manifest: WorkManifest) = mutate {
+        state.manifests[manifest.projectId.value + "#" + manifest.workVersion] = manifest
+    }
+
+    override fun manifest(projectId: ProjectId, workVersion: Int) =
+        state.manifests[projectId.value + "#" + workVersion]
+
+    override fun latestManifest(projectId: ProjectId) =
+        state.manifests.filterKeys { it.startsWith(projectId.value + "#") }
+            .values.maxByOrNull { it.workVersion }
+
     override fun saveEvent(event: ClassroomEvent) = mutate { state.events[event.eventId] = event }
     @Synchronized
     override fun event(eventId: String) = state.events[eventId]

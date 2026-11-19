@@ -243,6 +243,44 @@ object StoreCodec {
 
     // ---------- 兜底 ----------
 
+    // ---------- 作品版本清单 ----------
+
+    fun manifest(m: WorkManifest): Json = Json.obj(
+        "projectId" to Json.of(m.projectId.value),
+        "workVersion" to Json.of(m.workVersion),
+        "specVersion" to Json.of(m.specVersion),
+        "outlineVersion" to Json.of(m.outlineVersion),
+        "snapshotId" to Json.of(m.snapshotId),
+        "createdAt" to Json.of(m.createdAt),
+        "entries" to Json.arr(m.entries.map { e ->
+            Json.obj(
+                "unitId" to Json.of(e.unitId.value),
+                "index" to Json.of(e.index),
+                "revisionId" to Json.of(e.revisionId.value),
+            )
+        }),
+    )
+
+    fun manifest(j: Json): WorkManifest {
+        val o = j.asObject()
+        return WorkManifest(
+            projectId = ProjectId(o["projectId"].asString() ?: ""),
+            workVersion = o["workVersion"].asInt() ?: 0,
+            specVersion = o["specVersion"].asInt() ?: 0,
+            outlineVersion = o["outlineVersion"].asInt() ?: 0,
+            snapshotId = o["snapshotId"].asString(),
+            createdAt = o["createdAt"].asLong() ?: 0,
+            entries = o["entries"].asArray().map { item ->
+                val e = item.asObject()
+                ManifestEntry(
+                    unitId = UnitId(e["unitId"].asString() ?: ""),
+                    index = e["index"].asInt() ?: 0,
+                    revisionId = RevisionId(e["revisionId"].asString() ?: ""),
+                )
+            },
+        )
+    }
+
     // ---------- 事件 ----------
 
     fun event(e: ClassroomEvent): Json = Json.obj(

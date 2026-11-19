@@ -69,6 +69,11 @@ interface ClassroomStore {
     fun saveCheckpoint(checkpoint: Checkpoint)
     fun checkpoint(runId: RunId): Checkpoint?
 
+    /** 作品版本清单：一版写一次，之后不可变。 */
+    fun saveManifest(manifest: WorkManifest)
+    fun manifest(projectId: ProjectId, workVersion: Int): WorkManifest?
+    fun latestManifest(projectId: ProjectId): WorkManifest?
+
     /** 事件 outbox：先落库、再投递，投递失败可重试且不重复。 */
     fun saveEvent(event: ClassroomEvent)
     fun event(eventId: String): ClassroomEvent?
