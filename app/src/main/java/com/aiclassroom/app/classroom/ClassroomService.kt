@@ -431,7 +431,15 @@ class ClassroomService(
         val committer = UnitCommitter(store, clock)
         // 任务已落库，现在抢执行权：同一任务同时只能有一个有效提交者。
         val owner = "owner-" + java.util.UUID.randomUUID()
-        val leaseToken = when (val granted = RunLease.acquire(store, runId, owner, LEASE_TTL_MS, clock, force = forceLease)) {
+        val leaseToken = when (val granted = RunLease.acquireForProject(
+            store = store,
+            projectId = projectId,
+            runId = runId,
+            owner = owner,
+            ttlMillis = LEASE_TTL_MS,
+            clock = clock,
+            force = forceLease,
+        )) {
             is RunLease.Acquired.Granted -> granted.lease.token
             is RunLease.Acquired.Busy ->
                 return RunOutcome.NeedsAttention(0, "这个项目已有任务在跑（" + granted.owner + "）")

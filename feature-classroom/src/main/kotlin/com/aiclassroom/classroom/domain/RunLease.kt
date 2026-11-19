@@ -65,6 +65,57 @@ object RunLease {
         }
     }
 
+    /**
+     * 项目级抢占。
+     *
+     * 之前租约挂在 runId 上：每次执行都新建 run，所以两个 run 之间根本不互斥，
+     * 只靠 WorkManager 的 uniqueWork 兜着。这里改成「同一项目同一时刻只有一个有效执行者」，
+     * 与入口无关（页面、后台、恢复都走同一条）。
+     */
+    fun acquireForProject(
+        store: ClassroomStore,
+        projectId: ProjectId,
+        runId: RunId,
+        owner: String,
+        ttlMillis: Long,
+        clock: () -> EpochMillis,
+        force: Boolean = false,
+    ): Acquired {
+        val now = clock()
+        return store.transaction {
+            val run = store.run(runId) ?: return@transaction Acquired.NotFound("任务不存在")
+            val others = store.runs(projectId).filter { it.id != runId }
+
+            if (!force) {
+                val holder = others.firstOrNull {
+                    it.owner != null && it.owner != owner && it.leaseUntil > now
+                }
+                if (holder != null) {
+                    return@transaction Acquired.Busy(holder.owner!!, holder.leaseUntil)
+                }
+            }
+
+            // 令牌取项目内最大值 +1：换执行者时单调递增，旧执行者立刻失效。
+            val maxToken = (others.map { it.fencingToken } + run.fencingToken).maxOrNull() ?: 0L
+            // 只要项目里已经有人持有过执行权，这次接管就算换人 —— 令牌必须递增，
+            // 否则旧执行者手里的令牌仍然有效。
+            val switching = others.any { it.owner != null } ||
+                (run.owner != null && run.owner != owner)
+            val token = if (switching) maxToken + 1 else maxToken
+            val until = now + ttlMillis
+            store.saveRun(
+                run.copy(
+                    owner = owner,
+                    leaseUntil = until,
+                    fencingToken = token,
+                    status = if (run.status == RunStatus.QUEUED) RunStatus.RUNNING else run.status,
+                    updatedAt = now,
+                ),
+            )
+            Acquired.Granted(Lease(owner, token, until))
+        }
+    }
+
     /** 续租；不是自己的租约不能续。 */
     fun renew(
         store: ClassroomStore,
