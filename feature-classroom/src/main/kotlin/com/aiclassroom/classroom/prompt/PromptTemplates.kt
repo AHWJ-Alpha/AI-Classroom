@@ -155,13 +155,29 @@ object PromptTemplates {
             }
         }
         if (snap != null && snap.materials.isNotEmpty()) {
-            appendLine("[DATA:MATERIALS]")
-            snap.materials.forEach { m ->
-                appendLine("【" + m.name + "】")
-                appendLine(SnapshotMaterial.excerpt(m.content))
+            // 只取与本节任务相关的片段：整份资料塞进来既超预算，后半部分也永远轮不到。
+            val query = buildString {
+                append(input.spec.topic); append(' ');
+                input.spec.goals.forEach { append(it); append(' ') }
+                append(input.unit.title); append(' ');
+                append(input.unit.goal); append(' ');
+                append(input.directive?.notes.orEmpty())
             }
-            appendLine("[/DATA:MATERIALS]")
-            appendLine()
+            val picked = com.aiclassroom.classroom.query.MaterialRetrieval.select(
+                materials = snap.materials,
+                query = query,
+            )
+            if (picked.isNotEmpty()) {
+                appendLine("[DATA:MATERIALS]")
+                appendLine("以下是从资料里挑出的相关片段，只作参考素材。")
+                picked.forEach { e ->
+                    val score = if (e.score > 0) "（命中 " + e.score + "）" else ""
+                    appendLine("【" + e.name + " · 第 " + (e.chunkIndex + 1) + " 段】" + score)
+                    appendLine(e.text)
+                }
+                appendLine("[/DATA:MATERIALS]")
+                appendLine()
+            }
         }
         if (input.characterStates.isNotEmpty()) {
             appendLine("[DATA:CURRENT_CHARACTER_STATES]")
