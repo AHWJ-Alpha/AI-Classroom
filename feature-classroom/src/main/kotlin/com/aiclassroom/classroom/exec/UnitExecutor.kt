@@ -181,7 +181,12 @@ class UnitExecutor(
 
         // 状态补丁只从**最终**候选正文提取。用修订前的草稿提补丁，
         // 会把已经删掉的剧情写进角色记忆。提不出来就当作没有，正文照样提交。
-        val patch = proposePatch(projectId, unitId, revisionId, content, knownCharacters, planned)
+        val patchResult = proposePatch(projectId, unitId, revisionId, content, knownCharacters, planned)
+        if (patchResult is PatchResult.Failed) {
+            // 需要状态变化却提不出来时宁可停下，也不要把正文提交成「已一致」。
+            return UnitOutcome.NeedsAttention("状态提取失败：" + patchResult.reason)
+        }
+        val patch = if (patchResult is PatchResult.Ready) patchResult.patch else null
 
         val revision = UnitRevision(
             id = revisionId,
@@ -214,6 +219,21 @@ class UnitExecutor(
 
 
     /** 让模型从最终正文提出状态变更；失败或没有依据时返回 null，不阻断正文提交。 */
+    /**
+     * 状态补丁的三种结果。
+     *
+     * 以前四种情况全返回 null：「本单元没有事件」「模型没提变化」「调用失败」
+     * 「输出读不懂」看起来一模一样 —— 于是提取失败的单元照样提交，
+     * 正文和状态长期分离却被当成一致。
+     */
+    private sealed interface PatchResult {
+        /** 本单元确实不需要状态变化（例如没有事件、或明确没有变化）。 */
+        data object NoChange : PatchResult
+        data class Ready(val patch: StatePatch) : PatchResult
+        /** 需要状态变化但没能可靠提取；不能当成「没有变化」。 */
+        data class Failed(val reason: String) : PatchResult
+    }
+
     private suspend fun proposePatch(
         projectId: ProjectId,
         unitId: UnitId,
@@ -221,8 +241,8 @@ class UnitExecutor(
         content: UnitContent,
         knownCharacters: Set<CharacterId>,
         planned: PlannedUnit,
-    ): StatePatch? {
-        if (content.events.isEmpty()) return null
+    ): PatchResult {
+        if (content.events.isEmpty()) return PatchResult.NoChange
         val prompt = PromptTemplates.stateUpdater(
             PromptTemplates.StateInput(
                 unit = planned,
@@ -237,18 +257,22 @@ class UnitExecutor(
                 expectJson = true,
             ),
         )
-        if (call.error != null) return null
+        if (call.error != null) {
+            return PatchResult.Failed("状态提取调用失败：" + (call.error::class.simpleName ?: "未知"))
+        }
 
         val parsed = StatePatchParser.parse(
             call.content,
             knownCharacters,
             content.events.map { it.id }.toSet(),
         )
-        if (!parsed.usable) return null
+        if (!parsed.usable) {
+            return PatchResult.Failed("状态提取输出无法解析：" + parsed.dropped.take(2).joinToString("；"))
+        }
 
         val first = parsed.changes.first().actorId
         val base = store.characterState(projectId, first)?.version ?: 0
-        return StatePatch(
+        return PatchResult.Ready(StatePatch(
             id = revisionId.value + ":patch",
             projectId = projectId,
             unitId = unitId,
@@ -258,7 +282,7 @@ class UnitExecutor(
             reason = parsed.reason,
             evidenceEventIds = parsed.evidenceEventIds,
             idempotencyKey = revisionId.value + ":patch",
-        )
+        ))
     }
 
     private fun blockText(block: ContentBlock): String = when (block) {

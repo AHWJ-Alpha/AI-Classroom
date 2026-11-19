@@ -61,6 +61,14 @@ class UnitCommitter(
 
         // 角色边界：未注册的角色不能产生状态。
         val unknown = if (patch != null) unknownCharacters(request.projectId, unit, patch) else emptyList()
+        if (patch != null) {
+            // 证据必须真的出现在本单元的正文事件里：没有证据的状态变化不能生效。
+            val knownEvents = request.revision.content?.events?.map { it.id }?.toSet().orEmpty()
+            val unknownEvents = patch.evidenceEventIds.filterNot { it in knownEvents }
+            if (unknownEvents.isNotEmpty()) {
+                return CommitResult.Rejected(CommitRejection.UnknownEvent(unknownEvents))
+            }
+        }
         if (unknown.isNotEmpty()) {
             return CommitResult.Rejected(CommitRejection.UnknownCharacter(unknown))
         }

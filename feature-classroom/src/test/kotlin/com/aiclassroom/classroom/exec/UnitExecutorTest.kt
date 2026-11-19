@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -179,15 +180,18 @@ class UnitExecutorTest {
     }
 
     @Test
-    fun `状态提取失败不影响正文提交`() = runBlocking {
+    fun `状态提取失败时进入待处理而不是当成没有变化`() = runBlocking {
         val store = storeWithProject()
         val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok("我无法判断"))
 
         val outcome = executor(store, gateway).execute(projectId, unitId, runId)
 
-        assertIs<UnitOutcome.Committed>(outcome)
-        assertEquals(UnitStatus.READY, store.unit(unitId)!!.status)
-        assertNull(store.characterState(projectId, charId))
+        // 以前这条断言的是「正文提交了、状态没提出来也算成功」，
+        // 正是要修掉的行为：两边长期不一致却显示为已完成。
+        assertIs<UnitOutcome.NeedsAttention>(outcome)
+        assertTrue(outcome.reason.contains("状态提取失败"))
+        assertNull(store.officialRevision(unitId))
+        assertNotEquals(UnitStatus.READY, store.unit(unitId)!!.status)
     }
 
     @Test
@@ -241,5 +245,17 @@ class UnitExecutorTest {
         assertTrue(attempts.size >= 2, "生成与审查都应留痕，实际 " + attempts.size)
         assertTrue(attempts.any { it.phase == RunPhase.GENERATING })
         assertTrue(attempts.any { it.phase == RunPhase.REVIEWING })
+    }
+
+    @Test
+    fun `本单元没有事件时属于合法的无状态变化`() = runBlocking {
+        val store = storeWithProject()
+        val noEvents = """{"unitId":"u1","title":"开场","planVersion":1,"blocks":[{"id":"b1","type":"narration","text":"雨夜。"}],"events":[]}""".trimIndent()
+        val gateway = FakeGateway(ok(noEvents), ok(cleanReview))
+
+        val outcome = executor(store, gateway).execute(projectId, unitId, runId)
+
+        assertIs<UnitOutcome.Committed>(outcome)
+        assertEquals(UnitStatus.READY, store.unit(unitId)!!.status)
     }
 }

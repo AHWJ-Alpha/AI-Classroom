@@ -114,6 +114,9 @@ sealed interface CommitRejection {
      * 事后也没法判断那条状态属于谁。
      */
     data class UnknownCharacter(val ids: List<String>) : CommitRejection
+
+    /** 状态补丁引用了本单元并不存在的事件：没有证据的变化不能生效。 */
+    data class UnknownEvent(val ids: List<String>) : CommitRejection
 }
 
 /** 提交结果。 */

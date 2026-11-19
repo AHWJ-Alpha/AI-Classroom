@@ -42,7 +42,14 @@ class UnitCommitterTest {
         review: ReviewReport? = null,
     ) = UnitRevision(
         id = RevisionId(id), unitId = unitId, projectId = projectId, version = 0,
-        draftText = "正文", content = null, review = review, createdAt = now, sourceHash = "h-" + id,
+        draftText = "正文",
+        content = UnitContent(
+            schemaVersion = 1, unitId = unitId, planVersion = 1, title = "第一章",
+            objectivesCovered = emptyList(), unresolvedItems = emptyList(),
+            events = listOf(UnitEvent(id = "e1", sourceBlockIds = listOf("b1"), description = "开场")),
+            blocks = listOf(ContentBlock.Narration("b1", "正文")),
+        ),
+        review = review, createdAt = now, sourceHash = "h-" + id,
     )
 
     private fun request(
@@ -204,5 +211,21 @@ class UnitCommitterTest {
         assertIs<IllegalStateException>(thrown)
         assertEquals("测试项目", store.project(projectId)!!.title)
         assertEquals(1, store.rollbackCount)
+    }
+
+    @Test
+    fun `补丁引用不存在的事件时拒绝提交`() {
+        // 没有证据的状态变化不能生效：否则事后无法核对这条状态从哪来。
+        val store = storeWithUnit()
+        val patch = StatePatch(
+            id = "p1", projectId = projectId, unitId = unitId, revisionId = RevisionId("r1"),
+            baseVersion = 0, changes = listOf(StateChange.SetEmotion(CharacterId("c1"), "紧张")),
+            reason = "事件推进", evidenceEventIds = listOf("e404"), idempotencyKey = "p1",
+        )
+
+        val result = UnitCommitter(store) { now }.commit(request(patch = patch))
+
+        val rejected = assertIs<CommitResult.Rejected>(result)
+        assertIs<CommitRejection.UnknownEvent>(rejected.rejection)
     }
 }
