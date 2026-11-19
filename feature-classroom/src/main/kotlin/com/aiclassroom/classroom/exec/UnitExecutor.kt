@@ -36,6 +36,8 @@ sealed interface UnitOutcome {
  * 特别注意：状态补丁只从最终正文提取。用修订前的草稿提补丁，
  * 会把已经删掉的剧情写进角色记忆。
  */
+private const val LEASE_TTL_MS = 30 * 60 * 1000L
+
 class UnitExecutor(
     private val gateway: ModelGateway,
     private val store: ClassroomStore,
@@ -59,6 +61,12 @@ class UnitExecutor(
             ?: return UnitOutcome.NeedsAttention("没有总纲，无法生成")
         val planned = outline.units.firstOrNull { it.unitId == unitId }
             ?: return UnitOutcome.NeedsAttention("总纲里找不到这个单元")
+
+        // 每开一章续一次租约：TTL 只有 30 分钟，长任务不续的话中途会被判过期，
+        // 之后所有提交都会被 StaleExecutor 拒掉。
+        if (runOwner != null) {
+            RunLease.renew(store, runId, runOwner, LEASE_TTL_MS, clock)
+        }
 
         // 来源快照：人格、角色、资料都以它为准，不随来源后来的修改漂移。
         val snapshot = store.latestSnapshot(projectId)
