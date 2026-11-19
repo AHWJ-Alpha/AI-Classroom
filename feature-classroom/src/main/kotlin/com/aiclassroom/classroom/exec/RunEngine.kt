@@ -75,11 +75,20 @@ class RunEngine(
                 val remaining = units.filter { it.status != UnitStatus.READY }
                 return when {
                     remaining.isEmpty() -> {
-                        store.run(runId)?.let {
-                            store.saveRun(it.copy(status = RunStatus.COMPLETED, updatedAt = clock(), completedUnits = committed))
-                        }
-                        store.project(projectId)?.let {
-                            store.updateProject(it.copy(lifecycle = ProjectLifecycle.READY, updatedAt = clock()))
+                        // 状态与结果事件必须同一次提交：分开写的话，
+                        // 崩在中间会让 run 停在 COMPLETED 却永远没有事件。
+                        store.project(projectId)?.let { project ->
+                            RunFinalizer.finish(
+                                store = store,
+                                project = project,
+                                run = store.run(runId),
+                                runStatus = RunStatus.COMPLETED,
+                                projectLifecycle = ProjectLifecycle.READY,
+                                type = EventType.COMPLETED,
+                                summary = "共 " + committed + " 节",
+                                committedUnits = committed,
+                                clock = clock,
+                            )
                         }
                         RunOutcome.Completed(committed)
                     }
