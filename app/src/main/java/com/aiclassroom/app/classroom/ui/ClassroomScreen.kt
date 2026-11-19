@@ -208,7 +208,10 @@ fun ClassroomScreen(
                         }
                     },
                     onPause = {
-                        ClassroomRunManager.requestPause()
+                        ClassroomRunManager.requestPause(
+                            context = context.applicationContext,
+                            projectId = project.id,
+                        )
                         notice = "已请求暂停，当前单元写完后停下"
                     },
                     onRead = { tapped ->

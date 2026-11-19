@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.work.ForegroundInfo
 import com.aiclassroom.classroom.domain.ProjectId
 
 /**
@@ -78,9 +79,36 @@ object ClassroomNotify {
         }
     }
 
+    fun foregroundInfo(context: Context, projectId: ProjectId, text: String): ForegroundInfo {
+        ensureChannel(context)
+        val open = PendingIntent.getActivity(
+            context,
+            NOTIFICATION_ID,
+            Intent(context, Class.forName("com.aiclassroom.app.MainActivity")).apply {
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                putExtra(ClassroomRunManager.EXTRA_OPEN_PROJECT, projectId.value)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle("课堂生成中")
+            .setContentText(text)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(open)
+            .setProgress(0, 0, true)
+            .build()
+        return if (Build.VERSION.SDK_INT >= 29) {
+            ForegroundInfo(idOf(projectId), notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else ForegroundInfo(idOf(projectId), notification)
+    }
+
     fun clear(context: Context) {
         runCatching {
             context.getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
         }
     }
+
+    private fun idOf(projectId: ProjectId): Int = 10000 + (projectId.value.hashCode() and 0x0fffffff)
 }

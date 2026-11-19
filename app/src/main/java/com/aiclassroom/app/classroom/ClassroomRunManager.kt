@@ -62,11 +62,14 @@ object ClassroomRunManager {
         paused.set(true)
         if (context != null && projectId != null) {
             // 暂停 = 停掉 Worker + 标记 PAUSED：Worker 被停后引擎来不及写状态。
-            ClassroomRunWorker.cancel(context, projectId)
             val store = ClassroomServiceProvider.store(context)
+            // 顺序很重要：先把任务标成 PAUSED 再取消 Worker。
+            // 反过来的话，Worker 的取消路径可能先把它标成 CANCELLED ——
+            // 用户点的是「暂停」，结果任务再也不能继续。
             runCatching {
                 com.aiclassroom.classroom.exec.RunRecovery.markPaused(store, projectId) { System.currentTimeMillis() }
             }
+            ClassroomRunWorker.cancel(context, projectId)
             _running.value = false
             _notice.value = "已暂停"
         }

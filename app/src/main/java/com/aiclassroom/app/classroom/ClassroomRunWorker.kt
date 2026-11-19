@@ -2,6 +2,7 @@ package com.aiclassroom.app.classroom
 
 import android.content.Context
 import androidx.work.CoroutineWorker
+import androidx.work.ForegroundInfo
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -30,6 +31,13 @@ class ClassroomRunWorker(
         val staleOnly = inputData.getBoolean(KEY_STALE_ONLY, false)
         val context = applicationContext
         val service = ClassroomServiceProvider.service(context)
+        setForeground(
+            ClassroomNotify.foregroundInfo(
+                context,
+                ProjectId(projectId),
+                if (staleOnly) "正在重写待复查的单元…" else "正在生成…",
+            ),
+        )
 
         // 来源解析：配置来自项目**自己的**来源对话，不是当前打开的对话。
         val resolver = ClassroomSourceResolver(
@@ -55,7 +63,7 @@ class ClassroomRunWorker(
         )
 
         return try {
-            if (staleOnly) {
+            val outcome = if (staleOnly) {
                 service.regenerateStale(
                     ProjectId(projectId), source.connection.policy, source.connection.apiKey, control,
                     forceLease = true,
@@ -66,11 +74,23 @@ class ClassroomRunWorker(
                     forceLease = true,
                 )
             }
+            val message = when (outcome) {
+                null -> "没有待处理的单元"
+                is RunOutcome.Completed -> "已完成，共 ${outcome.committedUnits} 节"
+                is RunOutcome.Paused -> "已暂停，已完成 ${outcome.committedUnits} 节"
+                is RunOutcome.Cancelled -> "已取消，已完成内容保留"
+                is RunOutcome.NeedsAttention -> "需要处理：${outcome.reason}"
+                is RunOutcome.Stalled -> "无法继续：${outcome.reason}"
+            }
             ClassroomNotify.show(
-                context, ProjectId(projectId), "课堂任务结束", "正式内容已保存",
+                context, ProjectId(projectId), "课堂任务结束", message,
                 indeterminate = false,
             )
-            Result.success()
+            when (outcome) {
+                is RunOutcome.NeedsAttention, is RunOutcome.Stalled ->
+                    Result.failure(workDataOf(KEY_ERROR to message))
+                else -> Result.success()
+            }
         } catch (e: CancellationException) {
             // 被取消时协程直接结束，引擎来不及写状态：这里补上，避免重启后一直显示运行中。
             runCatching { RunRecovery.markCancelled(service.store, ProjectId(projectId), service.clock) }

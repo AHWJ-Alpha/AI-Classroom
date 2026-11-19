@@ -393,7 +393,9 @@ class ClassroomService(
     ): RunOutcome {
         // 开跑之前先把上次遗留的「生成中 / 草稿待提交」放回队列，
         // 否则那些单元永远不会被重新选中，后面的依赖链会整体卡死。
-        RunRecovery.recover(store, clock())
+        // 只恢复当前项目中没有有效执行者的遗留步骤；不能因为启动项目 B
+        // 就把项目 A 的 Worker 和已提交检查点重置掉。
+        RunRecovery.recoverProject(store, projectId, clock())
         val now = clock()
         val runId = RunId.new()
 

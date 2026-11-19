@@ -38,6 +38,9 @@ object RunRecovery {
         for (project in store.projects()) {
             // PAUSE_REQUESTED 的任务 activeRun 查不到，所以按项目取全部任务再筛。
             for (run in store.runs(project.id).filter { it.status in STUCK_RUN }) {
+                // 有有效执行者（租约未过期）的任务正在别人手里跑：
+                // 打开课堂页就把它标成暂停，会把后台正在生成的项目打断。
+                if (run.owner != null && run.leaseUntil > now) continue
                 store.saveRun(
                     run.copy(
                         status = RunStatus.PAUSED,
@@ -48,11 +51,36 @@ object RunRecovery {
                 paused++
             }
 
+            // 该项目还有活跃执行者时，连单元也不能重置 ——
+            // 把它的 DRAFT_READY 打回 PLANNED，正在跑的 Worker 就白干了一节。
+            val hasActiveExecutor = store.runs(project.id)
+                .any { it.owner != null && it.leaseUntil > now }
+            if (hasActiveExecutor) continue
+
             for (unit in store.units(project.id)) {
                 if (unit.status in STUCK_UNIT) {
                     store.upsertUnit(unit.copy(status = UnitStatus.PLANNED))
                     reset++
                 }
+            }
+        }
+        return Report(paused, reset)
+    }
+
+    /** 只恢复一个项目，供新的持久执行者启动前使用。 */
+    fun recoverProject(store: ClassroomStore, projectId: ProjectId, now: EpochMillis): Report {
+        var paused = 0
+        var reset = 0
+        for (run in store.runs(projectId).filter { it.status in STUCK_RUN }) {
+            // 有尚未过期的执行租约时，说明 Worker 仍可能活着，不能抢占它。
+            if (run.owner != null && run.leaseUntil > now) continue
+            store.saveRun(run.copy(status = RunStatus.PAUSED, error = "上次执行已中断，可继续", updatedAt = now))
+            paused++
+        }
+        for (unit in store.units(projectId)) {
+            if (unit.status in STUCK_UNIT) {
+                store.upsertUnit(unit.copy(status = UnitStatus.PLANNED))
+                reset++
             }
         }
         return Report(paused, reset)
