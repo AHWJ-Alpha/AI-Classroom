@@ -30,10 +30,8 @@ object ClassroomGatewayFactory {
         temperature = config.temperature,
         reasoningEffort = config.reasoningEffort,
         deepThinkingEnabled = config.deepThinkingEnabled,
-        capabilities = com.aiclassroom.classroom.gateway.ModelCapabilities(
-            supportsTemperature = true,
-            supportsReasoningEffort = true,
-        ),
+        // 能力按主模型推断，不再一律写成「都支持」。
+        capabilities = com.aiclassroom.classroom.gateway.ModelCapabilityTable.of(config.chatModels().firstOrNull().orEmpty()),
     )
 
     fun create(

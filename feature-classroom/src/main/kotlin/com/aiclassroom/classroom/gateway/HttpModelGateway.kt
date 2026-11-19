@@ -23,7 +23,9 @@ class HttpModelGateway(
         var last: ModelCallResult? = null
 
         for (model in models) {
-            val single = if (model == request.model) request else request.copy(model = model)
+            // 换模型时能力要重新取：推理模型不接受 temperature，普通模型不接受 reasoning_effort。
+            val single = if (model == request.model) request
+            else request.copy(model = model, capabilities = ModelCapabilityTable.of(model))
             last = attemptWithRetry(single)
             // 只有「换一个模型可能好」的失败才降级；认证失败、取消都不该换模型。
             if (last.error == null || !shouldFallback(last.error!!)) return last
