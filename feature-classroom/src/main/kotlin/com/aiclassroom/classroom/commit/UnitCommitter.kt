@@ -121,6 +121,10 @@ class UnitCommitter(
                 ),
             )
 
+            // 重写某一节之后，依赖它的下游章节已经跟新前文对不上了：
+            // 只把本节标成待复查，等于默许后面几章继续错着。
+            RevisionImpact.markDownstreamStale(store, request.projectId, unit.id)
+
             store.project(request.projectId)?.let { project ->
                 store.updateProject(
                     project.copy(
