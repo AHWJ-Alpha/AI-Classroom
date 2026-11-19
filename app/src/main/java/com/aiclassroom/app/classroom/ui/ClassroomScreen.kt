@@ -1,5 +1,6 @@
 package com.aiclassroom.app.classroom.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.border
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -142,6 +143,10 @@ fun ClassroomScreen(
             else -> onClose()
         }
     }
+
+    // 系统返回键与侧滑走同一条：先退一层，退无可退才关掉课堂。
+    // 之前没有这个，返回键直接结束 Activity，用户以为「一按就退出应用」。
+    BackHandler { goBack() }
 
     Scaffold(
         // 反向退出：和二级菜单一样，内容右滑就关掉，不依赖边缘触发。

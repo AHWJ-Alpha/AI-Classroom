@@ -34,6 +34,7 @@ import com.aiclassroom.app.exam.normalizeExamImage
 import android.view.HapticFeedbackConstants
 import android.media.MediaPlayer
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -2062,6 +2063,21 @@ private fun AIClassroomApp(
             classroomOpenProject = pid
             classroomOpen = true
             com.aiclassroom.app.classroom.ClassroomNavigation.consume()
+        }
+    }
+
+    // 系统返回键：逐层退出，而不是一路退到桌面。
+    //
+    // 之前全应用没有 BackHandler，返回键直接结束 Activity —— 用户以为「侧滑一下就退出应用」。
+    // 课堂自己也有 BackHandler（阅读器→总览→列表），Compose 会优先派发给它，这里管其余层。
+    BackHandler(
+        enabled = classroomOpen || classMenuOpen || immersiveMode || tab != Tab.Class,
+    ) {
+        when {
+            classroomOpen -> classroomOpen = false
+            classMenuOpen -> classMenuOpen = false
+            immersiveMode -> immersiveMode = false
+            tab != Tab.Class -> tab = Tab.Class
         }
     }
 
