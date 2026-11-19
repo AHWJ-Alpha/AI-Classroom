@@ -1,0 +1,60 @@
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::load has been called by net.rubygrapefruit.platform.internal.NativeLibraryLoader in an unnamed module (file:/C:/Users/lenovo/.gradle/wrapper/dists/gradle-9.0.0-bin/d6wjpkvcgsg3oed0qlfss3wgl/gradle-9.0.0/lib/native-platform-0.22-milestone-28.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+> Task :feature-exam:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :feature-exam:compileKotlin UP-TO-DATE
+> Task :feature-exam:compileJava NO-SOURCE
+> Task :feature-exam:processResources NO-SOURCE
+> Task :feature-exam:classes UP-TO-DATE
+> Task :feature-exam:jar UP-TO-DATE
+> Task :feature-tools-fs:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :feature-tools-fs:compileKotlin UP-TO-DATE
+> Task :feature-tools-fs:compileJava NO-SOURCE
+> Task :feature-tools-fs:processResources NO-SOURCE
+> Task :feature-tools-fs:classes UP-TO-DATE
+> Task :feature-tools-fs:jar UP-TO-DATE
+> Task :feature-tools-net:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :feature-tools-net:compileKotlin UP-TO-DATE
+> Task :feature-tools-net:compileJava NO-SOURCE
+> Task :feature-tools-net:processResources NO-SOURCE
+> Task :feature-tools-net:classes UP-TO-DATE
+> Task :feature-tools-net:jar UP-TO-DATE
+> Task :feature-plugin:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :feature-plugin:compileKotlin UP-TO-DATE
+> Task :feature-plugin:compileJava NO-SOURCE
+> Task :feature-plugin:processResources NO-SOURCE
+> Task :feature-plugin:classes UP-TO-DATE
+> Task :feature-plugin:jar UP-TO-DATE
+> Task :feature-classroom:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :feature-classroom:compileKotlin UP-TO-DATE
+> Task :feature-classroom:compileJava NO-SOURCE
+> Task :feature-classroom:processResources NO-SOURCE
+> Task :feature-classroom:classes UP-TO-DATE
+> Task :feature-classroom:jar UP-TO-DATE
+> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preDebugBuild UP-TO-DATE
+> Task :app:generateDebugBuildConfig UP-TO-DATE
+> Task :app:checkDebugAarMetadata UP-TO-DATE
+> Task :app:generateDebugResValues UP-TO-DATE
+> Task :app:mapDebugSourceSetPaths UP-TO-DATE
+> Task :app:generateDebugResources UP-TO-DATE
+> Task :app:mergeDebugResources UP-TO-DATE
+> Task :app:packageDebugResources UP-TO-DATE
+> Task :app:parseDebugLocalResources UP-TO-DATE
+> Task :app:createDebugCompatibleScreenManifests UP-TO-DATE
+> Task :app:extractDeepLinksDebug UP-TO-DATE
+> Task :app:processDebugMainManifest UP-TO-DATE
+> Task :app:processDebugManifest UP-TO-DATE
+> Task :app:processDebugManifestForPackage UP-TO-DATE
+> Task :app:processDebugResources UP-TO-DATE
+
+> Task :app:compileDebugKotlin
+w: file:///D:/AI%20Classroom/app/src/main/java/com/aiclassroom/app/MainActivity.kt:1206:32 'val LocalLifecycleOwner: ProvidableCompositionLocal<LifecycleOwner>' is deprecated. Moved to lifecycle-runtime-compose library in androidx.lifecycle.compose package.
+w: file:///D:/AI%20Classroom/app/src/main/java/com/aiclassroom/app/MainActivity.kt:3923:44 'val Icons.Filled.Send: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.Send.
+
+BUILD SUCCESSFUL in 36s
+25 actionable tasks: 1 executed, 24 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.0.0/userguide/configuration_cache_enabling.html

@@ -7469,6 +7469,15 @@ private fun newClassroom(number: Int, config: ClassroomConfig = ClassroomConfig(
     config = config
 )
 
+/**
+ * 后台执行（Worker）用的对话读取入口。
+ *
+ * ClassroomStore 是本文件里的私有类，Worker 拿不到；但 Worker 必须能解析
+ * 项目来源对话的配置才能执行。这里只暴露一个只读入口，不复制任何解析逻辑。
+ */
+internal fun readConversationsForBackground(context: Context): List<Classroom> =
+    runCatching { ClassroomStore(context.applicationContext).load() }.getOrDefault(emptyList())
+
 private class ClassroomStore(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("ai_classroom_14", Context.MODE_PRIVATE)
     private val dataFile = File(context.filesDir, "ai_classroom_14_classes.json")
