@@ -63,4 +63,30 @@ class RunCancelPersistTest {
         assertEquals(0, RunRecovery.markCancelled(store, projectId) { now })
         assertEquals(RunStatus.COMPLETED, store.run(runId)!!.status)
     }
+
+    @Test
+    fun `暂停落盘后是 PAUSED 而不是 CANCELLED`() {
+        val dir = Files.createTempDirectory("pause").toFile()
+        val store = FileClassroomStore(dir)
+        store.createProject(
+            ClassroomProject(
+                id = projectId, title = "t", type = ProjectType.TEACHING,
+                lifecycle = ProjectLifecycle.ACTIVE, createdAt = now, updatedAt = now,
+            ),
+        )
+        store.saveRun(
+            GenerationRun(
+                id = runId, projectId = projectId, specVersion = 1, outlineVersion = 1,
+                phase = RunPhase.GENERATING, status = RunStatus.RUNNING,
+                totalUnits = 3, startedAt = now, updatedAt = now,
+            ),
+        )
+
+        assertEquals(1, RunRecovery.markPaused(store, projectId) { now })
+
+        // 暂停可以被继续；取消是终态。两者不能混。
+        val reloaded = FileClassroomStore(dir)
+        assertEquals(RunStatus.PAUSED, reloaded.run(runId)!!.status)
+        assertEquals(0, RunRecovery.markPaused(reloaded, projectId) { now }, "已暂停的不该再被标记")
+    }
 }
