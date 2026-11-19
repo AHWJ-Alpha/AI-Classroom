@@ -131,6 +131,16 @@ class ClassroomService(
         data class Failed(val reason: String) : PlanResult
     }
 
+    /** 已发布版本号（新到旧）。 */
+    fun workVersions(projectId: ProjectId): List<Int> =
+        com.aiclassroom.classroom.domain.ManifestResolver.versions(store, projectId)
+
+    /** 按版本读某一节；旧项目没有清单时返回 Legacy。 */
+    fun revisionAt(projectId: ProjectId, unitId: UnitId, workVersion: Int?) =
+        com.aiclassroom.classroom.domain.ManifestResolver.revisionAt(
+            store = store, projectId = projectId, unitId = unitId, workVersion = workVersion,
+        )
+
     /**
      * 从正式作品里取相关片段，供对话讨论使用。
      *

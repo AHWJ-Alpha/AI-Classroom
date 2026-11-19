@@ -490,9 +490,23 @@ private fun ReaderView(
     projectId: ProjectId,
     unitId: UnitId,
     onUnitChange: (UnitId) -> Unit,
+    /** 要读的版本；null 表示最新一版。 */
+    workVersion: Int? = null,
 ) {
     val units = remember(projectId) { service.store.units(projectId) }
-    val revision = remember(unitId) { service.store.officialRevision(unitId) }
+    // 按版本读：有清单就严格按清单，没有清单的旧项目才退回当前正文。
+    val resolved = remember(unitId, workVersion) { service.revisionAt(projectId, unitId, workVersion) }
+    val revision = when (resolved) {
+        is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Found -> resolved.revision
+        is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Legacy -> resolved.revision
+        is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Missing -> null
+    }
+    val versionLabel = when (resolved) {
+        is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Found ->
+            "第 " + resolved.manifest.workVersion + " 版"
+        is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Legacy -> "当前版本（旧项目无版本清单）"
+        is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Missing -> resolved.reason
+    }
     val index = units.indexOfFirst { it.id == unitId }
 
     // 文字 GAL：选择只写进自己的存档，不改作品正文，也不影响别的存档。
@@ -524,6 +538,7 @@ private fun ReaderView(
             fontWeight = FontWeight.Bold,
             fontSize = 18.sp,
         )
+        Text(versionLabel, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(8.dp))
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             if (revision == null) {
