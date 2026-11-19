@@ -71,4 +71,18 @@ object RunRecovery {
         }
         return active.size
     }
+
+    /**
+     * 把仍处于运行态的任务标成暂停。
+     *
+     * 暂停的实现是「停掉 Worker + 标记 PAUSED」：Worker 被 cancelUniqueWork 停掉后
+     * 协程直接结束，引擎来不及写状态，这里补上，否则重启后一直显示运行中。
+     */
+    fun markPaused(store: ClassroomStore, projectId: ProjectId, clock: () -> EpochMillis): Int {
+        val active = store.runs(projectId).filter { it.status == RunStatus.RUNNING }
+        for (run in active) {
+            store.saveRun(run.copy(status = RunStatus.PAUSED, updatedAt = clock()))
+        }
+        return active.size
+    }
 }

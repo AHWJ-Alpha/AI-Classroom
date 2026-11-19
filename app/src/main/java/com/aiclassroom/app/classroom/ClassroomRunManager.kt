@@ -58,7 +58,19 @@ object ClassroomRunManager {
         override fun isCancelled() = cancelRequested.get()
     }
 
-    fun requestPause() { paused.set(true) }
+    fun requestPause(context: Context? = null, projectId: ProjectId? = null) {
+        paused.set(true)
+        if (context != null && projectId != null) {
+            // 暂停 = 停掉 Worker + 标记 PAUSED：Worker 被停后引擎来不及写状态。
+            ClassroomRunWorker.cancel(context, projectId)
+            val store = ClassroomServiceProvider.store(context)
+            runCatching {
+                com.aiclassroom.classroom.exec.RunRecovery.markPaused(store, projectId) { System.currentTimeMillis() }
+            }
+            _running.value = false
+            _notice.value = "已暂停"
+        }
+    }
 
     /** 取消：只停后续，已提交内容一律保留。 */
     fun cancel(context: Context? = null, projectId: ProjectId? = null) {
