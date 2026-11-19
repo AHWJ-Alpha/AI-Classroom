@@ -55,6 +55,18 @@ class UnitExecutor(
         val unit = store.unit(unitId) ?: return UnitOutcome.Failed("单元不存在")
         if (unit.status == UnitStatus.READY) return UnitOutcome.AlreadyDone
 
+        // 每开一章续一次租约，并且**核对续租结果**：
+        // TTL 只有 30 分钟，长任务不续中途就会过期；而执行权被别人接管时，
+        // 这一章哪怕生成出来也提交不了，不如立刻停下，别白烧 token。
+        if (runOwner != null) {
+            val renewed = RunLease.renew(store, runId, runOwner, LEASE_TTL_MS, clock)
+            val check = RunLease.validate(store, runId, runOwner, fencingToken ?: 0, clock)
+            if (!renewed || check is RunLease.Validation.Invalid) {
+                val reason = (check as? RunLease.Validation.Invalid)?.reason ?: "续租失败"
+                return UnitOutcome.NeedsAttention("执行权已被接管：" + reason)
+            }
+        }
+
         val project = store.project(projectId) ?: return UnitOutcome.Failed("项目不存在")
         val spec = store.latestSpec(projectId) ?: return UnitOutcome.NeedsAttention("没有规格，无法生成")
         val outline = store.latestOutline(projectId)
@@ -62,11 +74,7 @@ class UnitExecutor(
         val planned = outline.units.firstOrNull { it.unitId == unitId }
             ?: return UnitOutcome.NeedsAttention("总纲里找不到这个单元")
 
-        // 每开一章续一次租约：TTL 只有 30 分钟，长任务不续的话中途会被判过期，
-        // 之后所有提交都会被 StaleExecutor 拒掉。
-        if (runOwner != null) {
-            RunLease.renew(store, runId, runOwner, LEASE_TTL_MS, clock)
-        }
+        // 租约续期与执行权核对见 execute 开头。
 
         // 来源快照：人格、角色、资料都以它为准，不随来源后来的修改漂移。
         val snapshot = store.latestSnapshot(projectId)

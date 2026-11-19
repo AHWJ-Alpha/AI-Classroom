@@ -49,6 +49,9 @@ class RunEngine(
     private val control: RunControl,
     private val clock: () -> EpochMillis,
     private val maxUnitsPerRun: Int = 200,
+    /** 执行者与令牌：写终态前校验，旧执行者不能覆盖新任务。 */
+    private val owner: String? = null,
+    private val fenceToken: Long? = null,
 ) {
 
     suspend fun run(projectId: ProjectId, runId: RunId): RunOutcome {
@@ -88,6 +91,8 @@ class RunEngine(
                                 summary = "共 " + committed + " 节",
                                 committedUnits = committed,
                                 clock = clock,
+                                owner = owner,
+                                fenceToken = fenceToken,
                             )
                         }
                         RunOutcome.Completed(committed)

@@ -27,7 +27,17 @@ object RunFinalizer {
         detail: String = "",
         committedUnits: Int? = null,
         clock: () -> EpochMillis,
+        /** 执行者与令牌；给出时只有仍持有执行权才允许写终态。 */
+        owner: String? = null,
+        fenceToken: Long? = null,
     ): ClassroomEvent? = store.transaction {
+        if (owner != null && fenceToken != null && run != null) {
+            val check = RunLease.validate(store, run.id, owner, fenceToken, clock)
+            if (check is RunLease.Validation.Invalid) {
+                // 旧执行者不能把新任务的终态盖掉。
+                return@transaction null
+            }
+        }
         run?.let {
             val patch = it.copy(
                 status = runStatus,

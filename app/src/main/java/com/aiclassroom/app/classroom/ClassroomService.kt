@@ -428,7 +428,8 @@ class ClassroomService(
             fencingToken = leaseToken,
         )
         return try {
-            RunEngine(store, executor, control, clock).run(projectId, runId)
+            RunEngine(store, executor, control, clock, owner = owner, fenceToken = leaseToken)
+                .run(projectId, runId)
         } finally {
             // 无论正常结束还是被取消都要释放，否则这个任务再也抢不到执行权。
             RunLease.release(store, runId, owner, clock)
