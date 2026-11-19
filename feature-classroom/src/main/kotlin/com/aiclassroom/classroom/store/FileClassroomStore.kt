@@ -53,6 +53,7 @@ class FileClassroomStore(
         val snapshots: MutableMap<String, ContextSnapshot> = linkedMapOf(),
         val events: MutableMap<String, ClassroomEvent> = linkedMapOf(),
         val manifests: MutableMap<String, WorkManifest> = linkedMapOf(),
+        val summaries: MutableMap<String, ChapterSummary> = linkedMapOf(),
     ) {
         fun snapshot(): State = State(
             LinkedHashMap(projects), LinkedHashMap(specs), LinkedHashMap(outlines),
@@ -60,7 +61,7 @@ class FileClassroomStore(
             LinkedHashMap(charStates), LinkedHashMap(chars), LinkedHashMap(runs),
             LinkedHashMap(attempts), LinkedHashMap(checkpoints), LinkedHashMap(reader),
             LinkedHashMap(learning), LinkedHashMap(saves), LinkedHashMap(snapshots),
-            LinkedHashMap(events), LinkedHashMap(manifests),
+            LinkedHashMap(events), LinkedHashMap(manifests), LinkedHashMap(summaries),
         )
     }
 
@@ -118,6 +119,10 @@ class FileClassroomStore(
         state.saves.clear(); o["saves"].asArray().forEach { val s = StoreCodec.playthrough(it); state.saves[s.id.value] = s }
         state.reader.clear(); o["reader"].asArray().forEach { val p = StoreCodec.readerProgress(it); state.reader[p.projectId.value] = p }
         state.learning.clear(); o["learning"].asArray().forEach { val p = StoreCodec.learningProgress(it); state.learning[p.projectId.value + "#" + p.objectiveId] = p }
+        state.summaries.clear(); o["summaries"].asArray().forEach {
+            val s = StoreCodec.summary(it)
+            state.summaries[s.unitId.value] = s
+        }
         state.manifests.clear(); o["manifests"].asArray().forEach {
             val m = StoreCodec.manifest(it)
             state.manifests[m.projectId.value + "#" + m.workVersion] = m
@@ -164,6 +169,7 @@ class FileClassroomStore(
             "snapshots" to Json.arr(state.snapshots.values.map(StoreCodec::snapshot)),
             "events" to Json.arr(state.events.values.map(StoreCodec::event)),
             "manifests" to Json.arr(state.manifests.values.map(StoreCodec::manifest)),
+            "summaries" to Json.arr(state.summaries.values.map(StoreCodec::summary)),
         )
         writeText(tmpFile, JsonWriter.write(doc))
         Files.move(
@@ -344,6 +350,16 @@ class FileClassroomStore(
     // ---------- 进度 ----------
 
     @Synchronized
+    override fun saveSummary(summary: ChapterSummary) = mutate {
+        state.summaries[summary.unitId.value] = summary
+    }
+
+    override fun summaries(projectId: ProjectId) =
+        state.summaries.values.filter { it.projectId == projectId }.sortedBy { it.index }
+
+    override fun summaryForRevision(revisionId: RevisionId) =
+        state.summaries.values.firstOrNull { it.revisionId == revisionId }
+
     override fun saveManifest(manifest: WorkManifest) = mutate {
         state.manifests[manifest.projectId.value + "#" + manifest.workVersion] = manifest
     }

@@ -120,6 +120,10 @@ class UnitCommitter(
             }
 
             store.saveRevision(committedRevision)
+            // 摘要与 revision 绑定：跨章上下文靠它，不再靠「上一节尾部 1500 字」。
+            store.saveSummary(
+                SummaryBuilder.from(unit, committedRevision, clock),
+            )
 
             if (patch != null) {
                 applyPatch(request.projectId, patch, now)

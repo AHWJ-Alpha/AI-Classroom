@@ -277,4 +277,64 @@ class UnitExecutorTest {
         assertIs<UnitOutcome.NeedsAttention>(outcome)
         assertNull(store.officialRevision(unitId), "有被丢弃的变化就不该提交")
     }
+
+    @Test
+    fun `第 2 章请求里带第 1 章的摘要`() = runBlocking {
+        // 跨章上下文必须真的进请求：只保存摘要不算接通。
+        val store = storeWithProject()
+        val rev1 = RevisionId("rev1")
+        store.upsertUnit(
+            store.unit(unitId)!!.copy(
+                status = UnitStatus.READY, currentRevisionId = rev1, officialVersion = 1,
+            ),
+        )
+        store.saveRevision(
+            UnitRevision(
+                id = rev1, unitId = unitId, projectId = projectId, version = 1,
+                draftText = "雨夜，门外塞进一封信。",
+                content = UnitContent(
+                    schemaVersion = 1, unitId = unitId, planVersion = 1, title = "第一章",
+                    objectivesCovered = emptyList(), unresolvedItems = listOf("谁是送信人"),
+                    events = listOf(UnitEvent("e1", listOf("b1"), "收到信")),
+                    blocks = listOf(ContentBlock.Narration("b1", "雨夜来信")),
+                ),
+                createdAt = now, committedAt = now, sourceHash = "h",
+            ),
+        )
+        store.saveSummary(
+            ChapterSummary(
+                projectId = projectId, unitId = unitId, revisionId = rev1, index = 1,
+                title = "第一章", keyEvents = listOf("主角收到一封信"),
+                unresolvedItems = listOf("谁是送信人"), gist = "雨夜来信", createdAt = now,
+            ),
+        )
+
+        val u2 = UnitId("u2")
+        store.upsertUnit(
+            ClassroomUnit(
+                u2, projectId, 2, ProjectType.NOVEL, "第二章", "接着讲", listOf(unitId),
+                emptyList(), listOf("完成"), 0, UnitStatus.PLANNED,
+            ),
+        )
+
+        // 总纲里必须有第 2 章，否则执行器在发请求前就停了。
+        val outline = store.latestOutline(projectId)!!
+        store.saveOutline(
+            outline.copy(
+                version = outline.version + 1,
+                units = outline.units + PlannedUnit(
+                    unitId = u2, index = 2, title = "第二章", goal = "接着讲",
+                    completionCriteria = listOf("完成"),
+                ),
+            ),
+        )
+
+        val emptyPatch = "{\"changes\":[],\"reason\":\"无变化\",\"evidenceEventIds\":[]}"
+        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok(emptyPatch))
+        executor(store, gateway).execute(projectId, u2, runId)
+
+        val first = gateway.prompts.first()
+        assertTrue(first.contains("谁是送信人"), "第 1 章的未解决事项应进入第 2 章请求")
+        assertTrue(first.contains("第 1 章"), "摘要要带章号")
+    }
 }

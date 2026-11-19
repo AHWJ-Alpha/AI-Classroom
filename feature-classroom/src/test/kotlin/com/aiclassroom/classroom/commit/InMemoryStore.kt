@@ -101,6 +101,13 @@ class InMemoryStore : ClassroomStore {
     override fun checkpoint(runId: RunId) = checkpointMap[runId]
 
     private val eventMap = linkedMapOf<String, ClassroomEvent>()
+    private val summaryMap = linkedMapOf<UnitId, ChapterSummary>()
+    override fun saveSummary(summary: ChapterSummary) { summaryMap[summary.unitId] = summary }
+    override fun summaries(projectId: ProjectId) =
+        summaryMap.values.filter { it.projectId == projectId }.sortedBy { it.index }
+    override fun summaryForRevision(revisionId: RevisionId) =
+        summaryMap.values.firstOrNull { it.revisionId == revisionId }
+
     private val manifestMap = linkedMapOf<Pair<ProjectId, Int>, WorkManifest>()
     override fun saveManifest(manifest: WorkManifest) {
         manifestMap[manifest.projectId to manifest.workVersion] = manifest

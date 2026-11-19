@@ -243,6 +243,37 @@ object StoreCodec {
 
     // ---------- 兜底 ----------
 
+    // ---------- 章节摘要 ----------
+
+    fun summary(s: ChapterSummary): Json = Json.obj(
+        "projectId" to Json.of(s.projectId.value),
+        "unitId" to Json.of(s.unitId.value),
+        "revisionId" to Json.of(s.revisionId.value),
+        "index" to Json.of(s.index),
+        "title" to Json.of(s.title),
+        "keyEvents" to Json.arr(s.keyEvents.map { Json.of(it) }),
+        "unresolvedItems" to Json.arr(s.unresolvedItems.map { Json.of(it) }),
+        "objectivesCovered" to Json.arr(s.objectivesCovered.map { Json.of(it) }),
+        "gist" to Json.of(s.gist),
+        "createdAt" to Json.of(s.createdAt),
+    )
+
+    fun summary(j: Json): ChapterSummary {
+        val o = j.asObject()
+        return ChapterSummary(
+            projectId = ProjectId(o["projectId"].asString() ?: ""),
+            unitId = UnitId(o["unitId"].asString() ?: ""),
+            revisionId = RevisionId(o["revisionId"].asString() ?: ""),
+            index = o["index"].asInt() ?: 0,
+            title = o["title"].asString() ?: "",
+            keyEvents = o["keyEvents"].asArray().mapNotNull { it.asString() },
+            unresolvedItems = o["unresolvedItems"].asArray().mapNotNull { it.asString() },
+            objectivesCovered = o["objectivesCovered"].asArray().mapNotNull { it.asString() },
+            gist = o["gist"].asString() ?: "",
+            createdAt = o["createdAt"].asLong() ?: 0,
+        )
+    }
+
     // ---------- 作品版本清单 ----------
 
     fun manifest(m: WorkManifest): Json = Json.obj(

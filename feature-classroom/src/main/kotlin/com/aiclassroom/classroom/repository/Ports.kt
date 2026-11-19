@@ -69,6 +69,11 @@ interface ClassroomStore {
     fun saveCheckpoint(checkpoint: Checkpoint)
     fun checkpoint(runId: RunId): Checkpoint?
 
+    /** 章节摘要：提交时生成，绑定到 revision。 */
+    fun saveSummary(summary: ChapterSummary)
+    fun summaries(projectId: ProjectId): List<ChapterSummary>
+    fun summaryForRevision(revisionId: RevisionId): ChapterSummary?
+
     /** 作品版本清单：一版写一次，之后不可变。 */
     fun saveManifest(manifest: WorkManifest)
     fun manifest(projectId: ProjectId, workVersion: Int): WorkManifest?

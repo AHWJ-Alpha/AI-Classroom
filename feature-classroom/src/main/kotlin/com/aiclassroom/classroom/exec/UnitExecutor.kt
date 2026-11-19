@@ -320,12 +320,39 @@ class UnitExecutor(
     }
 
     /** 相邻已提交单元的末尾，作为上下文；没有就空。 */
+    /**
+     * 跨章上下文：所有已提交章节的摘要在预算内，再附上一节尾部原文做衔接。
+     *
+     * 之前只有「上一节尾部 1500 字」——相隔两章就接不上，伏笔和未解决事项全丢。
+     */
     private fun previousText(projectId: ProjectId, unit: ClassroomUnit, outline: ProjectOutline): String {
-        val previous = store.units(projectId)
+        val done = store.units(projectId)
             .filter { it.index < unit.index && it.status == UnitStatus.READY }
-            .maxByOrNull { it.index } ?: return ""
-        val rev = store.officialRevision(previous.id) ?: return ""
-        return rev.draftText.takeLast(1500)
+            .sortedBy { it.index }
+        if (done.isEmpty()) return ""
+
+        val summaries = store.summaries(projectId)
+            .filter { it.index < unit.index }
+        val builder = StringBuilder()
+        if (summaries.isNotEmpty()) {
+            builder.appendLine("[章节摘要]")
+            for (s in summaries) {
+                // 预算 1200 字：先给完整摘要，超预算后只留 gist。
+                val line = s.render(compact = builder.length > 1200)
+                if (builder.length + line.length > 2400) break
+                builder.appendLine(line)
+            }
+            builder.appendLine()
+        }
+
+        // 最近一节保留原文尾部，用于文风与直接衔接。
+        val last = done.maxByOrNull { it.index }
+        val rev = last?.let { store.officialRevision(it.id) }
+        if (rev != null) {
+            builder.appendLine("[上一节结尾]")
+            builder.appendLine(rev.draftText.takeLast(800))
+        }
+        return builder.toString().trim()
     }
 
     /**
