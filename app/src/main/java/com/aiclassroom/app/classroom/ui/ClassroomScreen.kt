@@ -211,7 +211,18 @@ fun ClassroomScreen(
                         ClassroomRunManager.requestPause()
                         notice = "已请求暂停，当前单元写完后停下"
                     },
-                    onRead = { readingUnitId = it },
+                    onRead = { tapped ->
+                        // 从第一节进入时恢复上次阅读位置；用户明确点别的节则尊重他的选择。
+                        val saved = service.readerProgress(project.id)?.unitId
+                        val firstReady = service.store.units(project.id)
+                            .sortedBy { it.index }
+                            .firstOrNull { it.status == com.aiclassroom.classroom.domain.UnitStatus.READY }
+                            ?.id
+                        val resumable = saved?.takeIf { sid ->
+                            service.store.unit(sid)?.status == com.aiclassroom.classroom.domain.UnitStatus.READY
+                        }
+                        readingUnitId = if (tapped == firstReady && resumable != null) resumable else tapped
+                    },
                     onEditUnit = { editingUnit = it },
                     onSync = {
                         notice = onSyncSource(project.id)
