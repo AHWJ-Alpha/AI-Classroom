@@ -453,15 +453,16 @@ class MainActivity : ComponentActivity() {
         // 标记用 played（值是版本号），不是旧的 seen —— 后者在开发期被写成过 3.5.0，
         // 沿用会让「装完这一版却不播」。
         val splashPrefs = getSharedPreferences("splash_cg", MODE_PRIVATE)
-        val willShowSplash = splashPrefs.getString("played", "") != BuildConfig.VERSION_NAME
-        if (willShowSplash) setTheme(R.style.Theme_AIClassroom_Splash)
+        // 开屏 CG 不再在安装新版本后自动播：它只在设置页连击版本号 5 下时重放（彩蛋）。
+        // 自动播会把「打开应用」变成「先等一段动画」，对每天用的人只是拖慢。
+        val willShowSplash = false
         super.onCreate(savedInstanceState)
         // 音乐插件读播放信息前先拿到 application context；服务常驻时这条是空操作。
         NowPlaying.init(applicationContext)
         Haptics.load(applicationContext)
         setContent {
             AIClassroomTheme {
-                // 开屏 CG：**只在安装新版本后的第一次启动播放**。
+                // 开屏 CG：**只在设置页连击版本号 5 下时播放**（彩蛋），启动不再自动播。
                 // 主界面同时开始组合、被 CG 盖住；CG 末段整体淡出时自然露出来。
                 // 点击屏幕任意位置可跳过。
                 var showSplash by remember { mutableStateOf(willShowSplash) }
