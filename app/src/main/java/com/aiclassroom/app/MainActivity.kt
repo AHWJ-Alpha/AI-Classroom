@@ -7480,21 +7480,22 @@ internal fun appendClassroomEventMessage(
     ref: ClassroomEventRef? = null,
 ): Boolean = runCatching {
     val store = ClassroomStore(context.applicationContext)
-    val classes = store.load()
-    val index = classes.indexOfFirst { it.id == conversationId }
-    if (index < 0) return@runCatching false
-    val room = classes[index]
-    // 幂等：新卡认字段，旧卡认文本标记。
-    if (room.messages.any {
-            it.classroomEvent?.eventId == eventId ||
-                com.aiclassroom.classroom.domain.EventText.mentionsEvent(it.text, eventId)
-        }) {
-        return@runCatching true
+    // 原子读改写：与界面、Worker 的写入互斥，避免各自持旧快照互相覆盖。
+    val (ok, saved) = store.transaction { classes ->
+        val index = classes.indexOfFirst { it.id == conversationId }
+        if (index < 0) return@transaction false
+        val room = classes[index]
+        // 幂等：新卡认字段，旧卡认文本标记。
+        if (room.messages.any {
+                it.classroomEvent?.eventId == eventId ||
+                    com.aiclassroom.classroom.domain.EventText.mentionsEvent(it.text, eventId)
+            }) {
+            return@transaction true
+        }
+        room.messages.add(ChatMessage("assistant", text, classroomEvent = ref))
+        true
     }
-    room.messages.add(
-        ChatMessage("assistant", text, classroomEvent = ref),
-    )
-    store.save(classes, 0)
+    ok && saved
 }.getOrDefault(false)
 
 internal fun readConversationsForBackground(context: Context): List<Classroom> =
@@ -7504,6 +7505,16 @@ private class ClassroomStore(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("ai_classroom_14", Context.MODE_PRIVATE)
     private val dataFile = File(context.filesDir, "ai_classroom_14_classes.json")
     private val tempFile = File(context.filesDir, "ai_classroom_14_classes.tmp")
+
+    companion object {
+        /**
+         * 进程内唯一的写锁。
+         *
+         * 投递器、界面、后台各自 new 一个 ClassroomStore，锁必须跨实例共享，
+         * 否则「各自 load 一份、后写的覆盖先写的」照旧发生。
+         */
+        private val fileLock = Any()
+    }
 
     fun load(): List<Classroom> {
         val raw = when {
@@ -7691,7 +7702,25 @@ private class ClassroomStore(context: Context) {
      * 以前这里返回 Unit，失败只把内容塞进 prefs 备份就算了 —— 调用方（事件投递）
      * 无法知道聊天保存成功没有，于是「先确认已投递、后保存聊天」的崩溃窗口被掩盖。
      */
+    /**
+     * 原子读改写：整个过程持锁，别的写入无法插进来。
+     *
+     * 返回 null 表示写盘失败（改动未生效）。
+     */
+    fun <T> transaction(block: (MutableList<Classroom>) -> T): Pair<T, Boolean> =
+        synchronized(fileLock) {
+            val current = load().toMutableList()
+            val result = block(current)
+            result to saveLocked(current, 0)
+        }
+
     fun save(classes: List<Classroom>, classIndex: Int): Boolean {
+        // 所有写盘串行化：投递器与界面会各自 load→改→save 同一份 JSON，
+        // 并发时后写的会把先写的整份覆盖掉。
+        return synchronized(fileLock) { saveLocked(classes, classIndex) }
+    }
+
+    private fun saveLocked(classes: List<Classroom>, classIndex: Int): Boolean {
         val payload = JSONArray(classes.map { it.toJson() }).toString()
         val ok = runCatching {
             tempFile.writeText(payload, Charsets.UTF_8)
