@@ -1270,7 +1270,68 @@ private fun Disk(node: UiNode, paint: Paint, modifier: Modifier) {
     ) {
         Canvas(Modifier.matchParentSize()) {
             val radius = size.minDimension / 2f
-            drawCircle(color = discColor, radius = radius, center = center)
+            if (cover == null) {
+                // 没有封面时做成黑胶：纯色底加一个孔太像「加载失败」，
+                // 加沟槽与斜向反光，至少还是一张唱片。
+                drawCircle(
+                    brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                        colors = listOf(Color(0xFF2A2A2A), Color(0xFF121212), Color(0xFF070707)),
+                        center = center,
+                        radius = radius,
+                    ),
+                    radius = radius,
+                    center = center,
+                )
+                // 沟槽：等距细环，靠透明度变化造出「一圈一圈」的密度感。
+                var groove = radius * 0.34f
+                var index = 0
+                val step = (radius * 0.022f).coerceAtLeast(1.2.dp.toPx())
+                while (groove < radius * 0.985f) {
+                    val alpha = if (index % 3 == 0) 0.075f else 0.035f
+                    drawCircle(
+                        color = Color.White.copy(alpha = alpha),
+                        radius = groove,
+                        center = center,
+                        style = Stroke(width = 0.8.dp.toPx()),
+                    )
+                    groove += step
+                    index++
+                }
+                // 斜上方反光：一道宽弧，让它看起来是转动的圆盘而不是平面圆。
+                drawArc(
+                    color = Color.White.copy(alpha = 0.07f),
+                    startAngle = -150f,
+                    sweepAngle = 90f,
+                    useCenter = false,
+                    topLeft = Offset(center.x - radius * 0.86f, center.y - radius * 0.86f),
+                    size = Size(radius * 1.72f, radius * 1.72f),
+                    style = Stroke(width = radius * 0.20f),
+                )
+                // 中心标签：黑胶的纸标，颜色取自主题强调色。
+                drawCircle(color = discColor, radius = radius * 0.30f, center = center)
+                drawCircle(
+                    color = Color.Black.copy(alpha = 0.18f),
+                    radius = radius * 0.30f,
+                    center = center,
+                    style = Stroke(width = 0.8.dp.toPx()),
+                )
+            } else {
+                drawCircle(color = discColor, radius = radius, center = center)
+                // 有封面时，大唱片的留边那一圈也补几道沟槽，外圈才不像塑料壳。
+                if (!compact) {
+                    var groove = radius * (coverRatio + 0.02f)
+                    val step = (radius * 0.022f).coerceAtLeast(1.2.dp.toPx())
+                    while (groove < radius * 0.985f) {
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.05f),
+                            radius = groove,
+                            center = center,
+                            style = Stroke(width = 0.8.dp.toPx()),
+                        )
+                        groove += step
+                    }
+                }
+            }
         }
         if (cover != null) {
             // 封面按正圆裁切填满：ContentScale.Crop 已经在 Box 里，再 clip 成圆才是唱片。
