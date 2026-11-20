@@ -315,9 +315,17 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
     val haptics = rememberHaptics()
     val interactive = node.onTap != null || node.onDoubleTap != null || node.onLongPress != null
     var pressed by remember(node.path) { mutableStateOf(false) }
+    // 按钮/图标按下去**略微放大**（1.10）：缩小更像是「被按塌了」，
+    // 而图标这种小面积元素放大才有一记「弹起来」的反馈感。
+    // 其余容器类节点保持轻微缩小，避免整块内容跳一下。
+    val pressTarget = when {
+        !pressed -> 1f
+        node.type == UiNodeType.ICON || node.type == UiNodeType.BUTTON -> 1.10f
+        else -> 0.94f
+    }
     // 按下快而小（90ms）要跟手；松开用弹簧，带一点过冲，手感才「活」。
     val pressScale by animateFloatAsState(
-        targetValue = if (pressed) 0.86f else 1f,
+        targetValue = pressTarget,
         animationSpec = if (pressed) tween(90) else spring(dampingRatio = 0.42f, stiffness = 900f),
         label = "nodePressScale",
     )
@@ -386,9 +394,13 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
             .onSizeChanged { boxSize.value = it }
             .drawBehind {
                 if (pressGlow > 0.01f) {
+                    // 按钮/图标的高亮更强一点：它们面积小，同样的透明度看不出来。
+                    val strong = node.type == UiNodeType.ICON || node.type == UiNodeType.BUTTON
+                    val cardAlpha = if (strong) 0.75f else 0.55f
+                    val buttonAlpha = if (strong) 0.32f else 0.22f
                     val r = size.minDimension / 2f * (0.72f + 0.28f * pressGlow)
-                    drawCircle(paint.palette.card.copy(alpha = 0.55f * pressGlow), radius = r)
-                    drawCircle(paint.palette.button.copy(alpha = 0.22f * pressGlow), radius = r)
+                    drawCircle(paint.palette.card.copy(alpha = cardAlpha * pressGlow), radius = r)
+                    drawCircle(paint.palette.button.copy(alpha = buttonAlpha * pressGlow), radius = r)
                 }
             }
             .graphicsLayer {
