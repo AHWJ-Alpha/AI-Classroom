@@ -109,6 +109,9 @@ class ClassroomRunWorker(
                 context, ProjectId(projectId), "课堂任务结束", message,
                 indeterminate = false,
             )
+            // 结果卡在 Worker 里就投出去：以前要等用户下次打开应用才写回对话。
+            runCatching { ClassroomDelivery.deliverPending(context) }
+
             when (outcome) {
                 is RunOutcome.NeedsAttention, is RunOutcome.Stalled ->
                     Result.failure(workDataOf(KEY_ERROR to message))

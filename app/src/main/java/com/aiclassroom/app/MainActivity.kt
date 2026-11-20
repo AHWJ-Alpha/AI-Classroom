@@ -7475,6 +7475,29 @@ private fun newClassroom(number: Int, config: ClassroomConfig = ClassroomConfig(
  * ClassroomStore 是本文件里的私有类，Worker 拿不到；但 Worker 必须能解析
  * 项目来源对话的配置才能执行。这里只暴露一个只读入口，不复制任何解析逻辑。
  */
+/**
+ * 把一条课堂事件写进指定对话并落盘。返回是否真的写成功。
+ *
+ * 幂等：已经写过同一个 eventId 就直接返回 true，让调用方去确认投递，不重复插卡。
+ */
+internal fun appendClassroomEventMessage(
+    context: Context,
+    conversationId: String,
+    eventId: String,
+    text: String,
+): Boolean = runCatching {
+    val store = ClassroomStore(context.applicationContext)
+    val classes = store.load()
+    val index = classes.indexOfFirst { it.id == conversationId }
+    if (index < 0) return@runCatching false
+    val room = classes[index]
+    if (room.messages.any { com.aiclassroom.classroom.domain.EventText.mentionsEvent(it.text, eventId) }) {
+        return@runCatching true
+    }
+    room.messages.add(ChatMessage("assistant", text))
+    store.save(classes, 0)
+}.getOrDefault(false)
+
 internal fun readConversationsForBackground(context: Context): List<Classroom> =
     runCatching { ClassroomStore(context.applicationContext).load() }.getOrDefault(emptyList())
 
