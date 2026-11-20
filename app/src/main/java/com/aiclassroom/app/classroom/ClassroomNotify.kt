@@ -1,5 +1,6 @@
 package com.aiclassroom.app.classroom
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -102,6 +103,28 @@ object ClassroomNotify {
         return if (Build.VERSION.SDK_INT >= 29) {
             ForegroundInfo(idOf(projectId), notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else ForegroundInfo(idOf(projectId), notification)
+    }
+
+    /** 前台服务用的通知对象（不可自动消失，否则 FGS 会被系统判为无通知）。 */
+    fun buildForeground(context: Context, projectId: ProjectId, title: String, text: String): Notification {
+        ensureChannel(context)
+        val open = PendingIntent.getActivity(
+            context, NOTIFICATION_ID,
+            Intent(context, Class.forName("com.aiclassroom.app.MainActivity")).apply {
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                putExtra(ClassroomRunManager.EXTRA_OPEN_PROJECT, projectId.value)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(open)
+            .setProgress(0, 0, true)
+            .build()
     }
 
     fun clear(context: Context) {

@@ -1,6 +1,7 @@
 package com.aiclassroom.app.classroom
 
 import android.content.Context
+import android.content.pm.ServiceInfo
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.ExistingWorkPolicy
@@ -25,6 +26,25 @@ class ClassroomRunWorker(
     appContext: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
+
+    /**
+     * 长任务必须前台执行：普通 Worker 约 10 分钟就会被系统掐断，
+     * 而单节生成实测要 100~120 秒，跑几节就超时。
+     */
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        val projectId = inputData.getString(KEY_PROJECT) ?: ""
+        val notification = ClassroomNotify.buildForeground(
+            applicationContext,
+            ProjectId(projectId),
+            "课堂生成中",
+            "正在后台生成，可切走或锁屏",
+        )
+        return ForegroundInfo(
+            ClassroomNotify.NOTIFICATION_ID,
+            notification,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+        )
+    }
 
     override suspend fun doWork(): Result {
         val projectId = inputData.getString(KEY_PROJECT) ?: return Result.failure()
@@ -54,6 +74,9 @@ class ClassroomRunWorker(
             override fun shouldContinue() = !isStopped
             override fun isCancelled() = isStopped
         }
+
+        // 进入前台运行：不这样做，Worker 会在系统执行窗口到期时被直接掐断。
+        runCatching { setForeground(getForegroundInfo()) }
 
         // 生成期间给一条常驻通知：Worker 没有界面，用户看不到进度会以为卡死。
         ClassroomNotify.show(
