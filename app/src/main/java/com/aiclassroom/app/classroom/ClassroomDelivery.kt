@@ -53,6 +53,15 @@ object ClassroomDelivery {
                         conversationId = conversationId,
                         eventId = event.eventId,
                         text = com.aiclassroom.classroom.domain.EventText.render(event),
+                        // 必须带结构化附件：防覆盖合并只保留带附件的卡片，
+                        // 不带的话后台结果会被界面保存抹掉（实测遗漏点）。
+                        ref = com.aiclassroom.app.model.ClassroomEventRef(
+                            eventId = event.eventId,
+                            projectId = event.projectId.value,
+                            runId = event.runId?.value,
+                            workVersion = event.workVersion,
+                            kind = event.type.name,
+                        ),
                     )
                 },
             )

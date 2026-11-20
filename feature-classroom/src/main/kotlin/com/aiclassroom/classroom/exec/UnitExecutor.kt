@@ -60,7 +60,7 @@ class UnitExecutor(
         // 这一章哪怕生成出来也提交不了，不如立刻停下，别白烧 token。
         if (runOwner != null) {
             val renewed = RunLease.renew(store, runId, runOwner, LEASE_TTL_MS, clock)
-            val check = RunLease.validate(store, runId, runOwner, fencingToken ?: 0, clock)
+            val check = RunLease.validateForProject(store, projectId, runId, runOwner, fencingToken ?: 0, clock)
             if (!renewed || check is RunLease.Validation.Invalid) {
                 val reason = (check as? RunLease.Validation.Invalid)?.reason ?: "续租失败"
                 return UnitOutcome.NeedsAttention("执行权已被接管：" + reason)

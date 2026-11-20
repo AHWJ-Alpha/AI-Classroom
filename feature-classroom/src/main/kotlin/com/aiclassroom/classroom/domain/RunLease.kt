@@ -159,6 +159,38 @@ object RunLease {
         return Validation.Valid
     }
 
+    /**
+     * 项目级校验。
+     *
+     * 关键点：令牌要跟**项目内最大值**比，而不是跟这个 run 自己的令牌比。
+     * 接管时只给新 run 递增令牌，旧 run 的令牌没变 ——
+     * 只比自己那个值的话，旧执行者永远「有效」，等于租约没起作用。
+     */
+    fun validateForProject(
+        store: ClassroomStore,
+        projectId: ProjectId,
+        runId: RunId,
+        owner: String,
+        token: Long,
+        clock: () -> EpochMillis,
+    ): Validation {
+        val now = clock()
+        val runs = store.runs(projectId)
+        val maxToken = (runs.map { it.fencingToken } + 0L).maxOrNull() ?: 0L
+        if (token < maxToken) {
+            return Validation.Invalid("执行令牌已被接管（项目令牌 " + maxToken + "，本地 " + token + "）")
+        }
+        val run = runs.firstOrNull { it.id == runId }
+            ?: return Validation.Invalid("任务不存在")
+        if (run.owner != null && run.owner != owner) {
+            return Validation.Invalid("执行者已变更（当前 " + run.owner + "）")
+        }
+        if (run.leaseUntil in 1 until now) {
+            return Validation.Invalid("租约已过期")
+        }
+        return Validation.Valid
+    }
+
     sealed interface Validation {
         data object Valid : Validation
         data class Invalid(val reason: String) : Validation

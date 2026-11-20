@@ -110,8 +110,9 @@ class UnitCommitter(
             // 执行者校验：租约被换人或令牌落后时，旧执行者的提交必须被拒 ——
             // 否则「重启后旧任务恢复，把新任务的结果盖掉」就会真的发生。
             if (request.owner != null && request.fencingToken != null) {
-                val check = RunLease.validate(
+                val check = RunLease.validateForProject(
                     store = store,
+                    projectId = request.projectId,
                     runId = request.runId,
                     owner = request.owner,
                     token = request.fencingToken,

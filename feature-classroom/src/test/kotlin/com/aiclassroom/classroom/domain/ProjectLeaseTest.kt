@@ -77,4 +77,24 @@ class ProjectLeaseTest {
         )
         assertIs<RunLease.Acquired.Granted>(taken)
     }
+
+    @Test
+    fun `被接管后旧执行者的令牌必须失效`() {
+        // 关键回归：接管只给新 run 递增令牌，旧 run 的令牌没变。
+        // 如果校验只看旧 run 自己的令牌，旧执行者永远「有效」—— 租约等于没做。
+        val s = store()
+        val first = assertIs<RunLease.Acquired.Granted>(
+            RunLease.acquireForProject(s, projectId, RunId("r1"), "A", 10_000, { now }),
+        )
+        RunLease.acquireForProject(s, projectId, RunId("r2"), "B", 10_000, { now }, force = true)
+
+        val stale = RunLease.validateForProject(s, projectId, RunId("r1"), "A", first.lease.token, { now })
+        assertIs<RunLease.Validation.Invalid>(stale)
+
+        // 新执行者自己仍然有效
+        val latest = s.run(RunId("r2"))!!
+        assertIs<RunLease.Validation.Valid>(
+            RunLease.validateForProject(s, projectId, RunId("r2"), "B", latest.fencingToken, { now }),
+        )
+    }
 }

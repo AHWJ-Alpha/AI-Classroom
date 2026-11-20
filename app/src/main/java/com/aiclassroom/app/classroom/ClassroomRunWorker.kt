@@ -10,7 +10,9 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.aiclassroom.app.readConversationsForBackground
+import com.aiclassroom.classroom.domain.ClassroomEvent
 import com.aiclassroom.classroom.domain.ProjectId
+import com.aiclassroom.classroom.event.EventOutbox
 import com.aiclassroom.classroom.exec.RunControl
 import com.aiclassroom.classroom.exec.RunOutcome
 import com.aiclassroom.classroom.exec.RunRecovery
@@ -109,6 +111,40 @@ class ClassroomRunWorker(
                 context, ProjectId(projectId), "课堂任务结束", message,
                 indeterminate = false,
             )
+            // 非正常结束也要留一张卡：完成由 RunFinalizer 写事件，
+            // 暂停/取消/失败/待处理这些路径以前根本不产生事件，用户看不到任何回写。
+            runCatching {
+                val type = when (outcome) {
+                    is RunOutcome.Paused -> com.aiclassroom.classroom.domain.EventType.PAUSED
+                    is RunOutcome.Cancelled -> com.aiclassroom.classroom.domain.EventType.CANCELLED
+                    is RunOutcome.NeedsAttention -> com.aiclassroom.classroom.domain.EventType.NEEDS_ATTENTION
+                    is RunOutcome.Stalled -> com.aiclassroom.classroom.domain.EventType.FAILED
+                    else -> null
+                }
+                if (type != null) {
+                    val project = service.store.project(ProjectId(projectId))
+                    val conv = project?.sourceConversationId
+                    val run = service.store.runs(ProjectId(projectId)).maxByOrNull { it.startedAt }
+                    if (project != null && conv != null) {
+                        EventOutbox.enqueue(
+                            service.store,
+                            ClassroomEvent(
+                                eventId = EventOutbox.eventIdOf(run?.id, ProjectId(projectId), type),
+                                sourceConversationId = conv,
+                                projectId = ProjectId(projectId),
+                                projectTitle = project.title,
+                                runId = run?.id,
+                                workVersion = project.workVersion,
+                                type = type,
+                                summary = message,
+                                detail = (outcome as? RunOutcome.NeedsAttention)?.reason.orEmpty(),
+                                createdAt = System.currentTimeMillis(),
+                            ),
+                        )
+                    }
+                }
+            }
+
             // 结果卡在 Worker 里就投出去：以前要等用户下次打开应用才写回对话。
             runCatching { ClassroomDelivery.deliverPending(context) }
 
