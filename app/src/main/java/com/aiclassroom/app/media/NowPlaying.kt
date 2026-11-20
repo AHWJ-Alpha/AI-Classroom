@@ -487,7 +487,7 @@ object NowPlaying {
             title = title,
             artist = artist,
             album = album,
-            artwork = artwork(appContext, metadata),
+            artwork = artwork(appContext, metadata, session.packageName),
             isPlaying = isPlaying,
             durationMs = durationMs,
             positionMs = positionMs,
@@ -518,16 +518,38 @@ object NowPlaying {
         return null
     }
 
+    /**
+     * 通知上的大图标。
+     *
+     * 有些播放器（实测酷狗 lite）只把封面放进自己通知的 largeIcon，
+     * MediaSession 里只给一个指向私有 FileProvider 的 URI —— 外部读不到。
+     * 通知监听能拿到那张图，所以留一条回退。
+     */
+    @Volatile
+    private var notificationArtwork: Bitmap? = null
+
+    @Volatile
+    private var notificationArtworkPackage: String? = null
+
+    fun updateNotificationArtwork(packageName: String, bitmap: Bitmap?) {
+        notificationArtworkPackage = packageName
+        notificationArtwork = bitmap
+    }
+
     /** 封面回退链：ALBUM_ART -> ART -> DISPLAY_ICON -> ALBUM_ART_URI / ART_URI。 */
     @Suppress("DEPRECATION")
-    private fun artwork(context: Context?, metadata: MediaMetadata?): Bitmap? {
+    private fun artwork(context: Context?, metadata: MediaMetadata?, packageName: String?): Bitmap? {
         if (metadata == null) return null
         metadata.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)?.let { return it }
         metadata.getBitmap(MediaMetadata.METADATA_KEY_ART)?.let { return it }
         metadata.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)?.let { return it }
         val uri = metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
             ?: metadata.getString(MediaMetadata.METADATA_KEY_ART_URI)
-        return decodeArtwork(context, uri)
+        decodeArtwork(context, uri)?.let { return it }
+        // 最后一条：通知上的大图标。只在包名一致时采用，避免拿错播放器的图。
+        return notificationArtwork.takeIf {
+            notificationArtworkPackage != null && notificationArtworkPackage == packageName
+        }
     }
 
     private fun decodeArtwork(context: Context?, uri: String?): Bitmap? {

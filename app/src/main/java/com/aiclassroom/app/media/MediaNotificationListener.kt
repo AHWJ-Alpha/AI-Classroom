@@ -1,6 +1,7 @@
 package com.aiclassroom.app.media
 
 import android.app.Notification
+import android.graphics.drawable.Icon
 import android.content.ComponentName
 import android.media.session.MediaSession
 import android.os.Build
@@ -40,6 +41,9 @@ class MediaNotificationListener : NotificationListenerService() {
         if (sbn == null) return
         val token = mediaToken(sbn.notification?.extras)
         if (token != null) {
+            // 顺手把通知的大图标交给 NowPlaying 当封面回退：
+            // 有些播放器只把封面放在通知里，MediaSession 只给私有 URI（外部读不到）。
+            captureLargeIcon(sbn)
             NowPlaying.onMediaToken(sbn.packageName, token)
         } else {
             // 没有 token（很多播放器只在播放时带），限流地兜一次活跃会话扫描。
@@ -51,6 +55,27 @@ class MediaNotificationListener : NotificationListenerService() {
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
         if (sbn == null) return
         NowPlaying.onNotificationRemoved(sbn.packageName)
+    }
+
+    /**
+     * 取通知大图标作为封面候选。
+     *
+     * 只收边长足够大的图：小图标是播放器自己的 logo，会把封面顶替成错误的图。
+     */
+    private fun captureLargeIcon(sbn: StatusBarNotification) {
+        runCatching {
+            val icon = sbn.notification?.getLargeIcon() ?: return
+            // 自己画到 Bitmap：Icon.toBitmap 在部分构建里不可用，且无法控制尺寸。
+            val drawable = icon.loadDrawable(this) ?: return
+            val size = maxOf(drawable.intrinsicWidth, drawable.intrinsicHeight, 96)
+            val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bitmap)
+            drawable.setBounds(0, 0, canvas.width, canvas.height)
+            drawable.draw(canvas)
+            if (bitmap.width >= 96) {
+                NowPlaying.updateNotificationArtwork(sbn.packageName, bitmap)
+            }
+        }
     }
 
     private fun mediaToken(extras: Bundle?): MediaSession.Token? {
