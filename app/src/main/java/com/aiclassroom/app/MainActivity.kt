@@ -2081,41 +2081,18 @@ private fun AIClassroomApp(
         }
     }
 
-    // 课堂事件投递：把待投递的完成/失败卡写回**它自己的对话**，
-    // 哪怕用户此刻正在看别的对话。投递后标记已投递，重启重放不会重复。
+    // 课堂事件投递：逻辑收在 ClassroomDelivery 里，Worker 结束与应用启动共用一份。
+    // 这里只负责「界面还开着的时候」定期补投并刷新内存副本。
     LaunchedEffect(Unit) {
         while (true) {
             kotlinx.coroutines.delay(2500)
             runCatching {
-                val eventStore = com.aiclassroom.app.classroom.ClassroomServiceProvider.store(context)
-                var appended = false
-                for (room in classes.toList()) {
-                    val pending = com.aiclassroom.classroom.event.EventOutbox.pending(eventStore, room.id)
-                    if (pending.isEmpty()) continue
-                    val index = classes.indexOfFirst { it.id == room.id }
-                    if (index < 0) continue
-                    for (event in pending) {
-                        // 聊天侧幂等：上次「消息已写、确认未落」崩了的话，这里只补确认。
-                        val alreadyWritten = classes[index].messages.any { m ->
-                            com.aiclassroom.classroom.domain.EventText.mentionsEvent(m.text, event.eventId)
-                        }
-                        if (alreadyWritten) {
-                            com.aiclassroom.classroom.event.EventOutbox.markDelivered(eventStore, event.eventId)
-                            continue
-                        }
-                        classes[index].messages.add(
-                            ChatMessage("assistant", com.aiclassroom.classroom.domain.EventText.render(event)),
-                        )
-                        // 顺序是关键：先确认聊天真的落盘，再标记已投递。
-                        // 反过来的话，崩在两者之间就会「投递记为成功、卡片却没了」。
-                        if (persist("课堂任务已回写")) {
-                            com.aiclassroom.classroom.event.EventOutbox.markDelivered(eventStore, event.eventId)
-                            appended = true
-                        } else {
-                            // 没存下去就撤回内存里的这条，事件保持待投递，下一轮重试。
-                            classes[index].messages.removeAt(classes[index].messages.lastIndex)
-                        }
-                    }
+                val delivered = com.aiclassroom.app.classroom.ClassroomDelivery.deliverPending(context)
+                if (delivered > 0) {
+                    // 投递写的是磁盘，界面持有的是内存副本：重新载入才能看到新卡片。
+                    val fresh = store.load()
+                    classes.clear()
+                    classes.addAll(fresh)
                 }
             }
         }
