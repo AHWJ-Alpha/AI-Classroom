@@ -12,6 +12,7 @@ import androidx.work.workDataOf
 import com.aiclassroom.app.readConversationsForBackground
 import com.aiclassroom.classroom.domain.ClassroomEvent
 import com.aiclassroom.classroom.domain.ProjectId
+import com.aiclassroom.classroom.domain.RunStatus
 import com.aiclassroom.classroom.event.EventOutbox
 import com.aiclassroom.classroom.exec.RunControl
 import com.aiclassroom.classroom.exec.RunOutcome
@@ -148,8 +149,13 @@ class ClassroomRunWorker(
             // 结果卡在 Worker 里就投出去：以前要等用户下次打开应用才写回对话。
             runCatching { ClassroomDelivery.deliverPending(context) }
 
-            when (outcome) {
-                is RunOutcome.NeedsAttention, is RunOutcome.Stalled ->
+            val runStatus = service.store.runs(ProjectId(projectId)).lastOrNull()?.status
+            when {
+                // 网络中断导致暂停：交回 WorkManager 退避重试，网络恢复后自动继续。
+                // 已提交的节都在检查点里，重跑只会从下一节开始。
+                outcome is RunOutcome.Paused && runStatus == RunStatus.PAUSED ->
+                    Result.retry()
+                outcome is RunOutcome.NeedsAttention || outcome is RunOutcome.Stalled ->
                     Result.failure(workDataOf(KEY_ERROR to message))
                 else -> Result.success()
             }

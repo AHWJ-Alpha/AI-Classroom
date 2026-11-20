@@ -23,6 +23,13 @@ sealed interface UnitOutcome {
     data class NeedsAttention(val reason: String) : UnitOutcome
     /** 调用失败（网络/认证/截断），可再试。 */
     data class Failed(val reason: String) : UnitOutcome
+    /**
+     * 网络断了，不是任务出错。
+     *
+     * 和 Failed 分开：这种情况应当**保留进度、稍后自动继续**，
+     * 而不是把整轮标成「需要处理」让用户手动重来。
+     */
+    data class NetworkInterrupted(val reason: String) : UnitOutcome
     data object AlreadyDone : UnitOutcome
 }
 
@@ -147,7 +154,30 @@ class UnitExecutor(
                 ),
             )
             recordAttempt(runId, unitId, RunPhase.GENERATING, prompt.hashCode().toString(), result)
-            if (result.error != null) return UnitOutcome.Failed(describe(result))
+            if (result.error != null) {
+                val err = result.error!!
+                // 网络类错误先就地重试一次：多半是瞬时抖动，不值得让整轮停下。
+                if (err is com.aiclassroom.classroom.gateway.ModelCallError.Network ||
+                    err is com.aiclassroom.classroom.gateway.ModelCallError.Timeout
+                ) {
+                    val retry = gateway.complete(
+                        ModelRequests.fromPolicy(
+                            policy = policy,
+                            messages = listOf(ModelMessage(ModelMessage.Role.USER, prompt)),
+                            expectJson = true,
+                        ),
+                    )
+                    if (retry.error == null && retry.finishReason !is FinishReason.Length) {
+                        // 重试成功，继续正常流程。
+                        text = retry.content
+                        lastReason = ""
+                    } else {
+                        return UnitOutcome.NetworkInterrupted(describe(retry))
+                    }
+                } else {
+                    return UnitOutcome.Failed(describe(result))
+                }
+            }
             // 截断的输出不能当作完整正文：宁可重试，也不要写进正式内容。
             if (result.finishReason is FinishReason.Length) {
                 return UnitOutcome.Failed("输出被截断（到达 max_tokens）")

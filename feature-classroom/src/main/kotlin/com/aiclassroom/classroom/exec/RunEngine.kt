@@ -117,6 +117,21 @@ class RunEngine(
                     store.run(runId)?.let { store.saveRun(it.copy(status = RunStatus.RETRY_WAIT, error = outcome.reason, updatedAt = clock())) }
                     return RunOutcome.NeedsAttention(committed, outcome.reason)
                 }
+                is UnitOutcome.NetworkInterrupted -> {
+                    // 网络断了不是任务出错：把 run 标成暂停（可继续），
+                    // 由 Worker 交给 WorkManager 退避重试，已提交的节一律保留。
+                    store.run(runId)?.let {
+                        store.saveRun(
+                            it.copy(
+                                status = RunStatus.PAUSED,
+                                error = "网络中断，稍后自动继续：" + outcome.reason,
+                                updatedAt = clock(),
+                                completedUnits = committed,
+                            ),
+                        )
+                    }
+                    return RunOutcome.Paused(committed)
+                }
                 is UnitOutcome.NeedsAttention -> {
                     store.run(runId)?.let { store.saveRun(it.copy(status = RunStatus.WAITING_INPUT, error = outcome.reason, updatedAt = clock())) }
                     store.project(projectId)?.let {

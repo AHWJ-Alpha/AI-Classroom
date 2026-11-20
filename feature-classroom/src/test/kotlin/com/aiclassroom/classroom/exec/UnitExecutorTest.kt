@@ -157,14 +157,29 @@ class UnitExecutorTest {
     }
 
     @Test
-    fun `调用失败直接返回 Failed 且不写任何内容`() = runBlocking {
+    fun `网络错误返回可继续的中断结果`() = runBlocking {
+        // 网络断了不是任务出错：保留进度、稍后自动继续，不能变成「需要处理」。
         val store = storeWithProject()
-        val gateway = FakeGateway(failed(ModelCallError.Network("断网")))
+        val gateway = FakeGateway(
+            failed(ModelCallError.Network("断网")),
+            failed(ModelCallError.Network("还是断网")),   // 就地重试那一次
+        )
+
+        val outcome = executor(store, gateway).execute(projectId, unitId, runId)
+
+        assertIs<UnitOutcome.NetworkInterrupted>(outcome)
+        assertNull(store.officialRevision(unitId), "没生成成功就不该有正式版本")
+    }
+
+    @Test
+    fun `认证失败直接返回 Failed`() = runBlocking {
+        // 认证错误重试也没用，不该消耗额外请求。
+        val store = storeWithProject()
+        val gateway = FakeGateway(failed(ModelCallError.Unauthorized(401)))
 
         val outcome = executor(store, gateway).execute(projectId, unitId, runId)
 
         assertIs<UnitOutcome.Failed>(outcome)
-        assertNull(store.officialRevision(unitId))
     }
 
     @Test
