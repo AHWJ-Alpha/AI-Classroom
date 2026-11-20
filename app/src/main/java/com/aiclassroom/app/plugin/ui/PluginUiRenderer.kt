@@ -27,8 +27,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -393,7 +394,7 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
             .offset(x = dx, y = dy)
             .onSizeChanged { boxSize.value = it }
             .drawBehind {
-                if (pressGlow > 0.01f) {
+                if (false) {
                     // 按钮/图标的高亮更强一点：它们面积小，同样的透明度看不出来。
                     val strong = node.type == UiNodeType.ICON || node.type == UiNodeType.BUTTON
                     val cardAlpha = if (strong) 0.75f else 0.55f
@@ -405,8 +406,8 @@ private fun BoxScope.DraggableChild(node: UiNode, paint: Paint) {
             }
             .graphicsLayer {
                 // 拖动缩放（scale）与按压反馈（pressScale）叠在一起：两件事互不干扰。
-                scaleX = scale * pressScale
-                scaleY = scale * pressScale
+                scaleX = scale
+                scaleY = scale
             }
             // 点击 / 长按：独立识别器，手指一移动它自己取消。
             .pointerInput(node.path, node.onDoubleTap) {
@@ -843,6 +844,33 @@ private fun PaintNode(
     interactive: Boolean = true,
 ) {
     if (!isVisible(node, paint)) return
+    // ---- 按压反馈 ----
+    // 以前只有浮窗的 DraggableChild 有这套，沉浸模式完全没有；
+    // 而 clickModifier 用的是 indication = null，所以哪里按都没反应。
+    // 放到 PaintNode 里，两种模式、任意层级的可点节点都统一有反馈。
+    val hasGesture = interactive &&
+        (node.onTap != null || node.onDoubleTap != null || node.onLongPress != null)
+    val interaction = remember(node.path) { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val hapticBack = rememberHaptics()
+    LaunchedEffect(pressed) {
+        if (pressed) hapticBack(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+    }
+    val pressTarget = when {
+        !pressed -> 1f
+        node.type == UiNodeType.ICON || node.type == UiNodeType.BUTTON -> 1.10f
+        else -> 0.94f
+    }
+    val pressScale by animateFloatAsState(
+        targetValue = pressTarget,
+        animationSpec = if (pressed) tween(90) else spring(dampingRatio = 0.42f, stiffness = 900f),
+        label = "paintNodePressScale",
+    )
+    val pressGlow by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = if (pressed) tween(110) else tween(220),
+        label = "paintNodePressGlow",
+    )
     // 顺序很重要：尺寸 → 背景 → 内边距。
     // 背景压在 padding 外面，写了 padding 的整屏容器（息屏钟）才会连边都铺满颜色，
     // 而不是在四周留一圈主题白的边。
@@ -851,7 +879,9 @@ private fun PaintNode(
         .then(backgroundModifier(node, paint))
         .then(paddingModifier(node))
         .then(offsetModifier(node))
-        .then(if (interactive) clickModifier(node, paint) else Modifier)
+        .then(if (interactive) clickModifier(node, paint, interaction) else Modifier)
+        // 缩放放在手势之后：命中区保持原尺寸，只有画面放大，不会因为放大反而点不到。
+        .then(if (hasGesture) Modifier.graphicsLayer { scaleX = pressScale; scaleY = pressScale } else Modifier)
     val animation = node.animation
     if (animation == null || animation is UiAnimation.Sprite) {
         // sprite 是「一直循环」的帧动画，由 image 节点自己驱动，不走入场动画。
@@ -2149,12 +2179,16 @@ private fun offsetModifier(node: UiNode): Modifier =
     }
 
 @OptIn(ExperimentalFoundationApi::class)
-private fun clickModifier(node: UiNode, paint: Paint): Modifier {
+private fun clickModifier(
+    node: UiNode,
+    paint: Paint,
+    interaction: MutableInteractionSource,
+): Modifier {
     val tap = node.onTap
     val longPress = node.onLongPress
     if (tap == null && longPress == null) return Modifier
     return Modifier.combinedClickable(
-        interactionSource = MutableInteractionSource(),
+        interactionSource = interaction,
         indication = null,
         onClick = { if (tap != null) paint.onEvent(PluginUiEvent(paint.pluginId, tap, "tap")) },
         onLongClick = { if (longPress != null) paint.onEvent(PluginUiEvent(paint.pluginId, longPress, "long_press")) },
