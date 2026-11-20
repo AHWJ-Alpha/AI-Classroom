@@ -547,7 +547,8 @@ private fun AIClassroomApp(
     val branchMemoryJobs = remember { java.util.IdentityHashMap<BranchClass, Job>() }
     val memoryWatermarks = remember { java.util.IdentityHashMap<Classroom, Int>() }
     fun persist(message: String = "已保存到本机"): Boolean {
-        val ok = store.save(classes, classIndex)
+        // 合并后保存：不覆盖后台刚投递的结果卡。
+        val ok = store.saveMerged(classes, classIndex)
         saveNotice = if (ok) message else "保存失败：改动还在内存里，请重试或先导出备份"
         return ok
     }
@@ -7718,6 +7719,33 @@ private class ClassroomStore(context: Context) {
         // 所有写盘串行化：投递器与界面会各自 load→改→save 同一份 JSON，
         // 并发时后写的会把先写的整份覆盖掉。
         return synchronized(fileLock) { saveLocked(classes, classIndex) }
+    }
+
+    /**
+     * 保存前先与磁盘合并。
+     *
+     * 界面持有的是内存快照，后台投递会往同一份 JSON 里追加结果卡。
+     * 直接整份写回就会把刚投递的卡片抹掉 —— 这里把「磁盘上有、内存里没有」的
+     * **结构化任务卡**补回来。只合并卡片，不合并普通消息，
+     * 否则用户删掉的聊天记录会被还原。
+     */
+    fun saveMerged(classes: List<Classroom>, classIndex: Int): Boolean = synchronized(fileLock) {
+        val onDisk = load()
+        val merged = classes.map { room ->
+            val diskRoom = onDisk.firstOrNull { it.id == room.id }
+            if (diskRoom == null) {
+                room
+            } else {
+                val known = room.messages.mapNotNull { it.classroomEvent?.eventId }.toSet()
+                val missingCards = diskRoom.messages.filter { m ->
+                    val card = m.classroomEvent ?: return@filter false
+                    card.eventId !in known
+                }
+                if (missingCards.isEmpty()) room
+                else room.copy(messages = (room.messages + missingCards).toMutableList())
+            }
+        }
+        saveLocked(merged, classIndex)
     }
 
     private fun saveLocked(classes: List<Classroom>, classIndex: Int): Boolean {
