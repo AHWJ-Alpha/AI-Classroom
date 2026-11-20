@@ -2050,6 +2050,8 @@ private fun AIClassroomApp(
     var classroomOpen by remember { mutableStateOf(false) }
     // 点结果卡时带上要打开的项目；优先级低于通知带来的项目。
     var classroomOpenProject by remember { mutableStateOf<String?>(null) }
+    // 卡片指定的作品版本：null 表示看最新版。
+    var classroomOpenVersion by remember { mutableStateOf<Int?>(null) }
 
     // 课堂连接按项目来源解析；conversations 用 lambda 取最新，避免持有旧快照。
     val classroomSourceResolver = com.aiclassroom.app.classroom.ClassroomSourceResolver(
@@ -2061,6 +2063,7 @@ private fun AIClassroomApp(
     LaunchedEffect(com.aiclassroom.app.classroom.ClassroomNavigation.requestSeq) {
         val pid = com.aiclassroom.app.classroom.ClassroomNavigation.pendingProjectId
         if (pid != null) {
+            classroomOpenVersion = com.aiclassroom.app.classroom.ClassroomNavigation.pendingWorkVersion
             classroomOpenProject = pid
             classroomOpen = true
             com.aiclassroom.app.classroom.ClassroomNavigation.consume()
@@ -2661,6 +2664,8 @@ private fun AIClassroomApp(
                 onClose = { classroomOpen = false },
                 initialProjectId = (classroomOpenFromNotice ?: classroomOpenProject)
                     ?.let { com.aiclassroom.classroom.domain.ProjectId(it) },
+                // 卡片指定版本时按那一版打开，不再默认最新。
+                initialWorkVersion = classroomOpenVersion,
                 // 课堂项目属于「当前这个对话」，不是「当前全局状态」。
                 sourceConversationId = current.id,
                 sourceConversationName = current.name,
@@ -4121,7 +4126,7 @@ private fun MessageCard(
     pluginUserImages: Map<String, Map<String, File>> = emptyMap(),
     pluginUserImageFits: Map<String, Map<String, String>> = emptyMap(),
     /** 点击课堂结果卡时打开对应项目。 */
-    onOpenProject: (String) -> Unit = {},
+    onOpenProject: (String, Int?) -> Unit = { _, _ -> },
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val bubbleUser = if (palette.page == DesignTokens.Dark.Page) DesignTokens.Dark.BubbleUser else DesignTokens.Light.BubbleUser
@@ -4160,9 +4165,15 @@ private fun MessageCard(
                         .border(DesignTokens.Border.Hairline, palette.outline, RoundedCornerShape(DesignTokens.Radius.Card))
                         .padding(horizontal = DesignTokens.Spacing.CardHorizontal, vertical = DesignTokens.Spacing.CardVertical)
                 ) {
-                    if (com.aiclassroom.classroom.domain.EventText.isEventMessage(message.text)) {
-                        // 课堂结果卡：可点开对应作品；不是人物台词，样式也区分开。
-                        val projectId = com.aiclassroom.classroom.domain.EventText.parseProjectId(message.text)
+                    // 结构化附件优先：打开权限只认它，正文里的标记只用于兼容旧卡。
+                    val cardRef = message.classroomEvent
+                    if (cardRef != null ||
+                        com.aiclassroom.classroom.domain.EventText.isEventMessage(message.text)
+                    ) {
+                        val projectId = cardRef?.projectId
+                            ?: com.aiclassroom.classroom.domain.EventText.parseProjectId(message.text)
+                        val workVersion = cardRef?.workVersion?.takeIf { it > 0 }
+                            ?: com.aiclassroom.classroom.domain.EventText.parseVersion(message.text)
                         Column(Modifier.fillMaxWidth()) {
                             Text(
                                 message.text.substringBefore("  {"),
@@ -4171,8 +4182,11 @@ private fun MessageCard(
                             )
                             if (projectId != null) {
                                 Spacer(Modifier.height(DesignTokens.Spacing.Xs))
-                                TextButton(onClick = { onOpenProject(projectId) }) {
-                                    Text("打开作品")
+                                TextButton(onClick = { onOpenProject(projectId, workVersion) }) {
+                                    Text(
+                                        if (workVersion != null && workVersion > 0) "打开第 $workVersion 版"
+                                        else "打开作品",
+                                    )
                                 }
                             }
                         }

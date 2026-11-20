@@ -16,17 +16,23 @@ object ClassroomNavigation {
     var pendingProjectId by mutableStateOf<String?>(null)
         private set
 
+    /** 卡片上的作品版本；null 表示看最新版。 */
+    var pendingWorkVersion by mutableStateOf<Int?>(null)
+        private set
+
     /** 自增序号：同一个项目重复点击也能触发一次消费。 */
     var requestSeq by mutableStateOf(0)
         private set
 
-    fun openProject(projectId: String) {
+    fun openProject(projectId: String, workVersion: Int? = null) {
         pendingProjectId = projectId
+        pendingWorkVersion = workVersion
         requestSeq++
     }
 
     /** 根部消费后清空，避免重组时反复打开。 */
     fun consume() {
         pendingProjectId = null
+        pendingWorkVersion = null
     }
 }

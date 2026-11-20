@@ -51,8 +51,10 @@ fun ClassroomScreen(
      */
     resolveSource: (ProjectId) -> SourceResolution,
     onClose: () -> Unit,
-    /** 从通知点进来时要直接打开的项目。 */
+    /** 从通知/卡片点进来时要直接打开的项目。 */
     initialProjectId: ProjectId? = null,
+    /** 卡片上固定的作品版本；null 表示看最新版。 */
+    initialWorkVersion: Int? = null,
     /** 当前所在对话：新建项目默认绑定它。 */
     sourceConversationId: String? = null,
     sourceConversationName: String? = null,
@@ -83,6 +85,9 @@ fun ClassroomScreen(
     var notice by remember { mutableStateOf("") }
     var openProjectId by remember { mutableStateOf<ProjectId?>(null) }
     var readingUnitId by remember { mutableStateOf<UnitId?>(null) }
+    // 卡片指定了版本就一直按那个版本读，直到用户离开这个项目。
+    var pinnedWorkVersion by remember { mutableStateOf(initialWorkVersion) }
+    LaunchedEffect(initialWorkVersion) { pinnedWorkVersion = initialWorkVersion }
     var creating by remember { mutableStateOf(false) }
     // 任务跑在进程级作用域（ClassroomRunManager），界面只观察状态：
     // 退出这一屏不会中断生成，通知栏也能看到进度。
@@ -185,6 +190,7 @@ fun ClassroomScreen(
                     service = service,
                     projectId = project.id,
                     unitId = readingUnitId!!,
+                    workVersion = pinnedWorkVersion,
                     onUnitChange = { readingUnitId = it },
                 )
 
