@@ -239,6 +239,7 @@ import com.aiclassroom.feature.exam.EXAM_TOOL_PROMPT
 import com.aiclassroom.feature.exam.EXAM_TOOL_PROMPT_V2
 import com.aiclassroom.feature.exam.ExamQuestion
 import com.aiclassroom.app.model.ChatMessage
+import com.aiclassroom.app.model.ClassroomEventRef
 import com.aiclassroom.app.model.BranchClass
 import com.aiclassroom.app.model.KnowledgeFile
 import com.aiclassroom.app.model.ConversationChapter
@@ -7462,16 +7463,23 @@ internal fun appendClassroomEventMessage(
     conversationId: String,
     eventId: String,
     text: String,
+    ref: ClassroomEventRef? = null,
 ): Boolean = runCatching {
     val store = ClassroomStore(context.applicationContext)
     val classes = store.load()
     val index = classes.indexOfFirst { it.id == conversationId }
     if (index < 0) return@runCatching false
     val room = classes[index]
-    if (room.messages.any { com.aiclassroom.classroom.domain.EventText.mentionsEvent(it.text, eventId) }) {
+    // 幂等：新卡认字段，旧卡认文本标记。
+    if (room.messages.any {
+            it.classroomEvent?.eventId == eventId ||
+                com.aiclassroom.classroom.domain.EventText.mentionsEvent(it.text, eventId)
+        }) {
         return@runCatching true
     }
-    room.messages.add(ChatMessage("assistant", text))
+    room.messages.add(
+        ChatMessage("assistant", text, classroomEvent = ref),
+    )
     store.save(classes, 0)
 }.getOrDefault(false)
 

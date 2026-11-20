@@ -24,7 +24,24 @@ internal data class ChatMessage(
     val toolCallId: String? = null,
     val images: List<String> = emptyList(),
     /** 空列表为作者对话；角色模式使用角色卡文件名作为稳定标识。 */
-    val audience: List<String> = emptyList()
+    val audience: List<String> = emptyList(),
+    /**
+     * 课堂任务卡的结构化附件。
+     *
+     * 之前只靠正文里的 `{project=…}` 文本标记，任何 assistant 文本都能伪造出
+     * 「打开作品」的权限。现在打开权限只认这个字段；旧消息仍靠文本渲染，
+     * 但不再被当作授权依据。
+     */
+    val classroomEvent: ClassroomEventRef? = null
+)
+
+/** 任务卡引用：只放定位所需的非敏感信息。 */
+internal data class ClassroomEventRef(
+    val eventId: String,
+    val projectId: String,
+    val runId: String?,
+    val workVersion: Int,
+    val kind: String
 )
 internal data class BranchClass(
     val title: String, val source: String, val messages: MutableList<ChatMessage>, val memory: String,
