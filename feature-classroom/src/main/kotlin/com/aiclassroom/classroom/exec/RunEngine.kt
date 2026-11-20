@@ -25,8 +25,14 @@ interface RunControl {
 sealed interface RunOutcome {
     /** 所有单元都提交完成。 */
     data class Completed(val committedUnits: Int) : RunOutcome
+    /** 暂停原因：用户主动暂停，还是网络断了被动暂停。两者恢复方式不同。 */
+    enum class PauseReason { USER, NETWORK }
+
     /** 被暂停：已完成的内容保留，任务可恢复。 */
-    data class Paused(val committedUnits: Int) : RunOutcome
+    data class Paused(
+        val committedUnits: Int,
+        val reason: PauseReason = PauseReason.USER,
+    ) : RunOutcome
     /** 被取消：保留已提交内容，不等于删除项目。 */
     data class Cancelled(val committedUnits: Int) : RunOutcome
     /** 需要人处理：某个单元反复失败，后面的依赖单元不该继续硬跑。 */
@@ -130,7 +136,7 @@ class RunEngine(
                             ),
                         )
                     }
-                    return RunOutcome.Paused(committed)
+                    return RunOutcome.Paused(committed, RunOutcome.PauseReason.NETWORK)
                 }
                 is UnitOutcome.NeedsAttention -> {
                     store.run(runId)?.let { store.saveRun(it.copy(status = RunStatus.WAITING_INPUT, error = outcome.reason, updatedAt = clock())) }
