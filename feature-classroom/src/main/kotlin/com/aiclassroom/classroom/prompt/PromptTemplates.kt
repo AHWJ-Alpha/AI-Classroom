@@ -404,7 +404,16 @@ object PromptTemplates {
         appendLine("没有问题就输出 {\"issues\":[]}。")
     }
 
-    data class StateInput(val unit: PlannedUnit, val text: String, val events: List<UnitEvent>)
+    data class StateInput(
+        val unit: PlannedUnit,
+        val text: String,
+        val events: List<UnitEvent>,
+        /** 合法 characterId / target：不列出来模型就会编，然后被校验器整份拒掉。 */
+        val characters: List<CharacterId> = emptyList(),
+        /** 合法 factId：同上。 */
+        val facts: List<FactId> = emptyList(),
+        val projectType: ProjectType = ProjectType.TEACHING,
+    )
 
     fun stateUpdater(input: StateInput): String = buildString {
         appendLine(GUARD)
@@ -421,7 +430,27 @@ object PromptTemplates {
         input.events.forEach { appendLine("- " + it.id + "：" + it.description) }
         appendLine("[/DATA:EVENTS]")
         appendLine()
+        appendLine("[ALLOWED_IDS]")
+        appendLine("允许的 characterId：" + input.characters.joinToString(", ") { it.value }.ifBlank { "（无）" })
+        appendLine("允许的 target（关系对端）：" + input.characters.joinToString(", ") { it.value }.ifBlank { "（无）" })
+        appendLine("允许的 factId：" + input.facts.joinToString(", ") { it.value }.ifBlank { "（无）" })
+        appendLine("本节事件 ID：" + input.events.joinToString(", ") { it.id }.ifBlank { "（无）" })
+        appendLine()
+        appendLine("[OP_FIELDS]")
+        appendLine("SetEmotion：characterId, value")
+        appendLine("SetGoal：characterId, value")
+        appendLine("SetLocation：characterId, value")
+        appendLine("AdjustStress：characterId, delta（整数）")
+        appendLine("SetRelationship：characterId, target, value（target 必须是上面的合法 id）")
+        appendLine("LearnFact：characterId, factId（factId 必须是上面的合法 id）")
+        appendLine("缺少必需字段的变化会被整份拒绝，不会部分生效。")
+        appendLine()
         appendLine("[OUTPUT_SCHEMA]")
-        appendLine("{\"changes\":[{\"op\":\"SetEmotion|SetGoal|SetLocation|AdjustStress|SetRelationship|LearnFact\",\"characterId\":\"...\",\"value\":\"...\"}],\"reason\":\"...\",\"evidenceEventIds\":[\"...\"]}")
+        appendLine("{\"changes\":[{\"op\":\"SetRelationship\",\"characterId\":\"<合法 id>\",\"target\":\"<合法 id>\",\"value\":\"关系变化\"}],\"reason\":\"...\",\"evidenceEventIds\":[\"<本节事件 ID>\"]}")
+        appendLine()
+        appendLine("[EMPTY_PATCH]")
+        appendLine("只提取已经发生、且有事件证据支持的变化。")
+        appendLine("如果本节没有需要持久保存的状态变化，输出合法的空补丁：{\"changes\":[],\"reason\":\"...\",\"evidenceEventIds\":[]}")
+        appendLine("不要为了让 changes 非空而编造变化。")
     }
 }

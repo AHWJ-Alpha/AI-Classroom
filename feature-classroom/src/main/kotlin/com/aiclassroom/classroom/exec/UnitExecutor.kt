@@ -184,7 +184,7 @@ class UnitExecutor(
             }
             text = result.content
 
-            val parsed = UnitContentParser.parse(text, unitId, outline.version, knownCharacters)
+            val parsed = UnitContentParser.parse(text, unitId, outline.version, knownCharacters, unit.type)
             if (!parsed.ok) {
                 lastReason = parsed.problems.joinToString("；")
                 attempt++
@@ -243,7 +243,7 @@ class UnitExecutor(
 
         // 状态补丁只从**最终**候选正文提取。用修订前的草稿提补丁，
         // 会把已经删掉的剧情写进角色记忆。提不出来就当作没有，正文照样提交。
-        val patchResult = proposePatch(projectId, unitId, revisionId, content, knownCharacters, planned)
+        val patchResult = proposePatch(projectId, unitId, revisionId, content, knownCharacters, planned, visibleFacts.map { it.factId }, unit.type)
         if (patchResult is PatchResult.Failed) {
             // 需要状态变化却提不出来时宁可停下，也不要把正文提交成「已一致」。
             return UnitOutcome.NeedsAttention("状态提取失败：" + patchResult.reason)
@@ -308,6 +308,9 @@ class UnitExecutor(
         content: UnitContent,
         knownCharacters: Set<CharacterId>,
         planned: PlannedUnit,
+        /** 本次可见的事实 id：模型只能引用这些，否则整份补丁作废。 */
+        knownFacts: List<FactId> = emptyList(),
+        projectType: ProjectType = ProjectType.TEACHING,
     ): PatchResult {
         // 不因为 events 为空就直接判定「没有变化」：模型可能漏写事件，
         // 静默跳过会把真实变化丢掉。仍然问一次，让解析器和校验器说话。
@@ -316,6 +319,9 @@ class UnitExecutor(
                 unit = planned,
                 text = content.blocks.joinToString("\n") { blockText(it) },
                 events = content.events,
+                characters = knownCharacters.toList(),
+                facts = knownFacts,
+                projectType = projectType,
             ),
         )
         val call = gateway.complete(

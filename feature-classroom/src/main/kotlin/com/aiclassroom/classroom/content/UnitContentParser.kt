@@ -10,6 +10,19 @@ import com.aiclassroom.classroom.json.*
  * 原则是宁可判定失败，也不要猜测：未知块类型、台词说了不存在的角色、
  * 事件引用了不存在的块，都让这份草稿进不了审查，而不是悄悄丢掉一块内容当作完整。
  */
+/**
+ * 允许的内容块类型。
+ *
+ * 场景/小说只接受叙述、对白、标题 —— 模型返回 explanation 也不能进正文，
+ * 这一层是硬约束，不依赖提示词自觉。
+ */
+internal fun allowedBlockTypes(type: ProjectType): Set<String> = when (type) {
+    ProjectType.SCENE, ProjectType.NOVEL -> setOf("narration", "dialogue", "heading")
+    ProjectType.TEXT_GAL -> setOf("narration", "dialogue", "heading", "choice")
+    ProjectType.TEACHING ->
+        setOf("narration", "dialogue", "heading", "explanation", "example", "exercise", "choice")
+}
+
 object UnitContentParser {
 
     data class Parsed(val content: UnitContent?, val problems: List<String>) {
@@ -21,6 +34,8 @@ object UnitContentParser {
         unitId: UnitId,
         planVersion: Int,
         knownCharacters: Set<CharacterId> = emptySet(),
+        /** 场景/小说不接受讲解类块：提示词管不住的时候由这里兜底。 */
+        projectType: ProjectType = ProjectType.TEACHING,
     ): Parsed {
         val jsonText = StructuredPayload.extract(raw)
             ?: return Parsed(null, listOf("输出里没有完整的 JSON"))
@@ -41,7 +56,11 @@ object UnitContentParser {
         val blocks = rawBlocks.mapIndexed { i, item ->
             val m = item.asObject()
             val id = m["id"].asString() ?: ("b" + (i + 1))
-            when (val type = m["type"].asString() ?: "") {
+            val blockType = m["type"].asString() ?: ""
+            if (!allowedBlockTypes(projectType).contains(blockType)) {
+                problems += "不允许的内容块类型：" + blockType + "（" + projectType.label + "）"
+            }
+            when (blockType) {
                 "narration" -> ContentBlock.Narration(id, m["text"].asString() ?: "")
                 "heading" -> ContentBlock.Heading(id, m["text"].asString() ?: "", m["level"].asInt() ?: 2)
                 "explanation" -> ContentBlock.Explanation(id, m["text"].asString() ?: "")
@@ -88,7 +107,7 @@ object UnitContentParser {
                     }
                 }
                 else -> {
-                    problems += "未知的内容块类型：" + type
+                    problems += "未知的内容块类型：" + blockType
                     ContentBlock.Narration(id, m["text"].asString() ?: "")
                 }
             }
