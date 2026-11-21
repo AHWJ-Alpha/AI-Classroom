@@ -34,7 +34,10 @@ object ClassroomGatewayFactory {
         capabilities = com.aiclassroom.classroom.gateway.ModelCapabilityTable.of(config.chatModels().firstOrNull().orEmpty()),
         // 长篇分段需要足够的输出预算：不设时服务商按默认值截断（常见 4K token），
         // 一节刚写一半就 finish_reason=length，整段作废。
-        maxOutputTokens = 4_096,
+        // 8192：规划阶段要一次吐出「规格 + 总纲 + 全部单元」的完整 JSON，
+        // 4096 会在单元数稍多时把 JSON 截断（规划直接失败）。
+        // 分段体积由提示词里的单次字数目标控制，不靠压这个上限。
+        maxOutputTokens = 8_192,
     )
 
     fun create(
