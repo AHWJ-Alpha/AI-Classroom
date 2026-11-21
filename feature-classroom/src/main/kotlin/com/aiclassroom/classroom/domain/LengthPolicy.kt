@@ -32,8 +32,14 @@ sealed interface LengthPlan {
         const val MIN_UNIT = 1
         const val MAX_UNIT = 20_000
 
-        /** 单次调用的推荐文本上限（不是 token，也不是截断保证）。 */
-        const val PER_CALL_RECOMMENDED = 2_500
+        /**
+         * 单次调用的推荐文本上限（汉字计数，不是 token）。
+         *
+         * 取 1200 是为了留出 JSON 结构、块字段与事件描述的开销：
+         * 输出预算按 4096 token 算，汉字大约 1 字 ≈ 1 token，
+         * 目标定得太高（之前 2500）就会在写完前被 finish_reason=length 截断，整段作废。
+         */
+        const val PER_CALL_RECOMMENDED = 1_200
 
         /** 分段硬上限。 */
         const val MAX_SEGMENTS_HARD = 12

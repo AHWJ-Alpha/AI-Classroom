@@ -32,6 +32,9 @@ object ClassroomGatewayFactory {
         deepThinkingEnabled = config.deepThinkingEnabled,
         // 能力按主模型推断，不再一律写成「都支持」。
         capabilities = com.aiclassroom.classroom.gateway.ModelCapabilityTable.of(config.chatModels().firstOrNull().orEmpty()),
+        // 长篇分段需要足够的输出预算：不设时服务商按默认值截断（常见 4K token），
+        // 一节刚写一半就 finish_reason=length，整段作废。
+        maxOutputTokens = 4_096,
     )
 
     fun create(
