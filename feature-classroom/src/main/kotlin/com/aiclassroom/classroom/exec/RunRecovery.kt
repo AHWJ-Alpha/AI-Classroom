@@ -67,6 +67,52 @@ object RunRecovery {
         return Report(paused, reset)
     }
 
+    /**
+     * 启动新任务前清理失效执行者。
+     *
+     * 与 recoverProject 的区别：这里会**清掉 owner 与 leaseUntil**。
+     * 只标 PAUSED 而不清租约字段的话，那条 run 仍然「占着」项目，
+     * 新任务 acquire 会一直拿到 Busy —— 实测出现过三个 RUNNING 互锁、
+     * 界面点了没反应。
+     *
+     * 仍在有效期内的租约不动：那是真的有人在跑。
+     */
+    fun cleanupStale(
+        store: ClassroomStore,
+        projectId: ProjectId,
+        now: EpochMillis,
+    ): Report = store.transaction {
+        var paused = 0
+        var reset = 0
+        val runs = store.runs(projectId)
+        val hasLiveExecutor = runs.any { it.owner != null && it.leaseUntil > now }
+        for (run in runs.filter { it.status in STUCK_RUN }) {
+            if (run.owner != null && run.leaseUntil > now) continue
+            store.saveRun(
+                run.copy(
+                    status = RunStatus.PAUSED,
+                    error = "上次执行已中断，可继续",
+                    owner = null,
+                    leaseUntil = 0L,
+                    // 令牌 +1：这次清理本身就是一次「接管」，
+                    // 死执行者手里的旧令牌必须立刻失效，不能靠它继续提交。
+                    fencingToken = run.fencingToken + 1,
+                    updatedAt = now,
+                ),
+            )
+            paused++
+        }
+        if (!hasLiveExecutor) {
+            for (unit in store.units(projectId)) {
+                if (unit.status in STUCK_UNIT) {
+                    store.upsertUnit(unit.copy(status = UnitStatus.PLANNED))
+                    reset++
+                }
+            }
+        }
+        Report(paused, reset)
+    }
+
     /** 只恢复一个项目，供新的持久执行者启动前使用。 */
     fun recoverProject(store: ClassroomStore, projectId: ProjectId, now: EpochMillis): Report {
         var paused = 0

@@ -431,6 +431,10 @@ class ClassroomService(
         val committer = UnitCommitter(store, clock)
         // 任务已落库，现在抢执行权：同一任务同时只能有一个有效提交者。
         val owner = "owner-" + java.util.UUID.randomUUID()
+        // 启动前清掉「占着项目但其实已死」的执行者（owner 还在、租约过期），
+        // 否则新任务永远拿到 Busy，界面看起来就是点了没反应。
+        RunRecovery.cleanupStale(store, projectId, clock())
+
         val leaseToken = when (val granted = RunLease.acquireForProject(
             store = store,
             projectId = projectId,
@@ -441,8 +445,19 @@ class ClassroomService(
             force = forceLease,
         )) {
             is RunLease.Acquired.Granted -> granted.lease.token
-            is RunLease.Acquired.Busy ->
-                return RunOutcome.NeedsAttention(0, "这个项目已有任务在跑（" + granted.owner + "）")
+            is RunLease.Acquired.Busy -> {
+                // 不能静默返回：把原因写进 run，界面与任务卡都能看到「已有任务在跑」。
+                store.run(runId)?.let {
+                    store.saveRun(
+                        it.copy(
+                            status = RunStatus.WAITING_INPUT,
+                            error = "已有任务正在运行（" + granted.owner + "），稍后再试",
+                            updatedAt = clock(),
+                        ),
+                    )
+                }
+                return RunOutcome.NeedsAttention(0, "已有任务正在运行，稍后再试")
+            }
             is RunLease.Acquired.NotFound -> return RunOutcome.NeedsAttention(0, granted.reason)
         }
 
