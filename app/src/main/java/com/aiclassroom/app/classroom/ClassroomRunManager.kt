@@ -107,7 +107,12 @@ object ClassroomRunManager {
         cancelJob = scope.launch {
             while (true) {
                 delay(1500)
-                val active = service.store.runs(projectId).any { it.status == RunStatus.RUNNING }
+                // 只认「有效 run」：状态 RUNNING 但租约早已过期的记录是死任务，
+                // 用它判断会让界面永远显示「生成中」，用户既不能继续也不能重来。
+                val now = service.clock()
+                val active = service.store.runs(projectId).any {
+                    it.status == RunStatus.RUNNING && it.owner != null && it.leaseUntil > now
+                }
                 if (!active) {
                     _running.value = false
                     _notice.value = null

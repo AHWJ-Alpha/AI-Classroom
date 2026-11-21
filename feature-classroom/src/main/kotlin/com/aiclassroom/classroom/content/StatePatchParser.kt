@@ -79,7 +79,7 @@ object StatePatchParser {
 
         val changes = o["changes"].asArray().mapNotNull { item ->
             val m = item.asObject()
-            val actorRaw = m["characterId"].asString()
+            val actorRaw = m["characterId"].asString()?.takeIf { it.isNotBlank() }
             val actor = actorRaw?.let { CharacterId(it) }
             if (actor == null) {
                 dropped += "变更缺少 characterId"
@@ -95,7 +95,7 @@ object StatePatchParser {
                 "SetLocation" -> StateChange.SetLocation(actor, m["value"].asString() ?: "")
                 "AdjustStress" -> StateChange.AdjustStress(actor, m["delta"].asInt() ?: 0)
                 "SetRelationship" -> {
-                    val target = m["target"].asString()?.let { CharacterId(it) }
+                    val target = m["target"].asString()?.takeIf { it.isNotBlank() }?.let { CharacterId(it) }
                     if (target == null) {
                         dropped += "关系变更缺少 target"
                         null
@@ -104,7 +104,7 @@ object StatePatchParser {
                     }
                 }
                 "LearnFact" -> {
-                    val fact = m["factId"].asString()?.let { FactId(it) }
+                    val fact = m["factId"].asString()?.takeIf { it.isNotBlank() }?.let { FactId(it) }
                     if (fact == null) {
                         dropped += "获知变更缺少 factId"
                         null
