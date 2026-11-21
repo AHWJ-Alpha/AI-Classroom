@@ -73,15 +73,26 @@ class ClassroomService(
         goalOverride: String?,
         notes: String,
     ) {
-        val unit = store.unit(unitId) ?: return
-        val cleanGoal = goalOverride?.takeIf { it.isNotBlank() }
-        val directive = UnitDirective(cleanGoal, notes.trim(), clock())
-        val next = directive.takeUnless { it.isEmpty }
-        val status = if (unit.status == UnitStatus.READY) UnitStatus.STALE else unit.status
-        store.upsertUnit(unit.copy(directive = next, status = status))
-        store.project(projectId)?.let {
-            store.updateProject(it.copy(updatedAt = clock()))
+        store.transaction {
+            val unit = store.unit(unitId) ?: return@transaction
+            require(unit.projectId == projectId)
+            val cleanGoal = goalOverride?.trim()?.takeIf { it.isNotBlank() }
+            val cleanNotes = notes.trim()
+            if (unit.directive?.goalOverride == cleanGoal && unit.directive?.notes.orEmpty() == cleanNotes) {
+                return@transaction
+            }
+            val directive = UnitDirective(cleanGoal, cleanNotes, clock())
+            val next = directive.takeUnless { it.isEmpty }
+            val status = if (unit.status == UnitStatus.READY) UnitStatus.STALE else unit.status
+            store.upsertUnit(unit.copy(directive = next, status = status))
+            store.project(projectId)?.let {
+                store.updateProject(it.copy(updatedAt = clock()))
+            }
         }
+    }
+
+    fun isPlanning(projectId: ProjectId): Boolean = store.runs(projectId).any {
+        it.phase == RunPhase.PLANNING && it.status in setOf(RunStatus.QUEUED, RunStatus.RUNNING)
     }
 
     fun createProject(
@@ -311,6 +322,8 @@ class ClassroomService(
         desiredUnits: Int = 8,
     ): PlanResult {
         val project = store.project(projectId) ?: return PlanResult.Failed("项目不存在")
+        // 已有规划或正文不可由重复点击规划覆盖，保留稳定的单元 ID 与版本引用。
+        if (store.units(projectId).isNotEmpty()) return PlanResult.Success(store.units(projectId).size)
         val rawRequest = store.latestSpec(projectId)?.rawRequest.orEmpty()
         if (rawRequest.isBlank()) return PlanResult.Failed("没有原始需求")
 
@@ -427,10 +440,11 @@ class ClassroomService(
         apiKey: String,
         control: RunControl,
         forceLease: Boolean = false,
+        runIdentity: RunId? = null,
     ): RunOutcome? {
         val reset = Regeneration.resetStale(store, projectId)
         if (!reset.any) return null
-        return run(projectId, policy, apiKey, control, forceLease = forceLease)
+        return run(projectId, policy, apiKey, control, forceLease = forceLease, runIdentity = runIdentity)
     }
 
     /** 当前项目里待复查的单元数。 */
@@ -447,15 +461,19 @@ class ClassroomService(
         control: RunControl,
         /** Worker 传 true：uniqueWork 已保证唯一执行者，可以接管被杀进程留下的租约。 */
         forceLease: Boolean = false,
+        runIdentity: RunId? = null,
     ): RunOutcome {
         // 开跑之前先把上次遗留的「生成中 / 草稿待提交」放回队列，
         // 否则那些单元永远不会被重新选中，后面的依赖链会整体卡死。
         // 只恢复当前项目中没有有效执行者的遗留步骤；不能因为启动项目 B
         // 就把项目 A 的 Worker 和已提交检查点重置掉。
         val now = clock()
-        val runId = RunId.new()
+        val runId = runIdentity ?: RunId.new()
 
         val units = store.units(projectId)
+        // WorkManager 的自动重试复用同一个 WorkRequest ID。不能把旧令牌清零，
+        // 否则同一 run 重启后会重新拿到旧 token，破坏接管的单调性。
+        val previousRun = store.run(runId)
         store.saveRun(
             GenerationRun(
                 id = runId,
@@ -471,6 +489,7 @@ class ClassroomService(
                 frozenProvider = policy.provider,
                 frozenPrimaryModel = policy.primaryModel,
                 frozenFallbackModels = policy.fallbackModels,
+                fencingToken = previousRun?.fencingToken ?: 0,
             ),
         )
 

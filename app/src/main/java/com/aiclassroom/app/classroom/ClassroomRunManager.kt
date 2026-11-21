@@ -81,6 +81,11 @@ object ClassroomRunManager {
         cancelRequested.set(true)
         // 取消要真的停掉 Worker：只取消本地轮询的话，任务在后台会继续跑。
         if (context != null && projectId != null) {
+            val store = ClassroomServiceProvider.store(context)
+            store.transaction {
+                for (run in store.runs(projectId).filter { it.status == RunStatus.RUNNING || it.status == RunStatus.QUEUED })
+                    store.saveRun(run.copy(status = RunStatus.CANCELLED, updatedAt = System.currentTimeMillis()))
+            }
             ClassroomRunWorker.cancel(context, projectId)
         }
         cancelJob?.cancel()

@@ -15,7 +15,10 @@ object ChatRequestJson {
         val fields = linkedMapOf<String, Json>()
         fields["model"] = Json.of(request.model)
         fields["messages"] = Json.arr(
-            request.messages.map { m ->
+            (if (request.expectJson && request.capabilities.supportsJsonMode &&
+                request.messages.none { "json" in it.content }) {
+                listOf(ModelMessage(ModelMessage.Role.SYSTEM, "Return a valid json object.")) + request.messages
+            } else request.messages).map { m ->
                 Json.obj(
                     "role" to Json.of(m.role.name.lowercase()),
                     "content" to Json.of(m.content),

@@ -100,7 +100,9 @@ object UnitContentParser {
                         problems += "台词缺少 speakerId：" + id
                         ContentBlock.Narration(id, m["text"].asString() ?: "")
                     } else {
-                        if (knownCharacters.isNotEmpty() && speaker !in knownCharacters) {
+                        // 空角色表表示本项目没有可用说话人，不能把模型临时编出的
+                        // speakerId 当成合法角色写进正文或后续状态。
+                        if (speaker !in knownCharacters) {
                             problems += "台词引用了不存在的角色：" + speaker.value
                         }
                         ContentBlock.Dialogue(id, speaker, m["text"].asString() ?: "")

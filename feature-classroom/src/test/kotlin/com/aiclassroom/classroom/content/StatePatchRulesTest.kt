@@ -60,4 +60,13 @@ class StatePatchRulesTest {
         val p = parse(raw)
         assertTrue(p.allDropped)
     }
+
+    @Test
+    fun `空角色表不接受模型编造角色且未知关系目标和事实被拒绝`() {
+        val body = """{"changes":[{"op":"SetEmotion","characterId":"ghost","value":"紧张"}],"evidenceEventIds":["event-1"]}"""
+        assertTrue(StatePatchParser.parse(body, emptySet(), setOf("event-1")).allDropped)
+        assertTrue(parse("""{"changes":[{"op":"SetRelationship","characterId":"pc-a","target":"ghost","value":"熟悉"}],"evidenceEventIds":["event-1"]}""").allDropped)
+        assertTrue(parse("""{"changes":[{"op":"LearnFact","characterId":"pc-a","factId":"ghost"}],"evidenceEventIds":["event-1"]}""").allDropped)
+        assertFalse(parse("{}").usable)
+    }
 }

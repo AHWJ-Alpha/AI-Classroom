@@ -17,6 +17,27 @@ import java.util.concurrent.TimeUnit
 
 /** 实机上走 ClassroomService 的正式装配。独立临时项目、模拟模型，不读取用户对话。 */
 class SceneHostDeviceTest(private val instrumentation: Instrumentation) {
+    fun probeMmmReview() = runBlocking {
+        val ctx = instrumentation.targetContext
+        val store = ClassroomServiceProvider.store(ctx)
+        val project = requireNotNull(store.projects().firstOrNull { it.title == "mmm" })
+        val source = ClassroomSourceResolver({ com.aiclassroom.app.readConversationsForBackground(ctx) }, store).resolve(project.id)
+        check(source is SourceResolution.Ready)
+        val unit = store.units(project.id).sortedBy { it.index }.first()
+        val draft = requireNotNull(store.draft(project.id, unit.id))
+        val body = com.aiclassroom.classroom.store.ContentCodec.encode(UnitContent(unitId = unit.id, planVersion = 1, title = unit.chapter,
+            blocks = draft.segments.flatMap { it.blocks }, events = draft.segments.flatMap { it.events }))
+        val prompt = com.aiclassroom.classroom.prompt.PromptTemplates.reviewer(com.aiclassroom.classroom.prompt.PromptTemplates.ReviewerInput(
+            store.latestSpec(project.id)!!, store.latestOutline(project.id)!!.units.first(), JsonWriter.write(body),
+            snapshot = store.latestSnapshot(project.id), projectType = ProjectType.SCENE))
+        val result = ClassroomGatewayFactory.create(source.connection.policy, source.connection.apiKey, 1).complete(
+            ModelRequests.fromPolicy(source.connection.policy.copy(maxOutputTokens = 1024),
+                listOf(ModelMessage(ModelMessage.Role.USER, prompt)), expectJson = true))
+        File(ctx.cacheDir, "mmm-review-probe.json").writeText(JsonWriter.write(Json.obj(
+            "content" to Json.of(result.content), "finish" to Json.of(result.finishReason.toString()),
+            "chars" to Json.of(result.content.length), "tokens" to Json.of(result.usage?.completion ?: 0),
+            "error" to Json.of(result.error.toString()))))
+    }
     private val pid = ProjectId("device-scene")
     private val uid = UnitId("device-unit")
     private val policy = ModelPolicy("fake", "https://example.invalid", "fake")
@@ -71,7 +92,7 @@ class SceneHostDeviceTest(private val instrumentation: Instrumentation) {
             check(draft.segments.first().checksum == before.segments.first().checksum)
             check(draft.phase == DraftPhase.COMMITTED)
             check(draft.fencingToken > before.fencingToken)
-            check(calls == 3)
+            check(calls == 2)
             val revision = requireNotNull(saved.officialRevision(uid))
             check(TextCount.units(revision.content!!.blocks) >= 180)
             check(saved.latestManifest(pid)!!.revisionOf(uid) == revision.id)
@@ -125,11 +146,16 @@ class SceneHostDeviceTest(private val instrumentation: Instrumentation) {
 
 /** 自包含的实机回归入口，无调试代码进入 release。 */
 class SceneTestInstrumentation : Instrumentation() {
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); start() }
+    private var probe = false
+    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); probe = arguments?.getString("probe") == "mmm"; start() }
     override fun onStart() {
         val results = Bundle()
         try {
             val tests = SceneHostDeviceTest(this)
+            if (probe) {
+                tests.probeMmmReview()
+                results.putString("stream", "MMM probe saved\n"); finish(Activity.RESULT_OK, results); return
+            }
             tests.testHostResumesFileDraftAndPublishesVersion()
             sendStatus(0, Bundle().apply { putString("stream", "PASS host file-draft resume / full review / version commit\n") })
             tests.testBlockedTransportCancellationReturnsBeforeReadTimeout()

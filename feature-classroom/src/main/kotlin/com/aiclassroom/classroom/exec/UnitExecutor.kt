@@ -99,7 +99,8 @@ class UnitExecutor(
         } else {
             store.characterStates(projectId)
         }
-        val knownCharacters = characters.map { it.id }.toSet()
+        // 总纲声明的角色也在提交器的合法身份集合内。
+        val knownCharacters = (characters.map { it.id } + unit.requiredCharacters).toSet()
         // 角色视角只给可见事实；作者视角给全量。
         val visibleFacts = FactsForView.factsFor(snapshot, store.facts(projectId))
 
@@ -358,13 +359,26 @@ class UnitExecutor(
                 ))
                 // 审查要读整节正文，请求体大、耗时长；真机上偶发读超时或流被截断。
                 // 这种情况重试一次就够，不该让整节卡在待处理。
-                var call = gateway.complete(ModelRequests.fromPolicy(policy,
+                var call = gateway.complete(ModelRequests.fromPolicy(policy.copy(
+                    maxOutputTokens = policy.maxOutputTokens ?: 8192,
+                ),
                     listOf(ModelMessage(ModelMessage.Role.USER, prompt)), expectJson = true))
-                if (call.error == null && (!call.transportCompleted || call.finishReason is FinishReason.Length)) {
-                    call = gateway.complete(ModelRequests.fromPolicy(policy,
-                        listOf(ModelMessage(ModelMessage.Role.USER, prompt)), expectJson = true))
-                }
                 recordAttempt(runId, unit.id, RunPhase.REVIEWING, input, call)
+                if (call.error is com.aiclassroom.classroom.gateway.ModelCallError.Network ||
+                    call.error is com.aiclassroom.classroom.gateway.ModelCallError.Timeout ||
+                    call.error is com.aiclassroom.classroom.gateway.ModelCallError.Truncated ||
+                    (call.error == null && (!call.transportCompleted || call.finishReason is FinishReason.Length))) {
+                    val retryBudget = drafts.reserveCall(guard, inputNow)
+                    if (!retryBudget.ok()) return@coroutineScope UnitOutcome.NeedsAttention("审查重试预算不足，正文保留")
+                    val retryPrompt = prompt + "\n只输出简短 JSON，issues 最多 4 条，每条证据最多 60 字，无问题直接 {\"issues\":[]}。不要复制原文。"
+                    call = gateway.complete(ModelRequests.fromPolicy(policy.copy(
+                        maxOutputTokens = policy.maxOutputTokens ?: 8192,
+                    ),
+                        listOf(ModelMessage(ModelMessage.Role.USER, retryPrompt)), expectJson = true))
+                    recordAttempt(runId, unit.id, RunPhase.REVIEWING, input, call)
+                }
+                if (call.error is com.aiclassroom.classroom.gateway.ModelCallError.Network || call.error is com.aiclassroom.classroom.gateway.ModelCallError.Timeout)
+                    return@coroutineScope UnitOutcome.NetworkInterrupted("审查网络中断，已保存正文保留")
                 if (call.error != null) return@coroutineScope UnitOutcome.Failed(describe(call))
                 if (!call.transportCompleted || call.finishReason is FinishReason.Length)
                     return@coroutineScope UnitOutcome.NeedsAttention("审查输出不完整，候选已保留")
@@ -416,10 +430,13 @@ class UnitExecutor(
                 val reviewed = drafts.update(guard, inputNow) { it.copy(review = review, phase = DraftPhase.PATCHING) }
                 if (!reviewed.ok()) return@coroutineScope UnitOutcome.NeedsAttention("保存审查被拒：$reviewed")
             }
-            val reserved = drafts.reserveCall(guard, inputNow)
-            if (!reserved.ok()) return@coroutineScope UnitOutcome.NeedsAttention("状态提取预算/输入失效：$reserved")
+            if (characters.isNotEmpty() || unit.requiredCharacters.isNotEmpty()) {
+                val reserved = drafts.reserveCall(guard, inputNow)
+                if (!reserved.ok()) return@coroutineScope UnitOutcome.NeedsAttention("状态提取预算/输入失效：$reserved")
+            }
             val patchResult = proposePatch(projectId, unit.id, revisionId, content,
-                characters.map { it.id }.toSet(), effectivePlan, facts.map { it.factId }, ProjectType.SCENE)
+                (characters.map { it.id } + unit.requiredCharacters).toSet(), effectivePlan,
+                facts.map { it.factId }, ProjectType.SCENE)
             if (patchResult is PatchResult.Failed) return@coroutineScope UnitOutcome.NeedsAttention(patchResult.reason)
             val patch = (patchResult as? PatchResult.Ready)?.patch
             val prepared = drafts.update(guard, inputNow) { it.copy(phase = DraftPhase.READY_TO_COMMIT) }
@@ -472,6 +489,9 @@ class UnitExecutor(
         knownFacts: List<FactId> = emptyList(),
         projectType: ProjectType = ProjectType.TEACHING,
     ): PatchResult {
+        // 当前所有状态操作都必须归属一个已注册角色；没有角色时无可提交的
+        // 状态，直接结束这个阶段。正文事件和章节摘要仍由正式提交保存。
+        if (knownCharacters.isEmpty()) return PatchResult.NoChange
         // 不因为 events 为空就直接判定「没有变化」：模型可能漏写事件，
         // 静默跳过会把真实变化丢掉。仍然问一次，让解析器和校验器说话。
         val prompt = PromptTemplates.stateUpdater(
@@ -486,7 +506,7 @@ class UnitExecutor(
         )
         val call = gateway.complete(
             ModelRequests.fromPolicy(
-                policy = policy,
+                policy = policy.copy(maxOutputTokens = policy.maxOutputTokens ?: 8192),
                 messages = listOf(ModelMessage(ModelMessage.Role.USER, prompt)),
                 expectJson = true,
             ),
@@ -503,6 +523,7 @@ class UnitExecutor(
             call.content,
             knownCharacters,
             content.events.map { it.id }.toSet(),
+            knownFacts.toSet(),
         )
         if (!parsed.usable) {
             return PatchResult.Failed("状态提取输出无法解析：" + parsed.dropped.take(2).joinToString("；"))

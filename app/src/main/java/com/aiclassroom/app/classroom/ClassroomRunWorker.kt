@@ -54,6 +54,8 @@ class ClassroomRunWorker(
         val staleOnly = inputData.getBoolean(KEY_STALE_ONLY, false)
         val context = applicationContext
         val service = ClassroomServiceProvider.service(context)
+        val executionRun = com.aiclassroom.classroom.domain.RunId(id.toString())
+        val planOnly = inputData.getBoolean(KEY_PLAN_ONLY, false)
         setForeground(
             ClassroomNotify.foregroundInfo(
                 context,
@@ -70,7 +72,41 @@ class ClassroomRunWorker(
         val source = resolver.resolve(ProjectId(projectId))
         if (source !is SourceResolution.Ready) {
             // 解析不到就停在这里，把原因留给界面显示，绝不借用别的对话。
+            inputData.getString(KEY_PLAN_RUN)?.let { id ->
+                service.store.run(com.aiclassroom.classroom.domain.RunId(id))?.let { run ->
+                    service.store.saveRun(run.copy(status = RunStatus.WAITING_INPUT,
+                        error = source.describe(), updatedAt = service.clock()))
+                }
+            }
             return Result.failure(workDataOf(KEY_ERROR to source.describe()))
+        }
+
+        if (planOnly) {
+            val id = com.aiclassroom.classroom.domain.RunId(inputData.getString(KEY_PLAN_RUN) ?: return Result.failure())
+            service.store.run(id)?.let { service.store.saveRun(it.copy(status = RunStatus.RUNNING, updatedAt = service.clock())) }
+            return try {
+                val result = service.plan(ProjectId(projectId), source.connection.policy, source.connection.apiKey)
+                val success = result is ClassroomService.PlanResult.Success
+                val message = when (result) {
+                    is ClassroomService.PlanResult.Success -> "总纲已保存，共 ${result.unitCount} 个单元"
+                    is ClassroomService.PlanResult.Failed -> result.reason
+                    is ClassroomService.PlanResult.Invalid -> result.problems.joinToString("；")
+                }
+                service.store.run(id)?.let { service.store.saveRun(it.copy(status = if (success) RunStatus.COMPLETED else RunStatus.WAITING_INPUT,
+                    error = if (success) null else message, updatedAt = service.clock())) }
+                ClassroomNotify.show(context, ProjectId(projectId), "课堂规划", message, false)
+                if (success) Result.success() else Result.failure(workDataOf(KEY_ERROR to message))
+            } catch (e: CancellationException) {
+                service.store.run(id)?.takeIf { it.status in setOf(RunStatus.RUNNING, RunStatus.QUEUED) }?.let {
+                    service.store.saveRun(it.copy(status = RunStatus.PAUSED,
+                        error = "规划已暂停，原始需求保留，可重新规划", updatedAt = service.clock()))
+                }
+                throw e
+            }
+            catch (e: Throwable) {
+                service.store.run(id)?.let { service.store.saveRun(it.copy(status = RunStatus.WAITING_INPUT, error = e.message, updatedAt = service.clock())) }
+                Result.failure(workDataOf(KEY_ERROR to "规划失败，原始需求和已有内容保留"))
+            }
         }
 
         val control = object : RunControl {
@@ -93,11 +129,13 @@ class ClassroomRunWorker(
                 service.regenerateStale(
                     ProjectId(projectId), source.connection.policy, source.connection.apiKey, control,
                     forceLease = true,
+                    runIdentity = executionRun,
                 )
             } else {
                 service.run(
                     ProjectId(projectId), source.connection.policy, source.connection.apiKey, control,
                     forceLease = true,
+                    runIdentity = executionRun,
                 )
             }
             val message = when (outcome) {
@@ -160,9 +198,17 @@ class ClassroomRunWorker(
             }
         } catch (e: CancellationException) {
             // 被取消时协程直接结束，引擎来不及写状态：这里补上，避免重启后一直显示运行中。
-            runCatching { RunRecovery.markCancelled(service.store, ProjectId(projectId), service.clock) }
+            // 只收尾本 Worker 的 run；不能把刚启动的新 run 一并取消。
+            service.store.transaction {
+                service.store.run(executionRun)?.takeIf { it.status == RunStatus.RUNNING }?.let {
+                    service.store.saveRun(it.copy(status = RunStatus.PAUSED, owner = null, leaseUntil = 0,
+                        error = "执行被中断，已保存分段保留，可继续", updatedAt = service.clock()))
+                }
+            }
             throw e
         } catch (e: Throwable) {
+            service.store.run(executionRun)?.let { service.store.saveRun(it.copy(status = RunStatus.WAITING_INPUT,
+                owner = null, leaseUntil = 0, error = e.message ?: "执行失败", updatedAt = service.clock())) }
             Result.failure(workDataOf(KEY_ERROR to (e.message ?: e::class.simpleName ?: "未知错误")))
         }
     }
@@ -171,16 +217,29 @@ class ClassroomRunWorker(
         const val KEY_PROJECT = "project_id"
         const val KEY_STALE_ONLY = "stale_only"
         const val KEY_ERROR = "error"
+        const val KEY_PLAN_ONLY = "plan_only"
+        const val KEY_PLAN_RUN = "plan_run"
 
         /** 每个项目只允许一个未完成的执行：重复点击不会起第二个执行者。 */
         fun workName(projectId: ProjectId) = "classroom-run-" + projectId.value
 
-        fun schedule(context: Context, projectId: ProjectId, staleOnly: Boolean) {
+        fun schedule(context: Context, projectId: ProjectId, staleOnly: Boolean, planOnly: Boolean = false) {
+            val planRun = if (planOnly) com.aiclassroom.classroom.domain.RunId.new() else null
+            if (planRun != null) {
+                val store = ClassroomServiceProvider.store(context)
+                if (ClassroomServiceProvider.service(context).isPlanning(projectId)) return
+                val now = System.currentTimeMillis()
+                store.saveRun(com.aiclassroom.classroom.domain.GenerationRun(planRun, projectId,
+                    store.latestSpec(projectId)?.version ?: 1, store.latestOutline(projectId)?.version ?: 0,
+                    com.aiclassroom.classroom.domain.RunPhase.PLANNING, RunStatus.QUEUED, startedAt = now, updatedAt = now))
+            }
             val request = OneTimeWorkRequestBuilder<ClassroomRunWorker>()
                 .setInputData(
                     workDataOf(
                         KEY_PROJECT to projectId.value,
                         KEY_STALE_ONLY to staleOnly,
+                        KEY_PLAN_ONLY to planOnly,
+                        KEY_PLAN_RUN to planRun?.value,
                     ),
                 )
                 .build()

@@ -97,4 +97,18 @@ class RunRecoveryTest {
         val store = storeWith(unit(UnitStatus.READY))
         assertFalse(RunRecovery.recover(store, now).changed)
     }
+
+    @Test
+    fun `暂停同时清理排队任务与有效租约但保留令牌`() {
+        val store = storeWith()
+        store.saveRun(run(RunStatus.RUNNING).copy(owner = "worker", leaseUntil = now + 60000, fencingToken = 7))
+        store.saveRun(run(RunStatus.QUEUED, "queued"))
+        assertEquals(2, RunRecovery.markPaused(store, projectId) { now })
+        val stopped = store.run(RunId("r1"))!!
+        assertEquals(RunStatus.PAUSED, stopped.status)
+        assertEquals(null, stopped.owner)
+        assertEquals(0L, stopped.leaseUntil)
+        assertEquals(7L, stopped.fencingToken)
+        assertEquals(RunStatus.PAUSED, store.run(RunId("queued"))!!.status)
+    }
 }

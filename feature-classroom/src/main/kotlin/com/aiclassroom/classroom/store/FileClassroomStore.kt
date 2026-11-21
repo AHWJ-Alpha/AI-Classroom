@@ -456,6 +456,8 @@ class FileClassroomStore(
         "publicWorld" to Json.of(s.publicWorld),
         "characterIds" to Json.arr(s.characterIds.map { Json.of(it.value) }),
         "modelPolicyRef" to Json.of(s.modelPolicyRef),
+        "budget" to (s.budget?.let { Json.obj("maxRequests" to (it.maxRequests?.let(Json::of) ?: Json.Null),
+            "maxTokens" to (it.maxTokens?.let(Json::of) ?: Json.Null)) } ?: Json.Null),
         "createdAt" to Json.of(s.createdAt),
     )
 
@@ -479,6 +481,9 @@ class FileClassroomStore(
             publicWorld = o["publicWorld"].asString() ?: "",
             characterIds = o["characterIds"].asArray().mapNotNull { it.asString()?.let(::CharacterId) },
             modelPolicyRef = o["modelPolicyRef"].asString(),
+            budget = o["budget"].takeIf { it is Json.Obj }?.asObject()?.let {
+                Budget(it["maxRequests"].asInt(), it["maxTokens"].asLong())
+            },
             createdAt = o["createdAt"].asLong() ?: 0,
         )
     }
@@ -501,6 +506,10 @@ class FileClassroomStore(
             )
         }),
         "createdAt" to Json.of(o0.createdAt),
+        "milestones" to Json.arr(o0.milestones.map { Json.of(it) }),
+        "arcs" to Json.Obj(o0.arcs.mapKeys { it.key.value }.mapValues { Json.of(it.value) }),
+        "foreshadows" to Json.arr(o0.foreshadows.map { Json.of(it) }),
+        "ending" to Json.of(o0.ending),
     )
 
     private fun outlineOf(j: Json): ProjectOutline {
@@ -524,6 +533,10 @@ class FileClassroomStore(
                 )
             },
             createdAt = o["createdAt"].asLong() ?: 0,
+            milestones = o["milestones"].asArray().mapNotNull { it.asString() },
+            arcs = o["arcs"].asObject().mapNotNull { (k,v) -> v.asString()?.let { CharacterId(k) to it } }.toMap(),
+            foreshadows = o["foreshadows"].asArray().mapNotNull { it.asString() },
+            ending = o["ending"].asString().orEmpty(),
         )
     }
 

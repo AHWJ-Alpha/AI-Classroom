@@ -39,6 +39,7 @@ object StatePatchParser {
         raw: String,
         knownCharacters: Set<CharacterId>,
         knownEventIds: Set<String>,
+        knownFacts: Set<FactId> = emptySet(),
     ): Parsed {
         val jsonText = StructuredPayload.extract(raw)
             ?: return Parsed(emptyList(), emptyList(), "", listOf("输出里没有完整 JSON"))
@@ -46,6 +47,9 @@ object StatePatchParser {
             ?: return Parsed(emptyList(), emptyList(), "", listOf("JSON 无法解析"))
 
         val o = root.asObject()
+        if (o["changes"] !is Json.Arr) {
+            return Parsed(emptyList(), emptyList(), "", listOf("补丁缺少 changes 数组"))
+        }
         val reason = o["reason"].asString() ?: ""
         val evidence = o["evidenceEventIds"].asArray().mapNotNull { it.asString() }
         val dropped = mutableListOf<String>()
@@ -85,7 +89,8 @@ object StatePatchParser {
                 dropped += "变更缺少 characterId"
                 return@mapNotNull null
             }
-            if (knownCharacters.isNotEmpty() && actor !in knownCharacters) {
+            // 空集合表示“当前项目没有注册角色”，不是“允许模型自由发明角色”。
+            if (actor !in knownCharacters) {
                 dropped += "变更引用了不存在的角色：" + actor.value
                 return@mapNotNull null
             }
@@ -99,6 +104,9 @@ object StatePatchParser {
                     if (target == null) {
                         dropped += "关系变更缺少 target"
                         null
+                    } else if (target !in knownCharacters) {
+                        dropped += "关系变更引用了不存在的角色：" + target.value
+                        null
                     } else {
                         StateChange.SetRelationship(actor, target, m["value"].asString() ?: "")
                     }
@@ -107,6 +115,9 @@ object StatePatchParser {
                     val fact = m["factId"].asString()?.takeIf { it.isNotBlank() }?.let { FactId(it) }
                     if (fact == null) {
                         dropped += "获知变更缺少 factId"
+                        null
+                    } else if (fact !in knownFacts) {
+                        dropped += "获知变更引用了不存在的事实：" + fact.value
                         null
                     } else {
                         StateChange.LearnFact(actor, fact)

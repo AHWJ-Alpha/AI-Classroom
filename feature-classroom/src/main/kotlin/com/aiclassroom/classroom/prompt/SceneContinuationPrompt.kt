@@ -103,6 +103,7 @@ object SceneContinuationPrompt {
         if (input.characters.isEmpty()) appendLine("没有已注册角色，不输出 dialogue；用 narration 描写动作、内心和引号中的对白。")
         appendLine()
         appendLine("[OUTPUT_SCHEMA]")
+        appendLine("只输出 valid json object，不要输出 JSON 以外的解释。")
         appendLine("只输出一个 JSON 对象：")
         appendLine(SCHEMA)
         appendLine("没有事件就返回空 events，不要为凑数编造。")

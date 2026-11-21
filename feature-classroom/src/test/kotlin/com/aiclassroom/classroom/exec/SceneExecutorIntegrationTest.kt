@@ -55,14 +55,13 @@ class SceneExecutorIntegrationTest {
             ok("{\"changes\":[],\"evidenceEventIds\":[],\"reason\":\"无持久变化\"}"))
         val (e, run) = executor(s, g, "a")
         assertIs<UnitOutcome.Committed>(e.execute(project, unit, run))
-        assertEquals(4, g.index)
+        assertEquals(3, g.index)
         assertContains(g.prompts[2], first)
         assertContains(g.prompts[2], second)
-        assertContains(g.prompts[3], second)
         val reopened = FileClassroomStore(root)
         val draft = assertNotNull(reopened.draft(project, unit))
         assertEquals(DraftPhase.COMMITTED, draft.phase)
-        assertEquals(4, draft.callCount)
+        assertEquals(3, draft.callCount)
         assertEquals(now, draft.updatedAt)
         assertEquals("a", draft.owner)
         assertEquals(2, draft.segments.size)
@@ -86,12 +85,12 @@ class SceneExecutorIntegrationTest {
         val g = Gateway(ok(segment(second, true)), ok("{\"issues\":[]}"), ok("{\"changes\":[],\"evidenceEventIds\":[]}"))
         val (continued, newRun) = executor(reopened, g, "b")
         assertIs<UnitOutcome.Committed>(continued.execute(project, unit, newRun))
-        assertEquals(3, g.index)
+        assertEquals(2, g.index)
         val done = reopened.draft(project, unit)!!
         assertEquals(draft.candidateId, done.candidateId)
         assertEquals(checksum, done.segments.first().checksum)
         assertTrue(done.fencingToken > draft.fencingToken)
-        assertEquals(5, done.callCount)
+        assertEquals(4, done.callCount)
         assertContains(g.prompts.first(), first)
     }
     @Test fun `响应返回前用户改目标 旧响应不能追加到草稿`() = runBlocking {
@@ -115,7 +114,7 @@ class SceneExecutorIntegrationTest {
         assertEquals(4000, s.draft(project, unit)!!.totalChars)
         assertEquals(3, s.draft(project, unit)!!.segments.size)
         assertContains(g.prompts[3], c)
-        assertContains(g.prompts[4], a)
+        assertContains(g.prompts[3], a)
         assertEquals(4000, TextCount.units(s.officialRevision(unit)!!.content!!.blocks))
     }
 
@@ -168,5 +167,61 @@ class SceneExecutorIntegrationTest {
             before.segments.first().copy(index = 2), before.inputVersion, { it.chars }))
         assertFalse(RunLease.renew(s, run, "a", 60_000, { now }))
         assertEquals(1, s.draft(project, unit)!!.segments.size)
+    }
+
+    @Test fun `暂停且正式字段完整文件往返后仍继承同一候选`() = runBlocking {
+        val root = Files.createTempDirectory("scene-real-roundtrip").toFile()
+        val s = FileClassroomStore(root); seed(s)
+        s.saveSpec(s.latestSpec(project)!!.copy(budget = Budget(40, 100000)))
+        s.saveOutline(s.latestOutline(project)!!.copy(milestones = listOf("放下戒备"), arcs = mapOf(CharacterId("hero") to "熟悉"),
+            foreshadows = listOf("灯"), ending = "亲近"))
+        val (e, run) = executor(s, Gateway(ok(segment(first, false)), network), "a")
+        assertIs<UnitOutcome.NetworkInterrupted>(e.execute(project, unit, run))
+        val input = s.draft(project, unit)!!.inputVersion
+        RunRecovery.markPaused(s, project) { now }
+        RunLease.release(s, run, "a") { now }
+        val reopened = FileClassroomStore(root)
+        assertEquals(input, SceneInputVersion.compute(reopened, project, unit, policy))
+        val g = Gateway(ok(segment(second, true)), ok("{\"issues\":[]}"), ok("{\"changes\":[],\"evidenceEventIds\":[]}"))
+        val (continued, next) = executor(reopened, g, "b")
+        assertIs<UnitOutcome.Committed>(continued.execute(project, unit, next))
+        assertEquals(2, reopened.draft(project, unit)!!.segments.size)
+        assertEquals(2, g.index)
+    }
+
+    @Test fun `一章完成后编排器自动进入第二章并保留两份正文`() = runBlocking {
+        val s = FileClassroomStore(Files.createTempDirectory("scene-two-units").toFile()); seed(s)
+        val secondUnit = UnitId("next")
+        s.upsertUnit(s.unit(unit)!!.copy(id = secondUnit, index = 2, dependsOn = listOf(unit)))
+        s.saveOutline(s.latestOutline(project)!!.copy(units = s.latestOutline(project)!!.units +
+            PlannedUnit(secondUnit, 2, "第4-7天", "共同出门", dependsOn = listOf(unit))))
+        val g = Gateway(ok(segment(first + second, true)), ok("{\"issues\":[]}"),
+            ok(segment(second + first, true)), ok("{\"issues\":[]}"))
+        val (e, run) = executor(s, g, "a")
+        assertIs<RunOutcome.Completed>(RunEngine(s, e, object : RunControl { override fun shouldContinue() = true }, { now }, owner = "a",
+            fenceToken = s.run(run)!!.fencingToken).run(project, run))
+        assertNotNull(s.officialRevision(unit))
+        assertNotNull(s.officialRevision(secondUnit))
+        assertEquals(2, s.project(project)!!.workVersion)
+        assertEquals(4, g.index, "无角色的场景只需正文与审查，不让模型编造状态")
+    }
+
+    @Test fun `审查撞上限且重试中断后只重做审查 已保存正文不重写`() = runBlocking {
+        val root = Files.createTempDirectory("scene-review-resume").toFile()
+        val s = FileClassroomStore(root); seed(s)
+        val g = Gateway(ok(segment(first + second, true)),
+            ok("{\"issues\":[").copy(finishReason = FinishReason.Length(null)), network)
+        val (e, run) = executor(s, g, "first")
+        assertIs<UnitOutcome.NetworkInterrupted>(e.execute(project, unit, run))
+        val before = assertNotNull(s.draft(project, unit))
+        val reopened = FileClassroomStore(root)
+        val retry = Gateway(ok("{\"issues\":[]}"))
+        val (continued, next) = executor(reopened, retry, "next")
+        assertIs<UnitOutcome.Committed>(continued.execute(project, unit, next))
+        assertEquals(1, retry.index)
+        assertContains(retry.prompts.single(), "[REVIEW_CRITERIA]")
+        assertEquals(before.candidateId, reopened.draft(project, unit)!!.candidateId)
+        assertEquals(before.segments.single().checksum, reopened.draft(project, unit)!!.segments.single().checksum)
+        assertEquals(2, reopened.attempts(run).count { it.phase == RunPhase.REVIEWING })
     }
 }

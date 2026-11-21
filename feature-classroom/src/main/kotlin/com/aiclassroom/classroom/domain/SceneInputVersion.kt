@@ -12,7 +12,7 @@ object SceneInputVersion {
         val unit = requireNotNull(store.unit(unitId))
         val parts = listOf(
             "scene-continuation-v2", store.latestSpec(projectId).toString(), store.latestOutline(projectId).toString(),
-            unit.copy(status = UnitStatus.PLANNED).toString(),
+            unit.copy(status = UnitStatus.PLANNED, directive = unit.directive?.takeUnless { it.isEmpty }).toString(),
             store.latestSnapshot(projectId)?.let { canonical(StoreCodec.snapshot(it)) }.orEmpty(),
             store.characters(projectId).sortedBy { it.id.value }.joinToString { canonical(StoreCodec.character(it)) },
             store.units(projectId).filter { it.index < unit.index }.sortedBy { it.index }

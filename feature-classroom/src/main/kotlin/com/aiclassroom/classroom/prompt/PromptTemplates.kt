@@ -414,8 +414,10 @@ object PromptTemplates {
         appendLine("[/DATA:CANDIDATE_TEXT]")
         appendLine()
         appendLine("[OUTPUT_SCHEMA]")
+        appendLine("只输出 JSON 对象（valid json object），不要输出 JSON 以外的解释。")
         appendLine("{\"issues\":[{\"id\":\"...\",\"severity\":\"ERROR|WARN|INFO\",\"blockId\":\"...\",\"rule\":\"...\",\"evidence\":\"...\",\"suggestedScope\":\"...\",\"blocking\":true|false}]}")
         appendLine("没有问题就输出 {\"issues\":[]}。")
+        appendLine("输出保持简短：最多 4 条具体问题，每条 evidence 最多 60 字，只引用必要短句，不复述正文，不列举通过的检查项。")
     }
 
     data class StateInput(
@@ -431,6 +433,7 @@ object PromptTemplates {
 
     fun stateUpdater(input: StateInput): String = buildString {
         appendLine(GUARD)
+        appendLine("只返回简短的 JSON 增量（valid json object），不复述正文，最多 12 条持久变化。没有持久变化返回空 changes。")
         appendLine()
         appendLine("[TASK_ROLE]")
         appendLine("只依据这份最终正文提出状态变更，每条都必须引用已有事件。")

@@ -153,10 +153,12 @@ object RunRecovery {
      * 协程直接结束，引擎来不及写状态，这里补上，否则重启后一直显示运行中。
      */
     fun markPaused(store: ClassroomStore, projectId: ProjectId, clock: () -> EpochMillis): Int {
-        val active = store.runs(projectId).filter { it.status == RunStatus.RUNNING }
-        for (run in active) {
-            store.saveRun(run.copy(status = RunStatus.PAUSED, updatedAt = clock()))
+        return store.transaction {
+            val active = store.runs(projectId).filter { it.status in setOf(RunStatus.RUNNING, RunStatus.QUEUED) }
+            for (run in active) {
+                store.saveRun(run.copy(status = RunStatus.PAUSED, owner = null, leaseUntil = 0, updatedAt = clock()))
+            }
+            active.size
         }
-        return active.size
     }
 }

@@ -56,7 +56,7 @@ class SceneContinuation(
         if (!claimed.ok()) return Result.NeedsAttention("无法接管候选：$claimed", 0, 0)
         val minAccept = TextCount.acceptMin(req.plan.unitTarget,
             if (req.spec.rawRequest.contains("至少") || req.spec.expectedLength.contains("至少")) req.plan.unitTarget else null)
-        var correction = ""
+        var correction = existing?.lastError.orEmpty()
         while (true) {
             currentCoroutineContext().ensureActive()
             val draft = requireNotNull(drafts.current(req.projectId, req.unit.id))
@@ -75,14 +75,16 @@ class SceneContinuation(
                 return Result.NeedsAttention("篇幅超出目标且尚未自然收束，草稿已保留", draft.segments.size, draft.totalChars)
             val remaining = (req.plan.unitTarget - draft.totalChars).coerceAtLeast(1)
             val tokenTextLimit = req.policy.maxOutputTokens?.let { ((it - 512) / 3).coerceAtLeast(1) } ?: 1800
-            val perCall = (minOf(req.plan.perCallTarget, remaining, tokenTextLimit) / (draft.failStreak + 1)).coerceAtLeast(1)
+            // 已达到下限但模型漏了 finished 时，只补一次有意义的收束，不反复要求“再写 1 字”。
+            val closing = draft.totalChars >= minAccept
+            val perCall = (minOf(req.plan.perCallTarget, if (closing) 120 else remaining, tokenTextLimit) / (draft.failStreak + 1)).coerceAtLeast(1)
             val prompt = SceneContinuationPrompt.build(SceneContinuationPrompt.Input(
                 rawRequest = req.spec.rawRequest, unitGoal = req.unit.goal, timeRange = req.timeRange,
                 characters = req.characters, totalTarget = req.plan.unitTarget, currentChars = draft.totalChars,
                 perCallTarget = perCall, isFirst = draft.segments.isEmpty(), isLast = draft.totalChars + perCall >= minAccept,
                 summary = draft.summary, events = draft.segments.flatMap { it.events }.takeLast(40),
                 usedScenes = draft.usedScenes, tailText = draft.segments.lastOrNull()?.text.orEmpty().takeLast(1200),
-                mustFinish = draft.totalChars + perCall >= minAccept,
+                mustFinish = closing || draft.totalChars + perCall >= minAccept,
                 frozenContext = req.frozenContext.ifBlank { req.outlineSummary }, correction = correction,
             ))
             val reserved = drafts.reserveCall(guard, req.inputVersionNow)
@@ -116,7 +118,7 @@ class SceneContinuation(
                 createdAt = clock(), summary = raw?.get("summary").asString()?.takeIf { it.isNotBlank() }?.take(1500)
                     ?: parsed?.content?.events?.joinToString { it.description }?.takeIf { it.isNotBlank() }
                     ?: normalized?.segment?.text.orEmpty().take(600),
-                finished = raw?.get("finished").asBool() ?: false,
+                finished = raw?.get("finished").asBool() ?: (draft.totalChars + (normalized?.segment?.chars ?: 0) >= minAccept),
                 unresolvedItems = parsed?.content?.unresolvedItems.orEmpty(),
                 objectivesCovered = parsed?.content?.objectivesCovered.orEmpty(),
             )

@@ -16,6 +16,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
@@ -68,7 +70,7 @@ fun ClassroomScreen(
     val scope = rememberCoroutineScope()
 
     // 默认只看本对话的项目；旧项目（未关联）不在这里被顺手接管。
-    var showAllProjects by remember { mutableStateOf(false) }
+    var showAllProjects by rememberSaveable { mutableStateOf(false) }
     var projects by remember {
         mutableStateOf(
             if (sourceConversationId != null) service.projectsOf(sourceConversationId)
@@ -83,8 +85,12 @@ fun ClassroomScreen(
         }
     }
     var notice by remember { mutableStateOf("") }
-    var openProjectId by remember { mutableStateOf<ProjectId?>(null) }
-    var readingUnitId by remember { mutableStateOf<UnitId?>(null) }
+    var openProjectId by rememberSaveable(stateSaver = Saver<ProjectId?, String>(
+        save = { it?.value.orEmpty() }, restore = { it.takeIf(String::isNotBlank)?.let(::ProjectId) },
+    )) { mutableStateOf<ProjectId?>(null) }
+      var readingUnitId by remember { mutableStateOf<UnitId?>(null) }
+      // 一次性查看全部内容：把已提交的所有节按顺序连起来。
+      var viewingAll by remember { mutableStateOf(false) }
     // 卡片指定了版本就一直按那个版本读，直到用户离开这个项目。
     var pinnedWorkVersion by remember { mutableStateOf(initialWorkVersion) }
     LaunchedEffect(initialWorkVersion) { pinnedWorkVersion = initialWorkVersion }
@@ -97,6 +103,8 @@ fun ClassroomScreen(
     // 生成过程中定期重读：任务在后台跑，界面必须能看到进度，
     // 否则会一直显示「0 / 8」直到整轮结束（实测就是这样）。
     var refreshTick by remember { mutableStateOf(0) }
+    var scheduledProjectKeys by remember { mutableStateOf(emptySet<String>()) }
+    val showAllProjectsState by rememberUpdatedState(showAllProjects)
     // 通知/结果卡点进来：直接落到对应项目。
     //
     // 关键：目标项目可能属于别的对话、或者是未关联的旧项目 ——
@@ -115,11 +123,25 @@ fun ClassroomScreen(
     }
     var editingUnit by remember { mutableStateOf<ClassroomUnit?>(null) }
     LaunchedEffect(managerNotice) { managerNotice?.let { notice = it } }
-    LaunchedEffect(running) {
-        while (running) {
-            reloadProjects()
+    LaunchedEffect(Unit) {
+        while (true) {
+            // LaunchedEffect(Unit) 只启动一次；用 updated state 避免切换“显示全部”后
+            // 定时刷新又用旧过滤条件把已打开项目从列表抹掉。
+            projects = if (showAllProjectsState || sourceConversationId == null) {
+                service.allProjects()
+            } else {
+                service.projectsOf(sourceConversationId)
+            }
+            val ids = service.allProjects().map { it.id }
+            scheduledProjectKeys = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                ids.filter { id ->
+                    androidx.work.WorkManager.getInstance(context.applicationContext)
+                        .getWorkInfosForUniqueWork(com.aiclassroom.app.classroom.ClassroomRunWorker.workName(id)).get()
+                        .any { !it.state.isFinished }
+                }.map { it.value }.toSet()
+            }
             refreshTick++
-            kotlinx.coroutines.delay(1500)
+            kotlinx.coroutines.delay(1000)
         }
     }
     // 通过它让「暂停」按钮真的能停下循环。
@@ -137,7 +159,11 @@ fun ClassroomScreen(
         }
     }
 
-    val project = openProjectId?.let { id -> projects.firstOrNull { it.id == id } }
+    // 即使当前列表按来源对话过滤，已打开的项目也必须继续可见；退出再进时
+    // 直接从持久仓库补回项目对象，规划、草稿和已提交章节不会被 UI 过滤掉。
+    val project = openProjectId?.let { id ->
+        projects.firstOrNull { it.id == id } ?: service.store.project(id)
+    }
 
     // 一级一级退：阅读器 → 总览 → 列表 → 主对话。
     // 侧滑和「返回」按钮走同一条，避免一划就掉回主界面。
@@ -186,7 +212,13 @@ fun ClassroomScreen(
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when {
-                readingUnitId != null && project != null -> ReaderView(
+                  viewingAll && project != null -> AllContentView(
+                      service = service,
+                      projectId = project.id,
+                      onClose = { viewingAll = false },
+                  )
+
+                  readingUnitId != null && project != null -> ReaderView(
                     service = service,
                     projectId = project.id,
                     unitId = readingUnitId!!,
@@ -198,7 +230,9 @@ fun ClassroomScreen(
                     service = service,
                     project = project,
                     notice = notice,
-                    running = running,
+                    running = project.id.value in scheduledProjectKeys || service.store.runs(project.id).any {
+                        it.status == RunStatus.RUNNING && it.owner != null && it.leaseUntil > service.clock()
+                    },
                     onStart = {
                         val source = resolveSource(project.id)
                         if (source is SourceResolution.Ready) {
@@ -218,19 +252,12 @@ fun ClassroomScreen(
                             context = context.applicationContext,
                             projectId = project.id,
                         )
-                        notice = "已请求暂停，当前单元写完后停下"
+                        notice = "正在暂停，已保存的正文保留，继续时从断点续写"
                     },
-                    onRead = { tapped ->
-                        // 从第一节进入时恢复上次阅读位置；用户明确点别的节则尊重他的选择。
-                        val saved = service.readerProgress(project.id)?.unitId
-                        val firstReady = service.store.units(project.id)
-                            .sortedBy { it.index }
-                            .firstOrNull { it.status == com.aiclassroom.classroom.domain.UnitStatus.READY }
-                            ?.id
-                        val resumable = saved?.takeIf { sid ->
-                            service.store.unit(sid)?.status == com.aiclassroom.classroom.domain.UnitStatus.READY
-                        }
-                        readingUnitId = if (tapped == firstReady && resumable != null) resumable else tapped
+                      onViewAll = { viewingAll = true },
+                      onRead = { tapped ->
+                        // 明确点了哪一节，就进入哪一节。
+                        readingUnitId = tapped
                     },
                     onEditUnit = { editingUnit = it },
                     onSync = {
@@ -254,7 +281,7 @@ fun ClassroomScreen(
                         }
                     },
                     onRefresh = { reloadProjects() },
-                    planning = planning,
+                    planning = planning || service.isPlanning(project.id),
                     refreshTick = refreshTick,
                     onPlan = {
                         if (planning) return@OverviewView
@@ -267,20 +294,9 @@ fun ClassroomScreen(
                             notice = source.describe()
                             return@OverviewView
                         }
-                        scope.launch {
-                            val outcome = service.plan(
-                                projectId = project.id,
-                                policy = source.connection.policy,
-                                apiKey = source.connection.apiKey,
-                            )
-                            planning = false
-                            notice = when (outcome) {
-                                is ClassroomService.PlanResult.Success -> "总纲已生成，共 " + outcome.unitCount + " 个单元"
-                                is ClassroomService.PlanResult.Invalid -> "总纲结构有问题：" + outcome.problems.take(3).joinToString("；")
-                                is ClassroomService.PlanResult.Failed -> outcome.reason
-                            }
-                            reloadProjects()
-                        }
+                        com.aiclassroom.app.classroom.ClassroomRunWorker.schedule(context, project.id, false, planOnly = true)
+                        planning = false
+                        notice = "规划已交给后台，退出页面后仍会保存；请稍候"
                     },
                 )
 
@@ -294,7 +310,7 @@ fun ClassroomScreen(
                         reloadProjects()
                     },
                     onCreate = { creating = true },
-                    onOpen = { openProjectId = it.id },
+                    onOpen = { pinnedWorkVersion = null; openProjectId = it.id },
                 )
             }
         }
@@ -414,6 +430,7 @@ private fun OverviewView(
     onStart: () -> Unit,
     onPause: () -> Unit,
     onRead: (UnitId) -> Unit,
+    onViewAll: () -> Unit = {},
     onRefresh: () -> Unit,
     onEditUnit: (ClassroomUnit) -> Unit = {},
     planning: Boolean = false,
@@ -426,15 +443,23 @@ private fun OverviewView(
     val units = remember(project.id, project.workVersion, running, planning, refreshTick) {
         service.store.units(project.id)
     }
-    val spec = remember(project.id) { service.store.latestSpec(project.id) }
+    val spec = remember(project.id, refreshTick) { service.store.latestSpec(project.id) }
 
     Column(Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
+            // 一次性看完所有已提交的内容，不必一节一节点。
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onViewAll) { Text("查看") }
+            }
+
         if (notice.isNotBlank()) {
             Text(notice, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
             Spacer(Modifier.height(8.dp))
         }
         Text("原始需求", fontWeight = FontWeight.Bold)
         Text(spec?.rawRequest.orEmpty(), fontSize = 13.sp)
+        service.store.runs(project.id).maxByOrNull { it.startedAt }?.error?.takeIf { it.isNotBlank() }?.let {
+            Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+        }
         Spacer(Modifier.height(12.dp))
 
         Text("单元 " + units.count { it.status == UnitStatus.READY } + " / " + units.size + " 已完成", fontWeight = FontWeight.Bold)
@@ -447,6 +472,8 @@ private fun OverviewView(
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(u.index.toString() + ". " + u.chapter, fontSize = 14.sp)
+                    Text(u.directive?.effectiveGoal(u.goal) ?: u.goal, fontSize = 12.sp)
+                    u.directive?.notes?.takeIf { it.isNotBlank() }?.let { Text("补充要求：$it", fontSize = 12.sp) }
                     Text(unitStatusLabel(u.status), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     val draft = service.store.draft(project.id, u.id)
                     if (draft != null && draft.phase != DraftPhase.COMMITTED) {
@@ -464,8 +491,8 @@ private fun OverviewView(
                     }
                 }
                 TextButton(onClick = { onEditUnit(u) }) { Text("调整") }
-                if (u.status == UnitStatus.READY) {
-                    TextButton(onClick = { onRead(u.id) }) { Text("阅读") }
+                if (u.currentRevisionId != null || service.store.draft(project.id, u.id)?.segments?.isNotEmpty() == true) {
+                    TextButton(onClick = { onRead(u.id) }) { Text(if (u.status == UnitStatus.READY) "阅读" else "查看已生成") }
                 }
             }
         }
@@ -498,8 +525,9 @@ private fun OverviewView(
             Spacer(Modifier.height(8.dp))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onStart, enabled = !running && units.isNotEmpty()) {
-                Text(if (running) "生成中…" else "开始生成")
+            Button(onClick = onStart, enabled = !running && !planning && units.any { it.status != UnitStatus.READY }) {
+                Text(if (running) "生成中…" else if (units.isNotEmpty() && units.all { it.status == UnitStatus.READY }) "全部完成"
+                    else if (units.any { service.store.draft(project.id, it.id)?.segments?.isNotEmpty() == true }) "继续生成" else "开始生成")
             }
             OutlinedButton(onClick = onPause, enabled = running) { Text("暂停") }
             OutlinedButton(onClick = onRefresh) { Text("刷新") }
@@ -527,9 +555,13 @@ private fun ReaderView(
     /** 要读的版本；null 表示最新一版。 */
     workVersion: Int? = null,
 ) {
-    val units = remember(projectId) { service.store.units(projectId) }
+    var revisionTick by remember { mutableStateOf(0) }
+    LaunchedEffect(projectId) {
+        while (true) { kotlinx.coroutines.delay(1000); revisionTick++ }
+    }
+    val units = remember(projectId, revisionTick) { service.store.units(projectId).sortedBy { it.index } }
     // 按版本读：有清单就严格按清单，没有清单的旧项目才退回当前正文。
-    val resolved = remember(unitId, workVersion) { service.revisionAt(projectId, unitId, workVersion) }
+    val resolved = remember(unitId, workVersion, revisionTick) { service.revisionAt(projectId, unitId, workVersion) }
     val revision = when (resolved) {
         is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Found -> resolved.revision
         is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Legacy -> resolved.revision
@@ -550,7 +582,7 @@ private fun ReaderView(
     }
     // 还没有正式版本时，展示正在写的草稿（已通过校验的分段）——
     // 否则一节写完之前完全看不到任何内容。
-    val draftContent = remember(unitId, workVersion, revision) {
+    val draftContent = remember(unitId, workVersion, revision, revisionTick) {
         if (revision == null && workVersion == null) service.draftContent(projectId, unitId) else null
     }
     val index = units.indexOfFirst { it.id == unitId }
@@ -584,13 +616,15 @@ private fun ReaderView(
             fontWeight = FontWeight.Bold,
             fontSize = 18.sp,
         )
-        Text(versionLabel, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(if (draftContent != null) "已保存草稿（待整节审查）" else versionLabel,
+            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(8.dp))
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             if (revision == null && draftContent == null) {
                   Text("这一节还没有正式内容。", fontSize = 13.sp)
               } else if (revision == null && draftContent != null) {
-                  Text("正在写 · 已保存 " + draftContent.blocks.count { it is ContentBlock.Narration } + " 段正文", fontSize = 11.sp)
+                  Text("已保存 " + service.store.draft(projectId, unitId)?.segments.orEmpty().size +
+                      " 段 · 正文 " + com.aiclassroom.classroom.content.TextCount.units(draftContent.blocks) + " 字", fontSize = 11.sp)
                   Spacer(Modifier.height(6.dp))
                   draftContent.blocks.forEach { block ->
                       when (block) {

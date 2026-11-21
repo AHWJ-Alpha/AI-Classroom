@@ -35,8 +35,8 @@ sealed interface LengthPlan {
         /**
          * 单次调用的推荐文本上限（汉字计数，不是 token）。
          *
-         * 取 1200 是为了留出 JSON 结构、块字段与事件描述的开销：
-         * 输出预算按 4096 token 算，汉字大约 1 字 ≈ 1 token，
+         * 取 800 是为了留出 JSON 结构、块字段与事件描述的开销：
+         * 汉字与 token 的换算因供应商而异，还需为推理内容预留空间，
          * 目标定得太高（之前 2500）就会在写完前被 finish_reason=length 截断，整段作废。
          */
         const val PER_CALL_RECOMMENDED = 800
@@ -69,7 +69,11 @@ sealed interface LengthPlan {
             val notes = mutableListOf<String>()
 
             val perUnit = perUnitWords(text)
-            val total = totalWords(text)
+            val total = totalWords(text) ?: if (perUnit == null) {
+                Regex("(?:大约|约|共)?([0-9]+(?:\\.[0-9]+)?)(万?)字").find(text)?.let {
+                    scaled(it.groupValues[1], it.groupValues[2] == "万")
+                }
+            } else null
             val statedUnits = statedUnitCount(text)
             val unitCount = outlineUnitCount?.takeIf { it > 0 } ?: statedUnits
 

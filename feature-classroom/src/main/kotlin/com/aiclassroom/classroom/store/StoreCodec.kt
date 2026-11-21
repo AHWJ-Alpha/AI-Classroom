@@ -90,7 +90,7 @@ object StoreCodec {
             status = enumOr(o["status"].asString(), UnitStatus.PLANNED),
             currentRevisionId = o["currentRevisionId"].asString()?.let { RevisionId(it) },
             officialVersion = o["officialVersion"].asInt() ?: 0,
-            directive = o["directive"].takeIf { it !is Json.Null }?.let { d ->
+            directive = o["directive"].takeIf { it is Json.Obj }?.let { d ->
                 val m = d.asObject()
                 UnitDirective(
                     goalOverride = m["goalOverride"].asString(),

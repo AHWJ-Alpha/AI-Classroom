@@ -31,7 +31,9 @@ object ClassroomGatewayFactory {
         reasoningEffort = config.reasoningEffort,
         deepThinkingEnabled = config.deepThinkingEnabled,
         // 能力按主模型推断，不再一律写成「都支持」。
-        capabilities = com.aiclassroom.classroom.gateway.ModelCapabilityTable.of(config.chatModels().firstOrNull().orEmpty()),
+        capabilities = com.aiclassroom.classroom.gateway.ModelCapabilityTable.of(config.chatModels().firstOrNull().orEmpty()).let {
+            if (config.baseUrl.contains("api.deepseek.com")) it.copy(supportsJsonMode = true) else it
+        },
         // 长篇分段需要足够的输出预算：不设时服务商按默认值截断（常见 4K token），
         // 一节刚写一半就 finish_reason=length，整段作废。
         // 8192：规划阶段要一次吐出「规格 + 总纲 + 全部单元」的完整 JSON，
