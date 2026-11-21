@@ -548,6 +548,11 @@ private fun ReaderView(
         is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Legacy -> "当前版本（旧项目无版本清单）"
         is com.aiclassroom.classroom.domain.ManifestResolver.Resolution.Missing -> resolved.reason
     }
+    // 还没有正式版本时，展示正在写的草稿（已通过校验的分段）——
+    // 否则一节写完之前完全看不到任何内容。
+    val draftContent = remember(unitId, workVersion, revision) {
+        if (revision == null && workVersion == null) service.draftContent(projectId, unitId) else null
+    }
     val index = units.indexOfFirst { it.id == unitId }
 
     // 文字 GAL：选择只写进自己的存档，不改作品正文，也不影响别的存档。
@@ -582,12 +587,25 @@ private fun ReaderView(
         Text(versionLabel, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(8.dp))
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-            if (revision == null) {
-                Text("这一节还没有正式内容。", fontSize = 13.sp)
+            if (revision == null && draftContent == null) {
+                  Text("这一节还没有正式内容。", fontSize = 13.sp)
+              } else if (revision == null && draftContent != null) {
+                  Text("正在写 · 已保存 " + draftContent.blocks.count { it is ContentBlock.Narration } + " 段正文", fontSize = 11.sp)
+                  Spacer(Modifier.height(6.dp))
+                  draftContent.blocks.forEach { block ->
+                      when (block) {
+                          is ContentBlock.Heading -> { Text(block.text, fontWeight = FontWeight.Bold, fontSize = 17.sp); Spacer(Modifier.height(6.dp)) }
+                          is ContentBlock.Dialogue -> { Text(block.text, fontSize = 15.sp, lineHeight = 24.sp); Spacer(Modifier.height(6.dp)) }
+                          is ContentBlock.Narration -> { Text(block.text, fontSize = 15.sp, lineHeight = 24.sp); Spacer(Modifier.height(10.dp)) }
+                          else -> Unit
+                      }
+                  }
             } else {
-                val content = revision.content
+                // 走到这个分支时 revision 一定非空（上面的两个分支已排除 null）。
+                val rev = revision!!
+                val content = rev.content
                 if (content == null) {
-                    Text(revision.draftText, fontSize = 15.sp, lineHeight = 24.sp)
+                    Text(rev.draftText, fontSize = 15.sp, lineHeight = 24.sp)
                 } else {
                     content.blocks.forEach { block ->
                         when (block) {

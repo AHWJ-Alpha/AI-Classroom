@@ -154,6 +154,26 @@ class ClassroomService(
     fun workVersions(projectId: ProjectId): List<Int> =
         com.aiclassroom.classroom.domain.ManifestResolver.versions(store, projectId)
 
+    /**
+     * 正在写的这一节：把草稿里已通过校验的分段按序拼起来。
+     *
+     * 只用于阅读展示，不进入正式作品：它没有经过整节审查与提交，
+     * 项目检索、讨论与版本清单都不会读它。
+     */
+    fun draftContent(projectId: ProjectId, unitId: UnitId): com.aiclassroom.classroom.domain.UnitContent? {
+        val draft = store.draft(projectId, unitId) ?: return null
+        if (draft.segments.isEmpty()) return null
+        val unit = store.unit(unitId)
+        return com.aiclassroom.classroom.domain.UnitContent(
+            unitId = unitId,
+            planVersion = unit?.officialVersion ?: 0,
+            title = unit?.chapter.orEmpty(),
+            blocks = draft.segments.sortedBy { it.index }.flatMap { it.blocks },
+            events = draft.segments.sortedBy { it.index }.flatMap { it.events },
+            unresolvedItems = emptyList(),
+        )
+    }
+
     /** 按版本读某一节；旧项目没有清单时返回 Legacy。 */
     fun revisionAt(projectId: ProjectId, unitId: UnitId, workVersion: Int?) =
         com.aiclassroom.classroom.domain.ManifestResolver.revisionAt(
