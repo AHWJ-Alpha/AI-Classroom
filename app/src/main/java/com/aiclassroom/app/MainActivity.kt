@@ -3150,51 +3150,6 @@ private fun EditClassroomSummaryDialog(initial: String, onClose: () -> Unit, onS
     )
 }
 
-/**
- * 课堂页顶部的「继续上次考试」入口：考试存档跟着课堂走，退出考试界面后靠它再进来接着做。
- * 统计口径与考试页一致——只有真正写了作答或标了「不会」的题才算已答。
- */
-@Composable
-private fun ExamResumeBanner(session: ExamSession, palette: AppPalette, onResume: () -> Unit, modifier: Modifier = Modifier) {
-    val total = session.questions.size
-    val answered = session.questions.count { it.unknown || it.answer.isNotBlank() || it.answerImages.isNotEmpty() }
-    Surface(
-        modifier = modifier.fillMaxWidth().padding(horizontal = DesignTokens.Spacing.Md, vertical = DesignTokens.Spacing.Md),
-        shape = AppShapes.control,
-        color = palette.card,
-        contentColor = palette.ink,
-        border = BorderStroke(DesignTokens.Border.Hairline, palette.outline),
-        shadowElevation = 0.dp
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = DesignTokens.Spacing.Lg, vertical = DesignTokens.Spacing.Md),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Default.Quiz, contentDescription = null, tint = palette.primary, modifier = Modifier.size(DesignTokens.Size.IconSm))
-            Spacer(Modifier.width(DesignTokens.Spacing.Md))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    session.title.ifBlank { "上次的考试" },
-                    fontWeight = DesignTokens.Weight.Bold,
-                    fontSize = DesignTokens.Type.Body,
-                    color = palette.ink,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    if (session.submitted) "已提交 · 共 $total 题" else "已存档 · 已答 $answered 题 / 共 $total 题",
-                    fontSize = DesignTokens.Type.Small,
-                    color = palette.muted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Spacer(Modifier.width(DesignTokens.Spacing.Sm))
-            AppPrimaryButton(onClick = onResume) { Text(if (session.submitted) "回看" else "继续") }
-        }
-    }
-}
-
 @Composable
 private fun ClassScreen(
     room: Classroom,
@@ -3255,9 +3210,6 @@ private fun ClassScreen(
                 onSend = onSend,
                 onImage = onImage
             )
-            savedExam?.let { archived ->
-                ExamResumeBanner(archived, palette, onResumeExam, Modifier.align(Alignment.TopCenter))
-            }
             // GLOBAL_OVERLAY 现在画在 Scaffold 之外（见主 Composable），这里不再重复绘制。
         }
         return
@@ -3404,9 +3356,6 @@ private fun ClassScreen(
             Modifier.align(Alignment.TopCenter).fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.Sm)
         ) {
-        savedExam?.let { archived ->
-            ExamResumeBanner(archived, palette, onResumeExam)
-        }
         if (!failureDismissed) failureNotice?.let { notice ->
             Surface(
                 modifier = Modifier.padding(start = DesignTokens.Spacing.Md, end = DesignTokens.Spacing.Md, top = DesignTokens.Spacing.Lg),
