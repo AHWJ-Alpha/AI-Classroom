@@ -47,8 +47,18 @@ object PromptTemplates {
     fun generator(input: GeneratorInput): String = buildString {
         appendLine(GUARD)
         appendLine()
+        // 原始需求必须进正文阶段：规划会把它压成 spec 摘要，
+        // 而摘要留不住语气、尺度与推进节奏 —— 亲近感就丢在这里。
+        if (input.spec.rawRequest.isNotBlank()) {
+            appendLine("[ORIGINAL_REQUEST]")
+            appendLine(input.spec.rawRequest)
+            appendLine("[/ORIGINAL_REQUEST]")
+            appendLine("以上是作者的原话。它是基调的依据：spec 只是摘要，")
+            appendLine("原话里体现的语气、亲疏、节奏与尺度优先于任何概括性描述。")
+            appendLine()
+        }
         appendLine("[PROJECT_SPEC]")
-        appendLine("类型：" + input.spec.topic)
+        appendLine("主题：" + input.spec.topic)
         appendLine("语言：" + input.spec.language)
         appendLine("风格：" + input.spec.style)
         if (input.spec.hardConstraints.isNotEmpty()) {
@@ -66,7 +76,7 @@ object PromptTemplates {
             appendLine("风格约束：")
             appendLine(snap.mentorPrompt)
             if (snap.userAlias.isNotBlank()) appendLine("称呼用户：" + snap.userAlias)
-            appendLine("这条约束描述的是讲课/叙述的口吻，不覆盖每个角色自己的说话方式。")
+            appendLine("这条约束只决定叙述与台词的口吻，不覆盖每个角色自己的说话方式；不要据此把内容写成讲解。")
             appendLine()
         }
         if (snap != null && snap.viewMode == "author" && snap.authorWorldBook.isNotBlank()) {
@@ -84,12 +94,12 @@ object PromptTemplates {
             appendLine()
         }
         appendLine("[CURRENT_UNIT_PLAN]")
-        appendLine("单元：" + input.unit.title)
+        appendLine("本节：" + input.unit.title)
         // 有用户改写就用改写后的目标。
         val plannedGoal = input.directive?.effectiveGoal(input.unit.goal) ?: input.unit.goal
-        appendLine("目标：" + plannedGoal)
+        appendLine("本节要写到的：" + plannedGoal)
         if (input.unit.completionCriteria.isNotEmpty()) {
-            appendLine("完成条件：")
+            appendLine("写完的标志：")
             input.unit.completionCriteria.forEach { appendLine("- " + it) }
         }
         appendLine()
@@ -298,8 +308,8 @@ object PromptTemplates {
             }
         }
         appendLine("[CURRENT_UNIT_PLAN]")
-        appendLine("目标：" + (input.effectiveGoal ?: input.unit.goal))
-        input.unit.completionCriteria.forEach { appendLine("完成条件：" + it) }
+        appendLine("本节要写到的：" + (input.effectiveGoal ?: input.unit.goal))
+        input.unit.completionCriteria.forEach { appendLine("写完的标志：" + it) }
         appendLine()
         appendLine("[DATA:CANDIDATE_TEXT]")
         appendLine(input.text)

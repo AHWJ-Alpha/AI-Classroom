@@ -73,7 +73,9 @@ value class SaveId(val value: String) {
 
 /** 课堂作品的三种形态。 */
 enum class ProjectType(val label: String) {
-    TEACHING("教学"),
+    // 界面上叫「课堂」，但对模型不宣称教学：这里只说明产出是连贯的长内容，
+    // 否则模型会把它写成讲义，亲密/剧情向的长篇直接被压扁。
+    TEACHING("连贯长内容"),
     NOVEL("小说"),
     TEXT_GAL("文字 GAL"),
 }
