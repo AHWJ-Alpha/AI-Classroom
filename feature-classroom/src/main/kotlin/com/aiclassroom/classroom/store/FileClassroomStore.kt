@@ -53,6 +53,8 @@ class FileClassroomStore(
         val snapshots: MutableMap<String, ContextSnapshot> = linkedMapOf(),
         val events: MutableMap<String, ClassroomEvent> = linkedMapOf(),
         val manifests: MutableMap<String, WorkManifest> = linkedMapOf(),
+        /** 分段草稿：key = projectId#unitId。 */
+        val drafts: MutableMap<String, UnitDraft> = linkedMapOf(),
         val summaries: MutableMap<String, ChapterSummary> = linkedMapOf(),
         val stateSnaps: MutableMap<String, UnitStateSnapshot> = linkedMapOf(),
     ) {
@@ -62,7 +64,8 @@ class FileClassroomStore(
             LinkedHashMap(charStates), LinkedHashMap(chars), LinkedHashMap(runs),
             LinkedHashMap(attempts), LinkedHashMap(checkpoints), LinkedHashMap(reader),
             LinkedHashMap(learning), LinkedHashMap(saves), LinkedHashMap(snapshots),
-            LinkedHashMap(events), LinkedHashMap(manifests), LinkedHashMap(summaries), LinkedHashMap(stateSnaps),
+            LinkedHashMap(events), LinkedHashMap(manifests), LinkedHashMap(drafts),
+            LinkedHashMap(summaries), LinkedHashMap(stateSnaps),
         )
     }
 
@@ -140,6 +143,11 @@ class FileClassroomStore(
             val s = StoreCodec.snapshot(it)
             state.snapshots[s.projectId.value + "#" + s.version] = s
         }
+        // 分段草稿：旧存档没有这张表，读成空即可。
+        state.drafts.clear(); o["drafts"].asArray().forEach {
+            val d = StoreCodec.draft(it)
+            state.drafts[d.projectId.value + "#" + d.unitId.value] = d
+        }
     }
 
     /** 把读不出来的存档改名保留，供人工恢复；不删除、不覆盖。 */
@@ -176,6 +184,8 @@ class FileClassroomStore(
             "manifests" to Json.arr(state.manifests.values.map(StoreCodec::manifest)),
             "summaries" to Json.arr(state.summaries.values.map(StoreCodec::summary)),
             "stateSnaps" to Json.arr(state.stateSnaps.values.map(StoreCodec::stateSnapshot)),
+            // 分段草稿必须落盘：万字一节要多次调用，进程一断就只能从头写。
+            "drafts" to Json.arr(state.drafts.values.map(StoreCodec::draft)),
         )
         writeText(tmpFile, JsonWriter.write(doc))
         Files.move(
@@ -372,6 +382,19 @@ class FileClassroomStore(
 
     override fun summaryForRevision(revisionId: RevisionId) =
         state.summaries.values.firstOrNull { it.revisionId == revisionId }
+
+    private fun draftKey(projectId: ProjectId, unitId: UnitId) = projectId.value + "#" + unitId.value
+
+    override fun draft(projectId: ProjectId, unitId: UnitId): UnitDraft? =
+        state.drafts[draftKey(projectId, unitId)]
+
+    override fun saveDraft(draft: UnitDraft) = mutate {
+        state.drafts[draftKey(draft.projectId, draft.unitId)] = draft
+    }
+
+    override fun removeDraft(projectId: ProjectId, unitId: UnitId) = mutate {
+        state.drafts.remove(draftKey(projectId, unitId))
+    }
 
     override fun saveManifest(manifest: WorkManifest) = mutate {
         state.manifests[manifest.projectId.value + "#" + manifest.workVersion] = manifest

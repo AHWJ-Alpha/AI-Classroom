@@ -267,6 +267,68 @@ object StoreCodec {
 
     // ---------- 章节摘要 ----------
 
+    /** 分段草稿：块与事件复用 ContentCodec，避免两套编码各自演化。 */
+    fun draft(d: UnitDraft): Json = Json.obj(
+        "projectId" to Json.of(d.projectId.value),
+        "unitId" to Json.of(d.unitId.value),
+        "candidateId" to Json.of(d.candidateId),
+        "inputVersion" to Json.of(d.inputVersion),
+        "totalChars" to Json.of(d.totalChars),
+        "summary" to Json.of(d.summary),
+        "usedScenes" to Json.arr(d.usedScenes.map { Json.of(it) }),
+        "runId" to Json.of(d.runId?.value ?: ""),
+        "fencingToken" to Json.of(d.fencingToken.toInt()),
+        "updatedAt" to Json.of(d.updatedAt.toInt()),
+        "segments" to Json.arr(d.segments.map { segment(it) }),
+    )
+
+    fun draft(j: Json): UnitDraft {
+        val o = j.asObject()
+        return UnitDraft(
+            projectId = ProjectId(o["projectId"].asString() ?: ""),
+            unitId = UnitId(o["unitId"].asString() ?: ""),
+            candidateId = o["candidateId"].asString() ?: "",
+            inputVersion = o["inputVersion"].asString() ?: "",
+            segments = o["segments"].asArray().map { segment(it) },
+            totalChars = o["totalChars"].asInt() ?: 0,
+            summary = o["summary"].asString() ?: "",
+            usedScenes = o["usedScenes"].asArray().mapNotNull { it.asString() },
+            runId = o["runId"].asString()?.takeIf { it.isNotBlank() }?.let { RunId(it) },
+            fencingToken = (o["fencingToken"].asInt() ?: 0).toLong(),
+            updatedAt = (o["updatedAt"].asInt() ?: 0).toLong(),
+        )
+    }
+
+    private fun segment(s: DraftSegment): Json = Json.obj(
+        "index" to Json.of(s.index),
+        "chars" to Json.of(s.chars),
+        "createdAt" to Json.of(s.createdAt.toInt()),
+        "text" to Json.of(s.text),
+        // 块与事件原样存档，回读时由 ContentCodec 还原。
+        "content" to ContentCodec.encode(
+            UnitContent(
+                unitId = UnitId(""),
+                planVersion = s.index,
+                title = "",
+                blocks = s.blocks,
+                events = s.events,
+            ),
+        ),
+    )
+
+    private fun segment(j: Json): DraftSegment {
+        val o = j.asObject()
+        val content = ContentCodec.decode(o["content"])
+        return DraftSegment(
+            index = o["index"].asInt() ?: 0,
+            text = o["text"].asString() ?: "",
+            blocks = content?.blocks ?: emptyList(),
+            events = content?.events ?: emptyList(),
+            chars = o["chars"].asInt() ?: 0,
+            createdAt = (o["createdAt"].asInt() ?: 0).toLong(),
+        )
+    }
+
     fun summary(s: ChapterSummary): Json = Json.obj(
         "projectId" to Json.of(s.projectId.value),
         "unitId" to Json.of(s.unitId.value),

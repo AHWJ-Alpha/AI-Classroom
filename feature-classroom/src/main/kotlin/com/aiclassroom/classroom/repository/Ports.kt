@@ -76,6 +76,13 @@ interface ClassroomStore {
     /** 章节摘要：提交时生成，绑定到 revision。 */
     fun saveSummary(summary: ChapterSummary)
     fun summaries(projectId: ProjectId): List<ChapterSummary>
+
+    /** 分段草稿：仓库内部原语。产品代码必须走 DraftStore 的守卫，不能直接调这些。 */
+    fun draft(projectId: ProjectId, unitId: UnitId): UnitDraft?
+
+    fun saveDraft(draft: UnitDraft)
+
+    fun removeDraft(projectId: ProjectId, unitId: UnitId)
     fun summaryForRevision(revisionId: RevisionId): ChapterSummary?
 
     /** 作品版本清单：一版写一次，之后不可变。 */

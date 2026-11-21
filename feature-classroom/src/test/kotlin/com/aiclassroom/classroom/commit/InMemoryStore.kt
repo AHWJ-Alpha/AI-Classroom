@@ -19,6 +19,7 @@ class InMemoryStore : ClassroomStore {
     private val factMap = linkedMapOf<Pair<FactId, Int>, FactRevision>()
     private val charStateMap = linkedMapOf<String, CharacterState>()
     private val charMap = linkedMapOf<String, CharacterProfile>()
+    private val draftMap = linkedMapOf<String, UnitDraft>()
     private val runMap = linkedMapOf<RunId, GenerationRun>()
     private val attemptMap = linkedMapOf<AttemptId, GenerationAttempt>()
     private val checkpointMap = linkedMapOf<RunId, Checkpoint>()
@@ -112,6 +113,19 @@ class InMemoryStore : ClassroomStore {
         summaryMap.values.filter { it.projectId == projectId }.sortedBy { it.index }
     override fun summaryForRevision(revisionId: RevisionId) =
         summaryMap.values.firstOrNull { it.revisionId == revisionId }
+
+    private fun draftKey(projectId: ProjectId, unitId: UnitId) = projectId.value + "#" + unitId.value
+
+    override fun draft(projectId: ProjectId, unitId: UnitId): UnitDraft? =
+        draftMap[draftKey(projectId, unitId)]
+
+    override fun saveDraft(draft: UnitDraft) {
+        draftMap[draftKey(draft.projectId, draft.unitId)] = draft
+    }
+
+    override fun removeDraft(projectId: ProjectId, unitId: UnitId) {
+        draftMap.remove(draftKey(projectId, unitId))
+    }
 
     private val manifestMap = linkedMapOf<Pair<ProjectId, Int>, WorkManifest>()
     override fun saveManifest(manifest: WorkManifest) {
