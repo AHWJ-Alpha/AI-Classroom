@@ -262,7 +262,14 @@ object PromptTemplates {
         // 把真实 id 写进 schema 示例：不给的话模型会自己编一个（实测过）。
         appendLine("unitId 固定为：" + input.unit.unitId.value)
         appendLine("只输出一个 JSON 对象，字段：unitId、planVersion、title、blocks、objectivesCovered、events、unresolvedItems。")
-        appendLine("blocks 每项形如 {id,type,text}；type 只能是 narration / dialogue / heading / explanation / example / exercise。")
+        if (input.projectType == ProjectType.SCENE || input.projectType == ProjectType.NOVEL) {
+            // 字段名沿用（解析器要它），但要求里必须说清它填什么：
+            // 写「教学目标」会把整节拽回教案。
+            appendLine("objectivesCovered 填本节实际写到的事件或关系位移，不要写成知识点清单。")
+        }
+        // 块类型词表必须跟着类型走：explanation / example / exercise 是课堂语言，
+        // 留给它们，模型就会把场景写成「单元定位 + 讲解 + 例题」。
+        appendLine("blocks 每项形如 {id,type,text}；type 只能是 " + blockTypes(input.projectType) + "。")
         appendLine("dialogue 必须带 speakerId，且只能使用上面列出的角色 id。")
         appendLine("events 每项的 sourceBlockIds 必须引用本单元真实存在的块 id。")
         appendLine()
@@ -285,6 +292,18 @@ object PromptTemplates {
      * 场景型最容易误判：把「这一节没有大事发生」当成缺陷，
      * 于是模型被迫每节都塞事件，最后必然是流水线。
      */
+    /**
+     * 允许的块类型。
+     *
+     * 叙事类型只给 narration / dialogue / heading —— 没有 explanation，
+     * 模型就没有「讲解」这个出口，只能讲故事。
+     */
+    fun blockTypes(type: ProjectType): String = when (type) {
+        ProjectType.SCENE, ProjectType.NOVEL -> "narration / dialogue / heading"
+        ProjectType.TEXT_GAL -> "narration / dialogue / heading / choice"
+        ProjectType.TEACHING -> "narration / dialogue / heading / explanation / example / exercise"
+    }
+
     fun reviewCriteria(type: ProjectType): String = when (type) {
         ProjectType.SCENE -> listOf(
             "判断项：",

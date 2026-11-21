@@ -122,4 +122,41 @@ class PromptNeutralityTest {
         assertTrue(prompt.contains("[REVIEW_CRITERIA]"))
         assertTrue(prompt.contains("没有发生大事"))
     }
+
+    @Test
+    fun `叙事类型不得出现讲解类块`() {
+        for (type in listOf(ProjectType.SCENE, ProjectType.NOVEL)) {
+            val types = PromptTemplates.blockTypes(type)
+            assertTrue(!types.contains("explanation"), "叙事类型不该给讲解块")
+            assertTrue(!types.contains("example"))
+            assertTrue(!types.contains("exercise"))
+            assertTrue(types.contains("narration"))
+            assertTrue(types.contains("dialogue"))
+        }
+    }
+
+    @Test
+    fun `场景的生成请求里没有讲解块也没有教学目标措辞`() {
+        val prompt = PromptTemplates.generator(
+            PromptTemplates.GeneratorInput(
+                spec = spec(),
+                outlineSummary = "一个月同居",
+                unit = unit(),
+                characters = emptyList(),
+                characterStates = emptyList(),
+                facts = emptyList(),
+                previousText = "",
+                projectType = ProjectType.SCENE,
+            ),
+        )
+        assertTrue(!prompt.contains("explanation / example / exercise"), "块类型词表必须收紧")
+        assertTrue(prompt.contains("不要写成知识点清单"), "要明确 objectivesCovered 填什么")
+    }
+
+    @Test
+    fun `教学类型仍然保留讲解与练习`() {
+        val types = PromptTemplates.blockTypes(ProjectType.TEACHING)
+        assertTrue(types.contains("explanation"))
+        assertTrue(types.contains("exercise"))
+    }
 }
