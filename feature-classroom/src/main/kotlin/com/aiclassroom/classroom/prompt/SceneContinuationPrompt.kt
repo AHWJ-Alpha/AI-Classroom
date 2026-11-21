@@ -100,6 +100,8 @@ object SceneContinuationPrompt {
         appendLine("- 不要旁白解释心情，让人物用行为说话；")
         appendLine("- 块类型只能是 narration / dialogue / heading；")
         appendLine("- dialogue 必须带 speakerId，且只能用上面列出的角色 id。")
+        appendLine("- 有角色在场时，人物说出口的话必须用 dialogue 块，")
+        appendLine("  不要把台词写进 narration：转述会让人物失去声音。")
         if (input.characters.isEmpty()) appendLine("没有已注册角色，不输出 dialogue；用 narration 描写动作、内心和引号中的对白。")
         appendLine()
         appendLine("[OUTPUT_SCHEMA]")

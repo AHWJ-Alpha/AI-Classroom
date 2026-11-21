@@ -324,6 +324,10 @@ class ClassroomService(
         val project = store.project(projectId) ?: return PlanResult.Failed("项目不存在")
         // 已有规划或正文不可由重复点击规划覆盖，保留稳定的单元 ID 与版本引用。
         if (store.units(projectId).isNotEmpty()) return PlanResult.Success(store.units(projectId).size)
+        // 场景里要能写台词，就必须有可引用的角色。项目没绑人物卡时，
+        // 用对话里的讲师名与用户称呼生成两个参与者，否则模型只能把对白写成转述。
+        ensureSceneParticipants(projectId)
+
         val rawRequest = store.latestSpec(projectId)?.rawRequest.orEmpty()
         if (rawRequest.isBlank()) return PlanResult.Failed("没有原始需求")
 
@@ -463,6 +467,9 @@ class ClassroomService(
         forceLease: Boolean = false,
         runIdentity: RunId? = null,
     ): RunOutcome {
+        // 生成前也补一次：旧项目没重新规划时同样要能写出对白。
+        ensureSceneParticipants(projectId)
+
         // 开跑之前先把上次遗留的「生成中 / 草稿待提交」放回队列，
         // 否则那些单元永远不会被重新选中，后面的依赖链会整体卡死。
         // 只恢复当前项目中没有有效执行者的遗留步骤；不能因为启动项目 B
@@ -554,6 +561,41 @@ class ClassroomService(
         } finally {
             // 无论正常结束还是被取消都要释放，否则这个任务再也抢不到执行权。
             RunLease.release(store, runId, owner, clock)
+        }
+    }
+
+    /**
+     * 保证场景项目至少有可引用的参与者。
+     *
+     * 依据来源快照里的讲师名与用户称呼生成两条最小人物档案：只填名字与身份，
+     * 人格留空（不替用户编性格）。已有角色时什么都不做。
+     */
+    private fun ensureSceneParticipants(projectId: ProjectId) {
+        val project = store.project(projectId) ?: return
+        if (project.type != ProjectType.SCENE) return
+        if (store.characters(projectId).isNotEmpty()) return
+        val snapshot = store.latestSnapshot(projectId)
+        val names = listOfNotNull(
+            snapshot?.mentorName?.takeIf { it.isNotBlank() },
+            snapshot?.userAlias?.takeIf { it.isNotBlank() },
+        ).distinct()
+        if (names.isEmpty()) return
+        store.transaction {
+            names.forEach { name ->
+                store.saveCharacter(
+                    com.aiclassroom.classroom.domain.CharacterProfile(
+                        id = com.aiclassroom.classroom.domain.CharacterId(java.util.UUID.randomUUID().toString()),
+                        projectId = projectId,
+                        name = name,
+                        identity = "",
+                        corePersonality = "",
+                        values = "",
+                        thinkingStyle = "",
+                        speechStyle = "",
+                        behaviorRules = emptyList(),
+                    ),
+                )
+            }
         }
     }
 }
