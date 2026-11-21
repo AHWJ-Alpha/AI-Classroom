@@ -72,4 +72,31 @@ class PromptNeutralityTest {
             }
         }
     }
+
+    @Test
+    fun `场景类型的提示词要求反流水线`() {
+        val prompt = PromptTemplates.typeGuidance(ProjectType.SCENE)
+        assertTrue(prompt.contains("共同生活的时间线"), "场景不是小说章节")
+        assertTrue(prompt.contains("流水账"), "必须明确禁止流水账")
+        assertTrue(prompt.contains("关系状态"), "每节要推进关系状态")
+        assertTrue(prompt.contains("安静段落"), "允许没有事件的段落，否则节奏必然被推成事件流水")
+    }
+
+    @Test
+    fun `场景类型的生成提示词带上指导`() {
+        val prompt = PromptTemplates.generator(
+            PromptTemplates.GeneratorInput(
+                spec = spec(),
+                outlineSummary = "主线：一个月同居",
+                unit = unit(),
+                characters = emptyList(),
+                characterStates = emptyList(),
+                facts = emptyList(),
+                previousText = "",
+                projectType = ProjectType.SCENE,
+            ),
+        )
+        assertTrue(prompt.contains("[TYPE_GUIDANCE]"))
+        assertTrue(prompt.contains("共同生活的时间线"), "指导内容要真的进请求")
+    }
 }

@@ -27,6 +27,11 @@ object PlannerPrompt {
         appendLine()
         appendLine("[TARGET_TYPE]")
         appendLine(type.label)
+        if (type == ProjectType.SCENE) {
+            appendLine("把时间跨度切成若干阶段，每个 units 项就是一个阶段（例如第 1 周 / 第 2 周）。")
+            appendLine("每个阶段的 goal 写清这一段关系要走到哪，不是要讲什么知识点。")
+            appendLine("阶段之间要有因果：上一段发生的事决定下一段怎么开始。")
+        }
         appendLine()
         appendLine("[DATA:USER_REQUEST]")
         appendLine(rawRequest)
