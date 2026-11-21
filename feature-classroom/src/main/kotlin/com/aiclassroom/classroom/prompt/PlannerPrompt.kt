@@ -12,6 +12,9 @@ import com.aiclassroom.classroom.domain.SnapshotMaterial
  */
 object PlannerPrompt {
 
+    /** 每批补写细节的单元数。 */
+    const val BATCH = 4
+
     const val VERSION = 1
 
     fun build(

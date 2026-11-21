@@ -16,6 +16,7 @@ import com.aiclassroom.classroom.query.ProjectContext
 import com.aiclassroom.classroom.gateway.ModelMessage
 import com.aiclassroom.classroom.gateway.ModelRequest
 import com.aiclassroom.classroom.plan.PlannedProjectParser
+import com.aiclassroom.classroom.prompt.PlannerBatch
 import com.aiclassroom.classroom.prompt.PlannerPrompt
 import com.aiclassroom.classroom.repository.ClassroomStore
 import com.aiclassroom.classroom.store.FileClassroomStore
@@ -315,6 +316,9 @@ class ClassroomService(
 
 
         val gateway = gatewayFactory(policy, apiKey)
+        // 单元多时先要骨架，细节随后分批追问：一次写完所有单元的目标必然被输出上限截断，
+        // 正确做法是分几次写、由程序合并，而不是让模型少写细节。
+        val skeletonFirst = desiredUnits > PlannerPrompt.BATCH
         val call = gateway.complete(
             ModelRequests.fromPolicy(
                 policy = policy,
@@ -346,7 +350,38 @@ class ClassroomService(
             return PlanResult.Invalid(parsed.problems.map { it.message })
         }
         val spec = parsed.spec!!
-        val outline = parsed.outline!!
+        var outline = parsed.outline!!
+        if (skeletonFirst) {
+            val titles = outline.units.sortedBy { it.index }.map { it.title }
+            val details = mutableMapOf<Int, PlannerBatch.UnitDetail>()
+            var from = 1
+            while (from <= titles.size) {
+                val to = minOf(from + PlannerPrompt.BATCH - 1, titles.size)
+                val detailCall = gateway.complete(
+                    ModelRequests.fromPolicy(
+                        policy = policy,
+                        messages = listOf(
+                            ModelMessage(
+                                ModelMessage.Role.USER,
+                                PlannerBatch.request(rawRequest, project.type, titles, from, to),
+                            ),
+                        ),
+                        expectJson = true,
+                    ),
+                )
+                if (detailCall.error == null) {
+                    PlannerBatch.parse(detailCall.content, from, to).forEach { details[it.index] = it }
+                }
+                from = to + 1
+            }
+            if (details.isEmpty()) return PlanResult.Failed("分批补写单元细节失败")
+            outline = outline.copy(
+                units = outline.units.map { u ->
+                    val d = details[u.index] ?: return@map u
+                    u.copy(goal = d.goal, completionCriteria = d.criteria.ifEmpty { u.completionCriteria })
+                },
+            )
+        }
 
         store.transaction {
             store.saveSpec(spec)
