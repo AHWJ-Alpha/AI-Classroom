@@ -266,8 +266,40 @@ object PromptTemplates {
         appendLine("[VALIDATION_RULES]")
         appendLine("- 只写当前单元，不要抢写后续单元，也不要剧透未知角色不该知道的事。")
         appendLine("- 不要复述角色卡，不要把所有角色写成同一个口吻。")
-        appendLine("- 结尾必须满足当前单元的完成条件。")
+        if (input.projectType == ProjectType.SCENE) {
+            // 场景里强行「每节都要满足完成条件」会逼出流水线：
+            // 安静的一节也是内容，只要关系有可观察的位移。
+            appendLine("- 结尾要让关系状态出现可观察的变化；不必强行安排事件或冲突。")
+        } else {
+            appendLine("- 结尾必须满足当前单元的完成条件。")
+        }
         appendLine("- 不要输出 JSON 以外的解释文字。")
+    }
+
+    /**
+     * 按类型的审查标准。
+     *
+     * 场景型最容易误判：把「这一节没有大事发生」当成缺陷，
+     * 于是模型被迫每节都塞事件，最后必然是流水线。
+     */
+    fun reviewCriteria(type: ProjectType): String = when (type) {
+        ProjectType.SCENE -> listOf(
+            "判断项：",
+            "- 是否与前文、人物设定、已确立事实矛盾；",
+            "- 事件是否由人物性格与当前关系自然长出来；",
+            "- 结尾是否给出了关系状态的具体变化；",
+            "- 是否退化成流水账，或靠时间跳跃糊过一天。",
+            "明确不算缺陷：",
+            "- 本节没有发生大事、没有冲突、没有反转；",
+            "- 通篇是日常、沉默或留白；",
+            "- 没有完成「写完的标志」里的每一条 —— 那只作参考。",
+        ).joinToString("\n")
+        else -> listOf(
+            "判断项：",
+            "- 是否达成「本节要写到的」与「写完的标志」；",
+            "- 是否与前文、人物设定、已确立事实矛盾；",
+            "- 是否违反硬约束。",
+        ).joinToString("\n")
     }
 
     data class ReviewerInput(
@@ -280,6 +312,8 @@ object PromptTemplates {
         val directiveNotes: String = "",
         /** 应用 directive 之后的**有效目标**；审查必须按它判，而不是原计划目标。 */
         val effectiveGoal: String? = null,
+        /** 审查标准随类型变：场景允许安静段落，小说要求推进情节。 */
+        val projectType: ProjectType = ProjectType.TEACHING,
 )
 
     fun reviewer(input: ReviewerInput): String = buildString {
@@ -332,6 +366,9 @@ object PromptTemplates {
                 appendLine()
             }
         }
+        appendLine("[REVIEW_CRITERIA]")
+        appendLine(reviewCriteria(input.projectType))
+        appendLine()
         appendLine("[CURRENT_UNIT_PLAN]")
         appendLine("本节要写到的：" + (input.effectiveGoal ?: input.unit.goal))
         input.unit.completionCriteria.forEach { appendLine("写完的标志：" + it) }

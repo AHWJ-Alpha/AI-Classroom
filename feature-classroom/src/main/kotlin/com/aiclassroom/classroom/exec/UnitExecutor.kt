@@ -207,6 +207,7 @@ class UnitExecutor(
                                     snapshot = snapshot,
                                     directiveNotes = unit.directive?.notes.orEmpty(),
                                     effectiveGoal = unit.directive?.effectiveGoal(planned.goal),
+                                    projectType = unit.type,
                                 ),
                             ),
                         ),
