@@ -676,6 +676,7 @@ private fun blockText(block: ContentBlock): String = when (block) {
     is ContentBlock.Choice -> block.prompt
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun CreateProjectDialog(
     onDismiss: () -> Unit,
@@ -698,7 +699,11 @@ private fun CreateProjectDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // 可换行：中文标签比英文宽，固定一行会把最后一个选项裁成一条边。
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     ProjectType.values().forEach { t ->
                         FilterChip(
                             selected = type == t,
