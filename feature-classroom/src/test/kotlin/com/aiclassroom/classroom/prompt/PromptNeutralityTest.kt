@@ -159,4 +159,13 @@ class PromptNeutralityTest {
         assertTrue(types.contains("explanation"))
         assertTrue(types.contains("exercise"))
     }
+
+    @Test
+    fun `场景审查细则覆盖重复桥段与时间边界`() {
+        val c = PromptTemplates.reviewCriteria(ProjectType.SCENE)
+        assertTrue(c.contains("时间是否只向前"))
+        assertTrue(c.contains("重复"), "重复桥段要能被查出来")
+        assertTrue(c.contains("越权知情"))
+        assertTrue(c.contains("没有产生新的持久状态变化"), "允许空状态节")
+    }
 }
