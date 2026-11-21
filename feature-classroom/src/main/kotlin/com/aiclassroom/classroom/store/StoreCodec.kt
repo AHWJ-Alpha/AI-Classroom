@@ -277,8 +277,16 @@ object StoreCodec {
         "summary" to Json.of(d.summary),
         "usedScenes" to Json.arr(d.usedScenes.map { Json.of(it) }),
         "runId" to Json.of(d.runId?.value ?: ""),
-        "fencingToken" to Json.of(d.fencingToken.toInt()),
-        "updatedAt" to Json.of(d.updatedAt.toInt()),
+        "owner" to Json.of(d.owner),
+        "fencingToken" to Json.of(d.fencingToken),
+        "updatedAt" to Json.of(d.updatedAt),
+        "candidateVersion" to Json.of(d.candidateVersion),
+        "phase" to Json.of(d.phase.name),
+        "callCount" to Json.of(d.callCount),
+        "failStreak" to Json.of(d.failStreak),
+        "lastError" to Json.of(d.lastError),
+        "committedRevisionId" to Json.of(d.committedRevisionId?.value),
+        "review" to (d.review?.let { review(it) } ?: Json.Null),
         "segments" to Json.arr(d.segments.map { segment(it) }),
     )
 
@@ -294,15 +302,27 @@ object StoreCodec {
             summary = o["summary"].asString() ?: "",
             usedScenes = o["usedScenes"].asArray().mapNotNull { it.asString() },
             runId = o["runId"].asString()?.takeIf { it.isNotBlank() }?.let { RunId(it) },
-            fencingToken = (o["fencingToken"].asInt() ?: 0).toLong(),
-            updatedAt = (o["updatedAt"].asInt() ?: 0).toLong(),
+            owner = o["owner"].asString(),
+            fencingToken = o["fencingToken"].asLong() ?: 0,
+            updatedAt = o["updatedAt"].asLong() ?: 0,
+            candidateVersion = o["candidateVersion"].asInt() ?: 0,
+            phase = enumOr(o["phase"].asString(), DraftPhase.GENERATING),
+            callCount = o["callCount"].asInt() ?: 0,
+            failStreak = o["failStreak"].asInt() ?: 0,
+            lastError = o["lastError"].asString().orEmpty(),
+            committedRevisionId = o["committedRevisionId"].asString()?.let(::RevisionId),
+            review = o["review"].takeIf { it != null && it !is Json.Null }?.let { review(it) },
         )
     }
 
     private fun segment(s: DraftSegment): Json = Json.obj(
         "index" to Json.of(s.index),
         "chars" to Json.of(s.chars),
-        "createdAt" to Json.of(s.createdAt.toInt()),
+        "createdAt" to Json.of(s.createdAt),
+        "summary" to Json.of(s.summary),
+        "finished" to Json.of(s.finished),
+        "unresolvedItems" to Json.arr(s.unresolvedItems.map { Json.of(it) }),
+        "objectivesCovered" to Json.arr(s.objectivesCovered.map { Json.of(it) }),
         "text" to Json.of(s.text),
         // 块与事件原样存档，回读时由 ContentCodec 还原。
         "content" to ContentCodec.encode(
@@ -325,7 +345,11 @@ object StoreCodec {
             blocks = content?.blocks ?: emptyList(),
             events = content?.events ?: emptyList(),
             chars = o["chars"].asInt() ?: 0,
-            createdAt = (o["createdAt"].asInt() ?: 0).toLong(),
+            createdAt = o["createdAt"].asLong() ?: 0,
+            summary = o["summary"].asString().orEmpty(),
+            finished = o["finished"].asBool() ?: false,
+            unresolvedItems = o["unresolvedItems"].asArray().mapNotNull { it.asString() },
+            objectivesCovered = o["objectivesCovered"].asArray().mapNotNull { it.asString() },
         )
     }
 

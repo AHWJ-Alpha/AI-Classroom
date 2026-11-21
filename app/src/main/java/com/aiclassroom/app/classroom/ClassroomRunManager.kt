@@ -101,6 +101,7 @@ object ClassroomRunManager {
         // 这里只负责入队与状态投影，不再自己跑协程 —— 避免双执行。
         _notice.value = if (staleOnly) "正在重写待复查的单元…" else "正在生成…"
         _running.value = true
+        cancelJob?.cancel()
         ClassroomRunWorker.schedule(context, projectId, staleOnly)
 
         // 状态以仓库为准：Worker 结束后自然收敛，不依赖 Activity 存活。
@@ -110,7 +111,10 @@ object ClassroomRunManager {
                 // 只认「有效 run」：状态 RUNNING 但租约早已过期的记录是死任务，
                 // 用它判断会让界面永远显示「生成中」，用户既不能继续也不能重来。
                 val now = service.clock()
-                val active = service.store.runs(projectId).any {
+                val scheduled = androidx.work.WorkManager.getInstance(context.applicationContext)
+                    .getWorkInfosForUniqueWork(ClassroomRunWorker.workName(projectId)).get()
+                    .any { !it.state.isFinished }
+                val active = scheduled || service.store.runs(projectId).any {
                     it.status == RunStatus.RUNNING && it.owner != null && it.leaseUntil > now
                 }
                 if (!active) {

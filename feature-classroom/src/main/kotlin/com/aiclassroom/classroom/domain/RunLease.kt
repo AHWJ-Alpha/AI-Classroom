@@ -99,12 +99,15 @@ object RunLease {
             val maxToken = (others.map { it.fencingToken } + run.fencingToken).maxOrNull() ?: 0L
             // 只要项目里已经有人持有过执行权，这次接管就算换人 —— 令牌必须递增，
             // 否则旧执行者手里的令牌仍然有效。
-            val switching = others.any { it.owner != null } ||
-                (run.owner != null && run.owner != owner)
             // 令牌从 1 开始：0 专门留给「没有执行者」。
             // 否则「令牌为 0」既可能是初始值，也可能是合法授权，守卫层无法据此判断是否被接管。
             val token = maxToken + 1
             val until = now + ttlMillis
+            for (old in others.filter { it.owner != null || it.status == RunStatus.RUNNING }) {
+                store.saveRun(old.copy(owner = null, leaseUntil = 0,
+                    status = if (old.status == RunStatus.RUNNING || old.status == RunStatus.PAUSE_REQUESTED) RunStatus.PAUSED else old.status,
+                    error = "执行权已由新的任务接管", updatedAt = now))
+            }
             store.saveRun(
                 run.copy(
                     owner = owner,
@@ -130,6 +133,8 @@ object RunLease {
         return store.transaction {
             val run = store.run(runId) ?: return@transaction false
             if (run.owner != owner) return@transaction false
+            if (run.leaseUntil <= now || store.runs(run.projectId).maxOfOrNull { it.fencingToken } != run.fencingToken)
+                return@transaction false
             store.saveRun(run.copy(leaseUntil = now + ttlMillis, updatedAt = now))
             true
         }
@@ -149,13 +154,13 @@ object RunLease {
     ): Validation {
         val now = clock()
         val run = store.run(runId) ?: return Validation.Invalid("任务不存在")
-        if (run.owner != null && run.owner != owner) {
+        if (run.owner != owner) {
             return Validation.Invalid("执行者已变更（当前 " + run.owner + "）")
         }
         if (run.fencingToken != token) {
             return Validation.Invalid("执行令牌已过期（期望 " + run.fencingToken + "，收到 " + token + "）")
         }
-        if (run.leaseUntil in 1 until now) {
+        if (run.leaseUntil <= now) {
             return Validation.Invalid("租约已过期")
         }
         return Validation.Valid
@@ -184,10 +189,11 @@ object RunLease {
         }
         val run = runs.firstOrNull { it.id == runId }
             ?: return Validation.Invalid("任务不存在")
-        if (run.owner != null && run.owner != owner) {
+        if (run.fencingToken != token || token <= 0) return Validation.Invalid("执行令牌不匹配")
+        if (run.owner != owner) {
             return Validation.Invalid("执行者已变更（当前 " + run.owner + "）")
         }
-        if (run.leaseUntil in 1 until now) {
+        if (run.leaseUntil <= now) {
             return Validation.Invalid("租约已过期")
         }
         return Validation.Valid

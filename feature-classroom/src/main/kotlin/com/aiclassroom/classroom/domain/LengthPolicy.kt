@@ -109,9 +109,9 @@ sealed interface LengthPlan {
 
         /** 每节/每章 N 字（支持 1.2 万字）。 */
         private fun perUnitWords(text: String): Int? {
-            val m = Regex("(?:每|单)(?:节|章|段)([0-9]+(?:\\.[0-9]+)?)万字?").find(text)
+            val m = Regex("(?:(?:每|单)(?:节|章|段)|至少)([0-9]+(?:\\.[0-9]+)?)万字?").find(text)
             if (m != null) return scaled(m.groupValues[1], tenThousand = true)
-            val m2 = Regex("(?:每|单)(?:节|章|段)([0-9]+)字").find(text)
+            val m2 = Regex("(?:(?:每|单)(?:节|章|段)|至少)([0-9]+)字").find(text)
             return m2?.groupValues?.get(1)?.toIntOrNull()
         }
 

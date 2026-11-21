@@ -21,6 +21,7 @@ object ReviewParser {
             ?: return Parsed(null, listOf("审查 JSON 无法解析"))
 
         val o = root.asObject()
+        if (o["issues"] !is Json.Arr) return Parsed(null, listOf("审查缺少 issues 数组"))
         val issues = o["issues"].asArray().mapIndexed { i, item ->
             val m = item.asObject()
             ReviewIssue(

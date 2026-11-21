@@ -32,12 +32,19 @@ object SceneContinuationPrompt {
         val usedScenes: List<String>,
         val tailText: String,
         val mustFinish: Boolean,
+        val frozenContext: String = "",
+        val correction: String = "",
     )
 
     fun build(input: Input): String = buildString {
         appendLine("[TASK_ROLE]")
-        appendLine("你在写一段共同生活的时间线，不是教案、不是梗概。")
+        appendLine("你在写一段共同生活的时间线，以具体动作和对白展开。")
         appendLine("只输出新增内容，不复述已写部分，不写本节总结。")
+        if (input.frozenContext.isNotBlank()) {
+            appendLine("[FROZEN_CONTEXT]")
+            appendLine(input.frozenContext)
+            appendLine("[/FROZEN_CONTEXT]")
+        }
         appendLine()
         appendLine("[DATA:REQUEST]")
         appendLine(input.rawRequest)
@@ -55,7 +62,10 @@ object SceneContinuationPrompt {
         appendLine()
         if (input.characters.isNotEmpty()) {
             appendLine("[DATA:CHARACTERS]")
-            input.characters.forEach { appendLine("- " + it.name) }
+            input.characters.forEach {
+                appendLine("- id=" + it.id.value + "；姓名=" + it.name)
+                appendLine("  人格=" + it.corePersonality + "；语言=" + it.speechStyle)
+            }
             appendLine("[/DATA:CHARACTERS]")
             appendLine()
         }
@@ -90,10 +100,12 @@ object SceneContinuationPrompt {
         appendLine("- 不要旁白解释心情，让人物用行为说话；")
         appendLine("- 块类型只能是 narration / dialogue / heading；")
         appendLine("- dialogue 必须带 speakerId，且只能用上面列出的角色 id。")
+        if (input.characters.isEmpty()) appendLine("没有已注册角色，不输出 dialogue；用 narration 描写动作、内心和引号中的对白。")
         appendLine()
         appendLine("[OUTPUT_SCHEMA]")
         appendLine("只输出一个 JSON 对象：")
         appendLine(SCHEMA)
         appendLine("没有事件就返回空 events，不要为凑数编造。")
+        if (input.correction.isNotBlank()) appendLine("上一轮未被接收，请纠正：" + input.correction)
     }
 }

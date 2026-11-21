@@ -47,7 +47,7 @@ class SceneContinuationTest {
             "{\"id\":\"b1\",\"type\":\"narration\",\"text\":\"" + text + "\"}," +
             "{\"id\":\"b2\",\"type\":\"dialogue\",\"speakerId\":\"pc-a\",\"text\":\"她说了一句话\"}]," +
             "\"events\":[{\"id\":\"e1\",\"sourceBlockIds\":[\"b1\"],\"description\":\"发生了一件事\"}]," +
-            "\"unresolvedItems\":[],\"finished\":false}"
+            "\"unresolvedItems\":[],\"finished\":true}"
 
     private fun setup(): Pair<InMemoryStore, DraftStore> {
         val s = InMemoryStore()
@@ -86,7 +86,7 @@ class SceneContinuationTest {
         ),
         outlineSummary = "一个月同居",
         timeRange = "第 1-3 天",
-        characters = emptyList(),
+        characters = listOf(CharacterProfile(CharacterId("pc-a"), projectId, "她", "借住者", "谨慎", "尊重", "细致", "简短", emptyList())),
         plan = plan,
         inputVersion = "v1",
         candidateId = "c1",

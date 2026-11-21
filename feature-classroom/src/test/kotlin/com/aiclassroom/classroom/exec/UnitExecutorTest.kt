@@ -128,6 +128,16 @@ class UnitExecutorTest {
     }
 
     @Test
+    fun `网络重试成功保留重试正文 不再被首次失败内容覆盖`() = runBlocking {
+        val store = storeWithProject()
+        val gateway = FakeGateway(failed(ModelCallError.Network("offline")), ok(validContent), ok(cleanReview), ok(validPatch))
+        val outcome = executor(store, gateway).execute(projectId, unitId, runId)
+        assertIs<UnitOutcome.Committed>(outcome)
+        assertNotNull(store.officialRevision(unitId))
+        assertEquals(4, gateway.prompts.size)
+    }
+
+    @Test
     fun `审查一直阻断时进入待处理且不提交`() = runBlocking {
         val store = storeWithProject()
         val gateway = FakeGateway(

@@ -14,6 +14,7 @@ android {
         targetSdk = 35
         versionCode = 47
         versionName = "4.1.0"
+        testInstrumentationRunner = "com.aiclassroom.app.classroom.SceneTestInstrumentation"
     }
 
     // 签名：debug 与 release 共用同一把 developer 钥匙。

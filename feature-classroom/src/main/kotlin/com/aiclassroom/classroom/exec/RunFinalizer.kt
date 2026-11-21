@@ -32,7 +32,7 @@ object RunFinalizer {
         fenceToken: Long? = null,
     ): ClassroomEvent? = store.transaction {
         if (owner != null && fenceToken != null && run != null) {
-            val check = RunLease.validate(store, run.id, owner, fenceToken, clock)
+            val check = RunLease.validateForProject(store, project.id, run.id, owner, fenceToken, clock)
             if (check is RunLease.Validation.Invalid) {
                 // 旧执行者不能把新任务的终态盖掉。
                 return@transaction null

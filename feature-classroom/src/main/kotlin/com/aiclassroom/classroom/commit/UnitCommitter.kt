@@ -17,6 +17,8 @@ data class CommitRequest(
     /** 执行者标识与令牌；两者都给出时才校验，用于挡住过期执行者。 */
     val owner: String? = null,
     val fencingToken: Long? = null,
+    val draftGuard: DraftWriteGuard? = null,
+    val inputVersionNow: (() -> String)? = null,
 )
 
 /**
@@ -35,10 +37,29 @@ class UnitCommitter(
 ) {
 
     fun commit(request: CommitRequest): CommitResult {
+        return store.transaction { commitLocked(request) }
+    }
+
+    private fun commitLocked(request: CommitRequest): CommitResult {
         val unit = store.unit(request.unitId)
             ?: return CommitResult.Rejected(
                 CommitRejection.WrongStatus(UnitStatus.FAILED),
             )
+        request.draftGuard?.let { guard ->
+            val draft = store.draft(request.projectId, request.unitId)
+                ?: return CommitResult.Rejected(CommitRejection.StaleInput("草稿不存在"))
+            if (draft.candidateId != guard.candidateId || draft.candidateVersion != guard.expectedCandidateVersion ||
+                draft.inputVersion != guard.expectedInputVersion || request.inputVersionNow?.invoke() != draft.inputVersion)
+                return CommitResult.Rejected(CommitRejection.StaleInput("草稿或输入已更新"))
+            if (draft.phase == DraftPhase.COMMITTED && draft.committedRevisionId == request.revision.id) {
+                val existingRevision = store.revision(request.revision.id)
+                val existingCheckpoint = store.runs(request.projectId).mapNotNull { store.checkpoint(it.id) }
+                    .firstOrNull { it.revisionId == request.revision.id }
+                if (existingRevision != null && existingCheckpoint != null) return CommitResult.Committed(existingCheckpoint, existingRevision)
+            }
+            if (draft.phase != DraftPhase.READY_TO_COMMIT || draft.review == null || draft.review.hasBlocking)
+                return CommitResult.Rejected(CommitRejection.StaleInput("草稿尚未通过审查"))
+        }
 
         // 幂等：同一单元已经用同一把键提交过，直接返回既有结果，不再造新版本。
         val existing = store.checkpoint(request.runId)
@@ -219,6 +240,10 @@ class UnitCommitter(
                 )
             }
 
+            request.draftGuard?.let { guard ->
+                val marked = DraftStore(store, clock).clearForCommit(guard, committedRevision.id)
+                check(marked is DraftOutcome.Applied) { "草稿提交标记失败：$marked" }
+            }
             CommitResult.Committed(checkpoint, committedRevision)
         }
     }

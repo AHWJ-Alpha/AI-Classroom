@@ -9,6 +9,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import java.util.concurrent.Executors
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
@@ -29,11 +33,14 @@ class AndroidHttpTransport(
     private val connectTimeoutMs: Int = 20_000,
     private val readTimeoutMs: Int = 180_000,
 ) : HttpTransport {
+    private companion object {
+        val io = Executors.newCachedThreadPool { task -> Thread(task, "classroom-http").apply { isDaemon = true } }
+    }
 
     override suspend fun post(
         request: HttpRequest,
         onLine: (String) -> Unit,
-    ): HttpExchange = withContext(Dispatchers.IO) {
+    ): HttpExchange = suspendCancellableCoroutine { continuation ->
         val connection = (URL(request.url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
@@ -44,11 +51,27 @@ class AndroidHttpTransport(
             request.headers.forEach { (k, v) -> setRequestProperty(k, v) }
         }
 
-        // 取消时立刻断开 socket，避免线程继续阻塞在 readLine 上。
-        val handle = coroutineContext.job.invokeOnCompletion { cause ->
-            if (cause != null) connection.disconnect()
+        // 独立阻塞任务：取消回调在取消开始时触发，不等 readLine 返回后才 disconnect。
+        val future = io.submit {
+        try {
+            continuation.context.ensureActive()
+            val exchange = exchange(connection, request, onLine) { continuation.context.ensureActive() }
+            if (continuation.isActive) continuation.resume(exchange)
+        } catch (t: Throwable) {
+            if (continuation.isActive) continuation.resumeWithException(t)
+        } finally {
+            runCatching { connection.disconnect() }
         }
+        }
+        continuation.invokeOnCancellation {
+            future.cancel(true)
+            // 部分 ROM 的 disconnect 自己会等待网络锁，不让取消线程被它阻塞。
+            io.execute { runCatching { connection.disconnect() } }
+        }
+    }
 
+    private fun exchange(connection: HttpURLConnection, request: HttpRequest,
+        onLine: (String) -> Unit, ensureActive: () -> Unit): HttpExchange {
         try {
             connection.outputStream.use { it.write(request.body.toByteArray(Charsets.UTF_8)) }
 
@@ -63,8 +86,9 @@ class AndroidHttpTransport(
                 BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
                     if (status in 200..299) {
                         while (true) {
-                            coroutineContext.ensureActive()
+                            ensureActive()
                             val line = reader.readLine() ?: break
+                            ensureActive()
                             onLine(line)
                         }
                         completed = true
@@ -75,7 +99,7 @@ class AndroidHttpTransport(
                 }
             }
 
-            HttpExchange(
+            return HttpExchange(
                 status = status,
                 completed = completed,
                 retryAfterMs = retryAfter,
@@ -88,7 +112,6 @@ class AndroidHttpTransport(
             connection.disconnect()
             throw t
         } finally {
-            handle.dispose()
             runCatching { connection.disconnect() }
         }
     }

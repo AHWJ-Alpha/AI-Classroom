@@ -38,6 +38,7 @@ data class UnitDraft(
     /** 应用层调用计数与连续失败数：恢复后不清零。 */
     val callCount: Int = 0,
     val failStreak: Int = 0,
+    val review: ReviewReport? = null,
     val committedRevisionId: RevisionId? = null,
     val lastError: String = "",
     val updatedAt: EpochMillis = 0,
@@ -54,11 +55,20 @@ data class DraftSegment(
     val events: List<UnitEvent> = emptyList(),
     val chars: Int = 0,
     val createdAt: EpochMillis = 0,
+    val summary: String = "",
+    val unresolvedItems: List<String> = emptyList(),
+    val objectivesCovered: List<String> = emptyList(),
+    val finished: Boolean = false,
 ) {
     /** 用于识别重复响应：同段内容一致就不再累加。 */
     /**
      * 重复响应判定用正文内容，不用 chars —— chars 是程序算出来的派生物，
      * 把它算进去会让「同一段重复送达」被误判成冲突。
      */
-    val checksum: String get() = text.trim()
+    val checksum: String get() {
+        val content = UnitContent(unitId = UnitId(""), planVersion = 0, title = "", blocks = blocks, events = events)
+        val raw = com.aiclassroom.classroom.json.JsonWriter.write(com.aiclassroom.classroom.store.ContentCodec.encode(content))
+        return java.security.MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }
 }

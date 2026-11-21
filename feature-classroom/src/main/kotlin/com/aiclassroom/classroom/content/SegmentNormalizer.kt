@@ -23,6 +23,9 @@ object SegmentNormalizer {
         knownSpeakers: Set<CharacterId>,
     ): Result {
         val problems = mutableListOf<String>()
+        if (content.blocks.map { it.id }.distinct().size != content.blocks.size) problems += "块 id 重复"
+        if (content.events.map { it.id }.distinct().size != content.events.size) problems += "事件 id 重复"
+        if (content.blocks.count { it is ContentBlock.Heading } > 1) problems += "整节最多一个标题"
         val idMap = HashMap<String, String>()
 
         val blocks = content.blocks.mapIndexed { i, block ->
@@ -34,7 +37,7 @@ object SegmentNormalizer {
             if (type == "heading" && index > 1) {
                 problems += "续写段不允许新增标题"
             }
-            if (block is ContentBlock.Dialogue && knownSpeakers.isNotEmpty() &&
+            if (block is ContentBlock.Dialogue &&
                 block.speakerId !in knownSpeakers
             ) {
                 problems += "台词引用了不存在的角色：" + block.speakerId.value

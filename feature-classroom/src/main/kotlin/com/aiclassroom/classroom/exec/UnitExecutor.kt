@@ -16,6 +16,11 @@ import com.aiclassroom.classroom.gateway.ModelRequest
 import com.aiclassroom.classroom.prompt.PromptTemplates
 import com.aiclassroom.classroom.repository.ClassroomStore
 import com.aiclassroom.classroom.repository.CommitResult
+import com.aiclassroom.classroom.repository.DraftStore
+import com.aiclassroom.classroom.repository.DraftWriteGuard
+import com.aiclassroom.classroom.store.ContentCodec
+import com.aiclassroom.classroom.json.JsonWriter
+import kotlinx.coroutines.*
 
 sealed interface UnitOutcome {
     data class Committed(val revisionId: RevisionId, val checkpoint: Checkpoint) : UnitOutcome
@@ -56,6 +61,7 @@ class UnitExecutor(
     /** 执行者与令牌：随提交一起校验，挡住过期执行者。 */
     private val runOwner: String? = null,
     private val fencingToken: Long? = null,
+    private val drafts: DraftStore = DraftStore(store, clock),
 ) : UnitRunner {
 
     override suspend fun execute(projectId: ProjectId, unitId: UnitId, runId: RunId): UnitOutcome {
@@ -96,6 +102,10 @@ class UnitExecutor(
         val knownCharacters = characters.map { it.id }.toSet()
         // 角色视角只给可见事实；作者视角给全量。
         val visibleFacts = FactsForView.factsFor(snapshot, store.facts(projectId))
+
+        if (unit.type == ProjectType.SCENE) {
+            return executeScene(projectId, unit, runId, spec, outline, planned, snapshot, characters, states, visibleFacts)
+        }
 
         var revisionId = RevisionId.new()
         var attempt = 0
@@ -146,7 +156,7 @@ class UnitExecutor(
                 )
             }
 
-            val result = gateway.complete(
+            var result = gateway.complete(
                 ModelRequests.fromPolicy(
                     policy = policy,
                     messages = listOf(ModelMessage(ModelMessage.Role.USER, prompt)),
@@ -167,9 +177,10 @@ class UnitExecutor(
                             expectJson = true,
                         ),
                     )
+                    recordAttempt(runId, unitId, RunPhase.GENERATING, prompt.hashCode().toString(), retry)
                     if (retry.error == null && retry.finishReason !is FinishReason.Length) {
                         // 重试成功，继续正常流程。
-                        text = retry.content
+                        result = retry
                         lastReason = ""
                     } else {
                         return UnitOutcome.NetworkInterrupted(describe(retry))
@@ -284,6 +295,149 @@ class UnitExecutor(
         }
     }
 
+    /** 实际产品 SCENE 入口：恢复同库草稿，完整正文经审查后才允许提交。 */
+    private suspend fun executeScene(
+        projectId: ProjectId, unit: ClassroomUnit, runId: RunId,
+        spec: ProjectSpec, outline: ProjectOutline, planned: PlannedUnit,
+        snapshot: ContextSnapshot?, characters: List<CharacterProfile>,
+        states: List<CharacterState>, facts: List<FactRevision>,
+    ): UnitOutcome = coroutineScope {
+        val owner = runOwner ?: return@coroutineScope UnitOutcome.NeedsAttention("场景必须通过持久执行入口取得执行权")
+        val token = fencingToken ?: return@coroutineScope UnitOutcome.NeedsAttention("缺少执行令牌")
+        val plan = LengthPlan.parse(spec.rawRequest + "\n" + spec.expectedLength, ProjectType.SCENE, outline.units.size)
+        if (plan !is LengthPlan.Ok) return@coroutineScope UnitOutcome.NeedsAttention((plan as LengthPlan.Unsupported).reason)
+        val inputNow = { SceneInputVersion.compute(store, projectId, unit.id, policy) }
+        val input = store.transaction { inputNow() }
+        val old = drafts.current(projectId, unit.id)
+        val resume = old?.takeIf { it.inputVersion == input && it.phase != DraftPhase.INVALIDATED && it.phase != DraftPhase.COMMITTED }
+        val candidateId = resume?.candidateId ?: java.util.UUID.randomUUID().toString()
+        var candidateVersion = resume?.candidateVersion ?: 0
+        var guard = DraftWriteGuard(projectId, unit.id, candidateId, input, candidateVersion, runId, owner, token)
+        val revisionId = RevisionId(candidateId)
+        val effectivePlan = planned.copy(goal = unit.directive?.effectiveGoal(planned.goal) ?: planned.goal)
+        // 复用原生成器的权限过滤与资料检索；删除旧单次输出和篇幅契约。
+        val context = PromptTemplates.generator(PromptTemplates.GeneratorInput(
+            spec = spec, outlineSummary = outline.mainLine + "；" + outline.globalGoal, unit = effectivePlan,
+            characters = characters, characterStates = states, facts = facts,
+            previousText = previousText(projectId, unit, outline), directive = unit.directive,
+            snapshot = snapshot, projectType = ProjectType.SCENE,
+        )).substringBefore("[OUTPUT_SCHEMA]").lineSequence()
+            .filterNot { it.contains("本节正文不少于") }.joinToString("\n")
+        val parent = currentCoroutineContext().job
+        val heartbeat = launch {
+            while (isActive) {
+                delay(30_000)
+                if (!RunLease.renew(store, runId, owner, LEASE_TTL_MS, clock)) {
+                    parent.cancel(CancellationException("执行租约已失效"))
+                    return@launch
+                }
+            }
+        }
+        try {
+            val generated = SceneContinuation(gateway, store, drafts, clock).run(SceneContinuation.Request(
+                projectId, unit.copy(goal = effectivePlan.goal), spec, outline.mainLine, planned.title,
+                characters, plan, input, candidateId, candidateVersion, runId, owner, token, policy,
+                planVersion = outline.version, frozenContext = context, inputVersionNow = inputNow,
+                onAttempt = { prompt, result -> recordAttempt(runId, unit.id, RunPhase.GENERATING, prompt.hashCode().toString(), result) },
+            ))
+            var content = when (generated) {
+                is SceneContinuation.Result.Paused -> return@coroutineScope UnitOutcome.NetworkInterrupted(generated.reason)
+                is SceneContinuation.Result.NeedsAttention -> return@coroutineScope UnitOutcome.NeedsAttention(generated.reason)
+                is SceneContinuation.Result.Assembled -> generated.content
+            }
+            var text = JsonWriter.write(ContentCodec.encode(content))
+            // 不截取正文：每个块和每个事件都进入审查，包括末尾的内容。
+            var review = drafts.current(projectId, unit.id)?.review
+            var revisionRounds = 0
+            while (review == null) {
+                val reserved = drafts.reserveCall(guard, inputNow)
+                if (!reserved.ok()) return@coroutineScope UnitOutcome.NeedsAttention("审查预算/输入失效：$reserved")
+                val prompt = PromptTemplates.reviewer(PromptTemplates.ReviewerInput(
+                    spec, effectivePlan, text, snapshot = snapshot, directiveNotes = unit.directive?.notes.orEmpty(),
+                    effectiveGoal = effectivePlan.goal, projectType = ProjectType.SCENE,
+                ))
+                val call = gateway.complete(ModelRequests.fromPolicy(policy,
+                    listOf(ModelMessage(ModelMessage.Role.USER, prompt)), expectJson = true))
+                recordAttempt(runId, unit.id, RunPhase.REVIEWING, input, call)
+                if (call.error != null) return@coroutineScope UnitOutcome.Failed(describe(call))
+                if (!call.transportCompleted || call.finishReason is FinishReason.Length)
+                    return@coroutineScope UnitOutcome.NeedsAttention("审查输出不完整，候选已保留")
+                review = ReviewParser.parse(call.content, revisionId, clock()).report
+                    ?: return@coroutineScope UnitOutcome.NeedsAttention("审查格式无效，候选已保留")
+                if (review.hasBlocking) {
+                    val issues = review.issues.filter { it.blocking }
+                    if (revisionRounds++ >= maxReviseAttempts)
+                        return@coroutineScope UnitOutcome.NeedsAttention("场景审查未通过，候选保留：" + issues.joinToString { it.rule })
+                    val draft = requireNotNull(drafts.current(projectId, unit.id))
+                    // 明确定位到问题块的分段；全局问题不猜测改写范围。
+                    val affected = draft.segments.filter { s -> issues.any { i -> s.blocks.any { it.id == i.blockId } } }
+                    if (affected.isEmpty() || issues.any { it.blockId == null })
+                        return@coroutineScope UnitOutcome.NeedsAttention("全局审查需要人工明确修改范围，草稿已保留：" + issues.joinToString { it.rule })
+                    for (segment in affected) {
+                        val budget = drafts.reserveCall(guard, inputNow)
+                        if (!budget.ok()) return@coroutineScope UnitOutcome.NeedsAttention("修订被拒：$budget")
+                        val revisionPrompt = context + "\n[LOCAL_REVISION]\n只修订下面这一段，保持其他段落和总目标。" +
+                            "保留人物知识边界，不增加标题，输出完整 blocks/events/unresolvedItems/summary/finished JSON。\n" +
+                            issues.joinToString("\n") { "${it.blockId}: ${it.rule} ${it.evidence}" } +
+                            "\n[PREVIOUS_CONTEXT]\n" + draft.segments.filter { it.index < segment.index }.joinToString("\n") { it.summary } +
+                            "\n[SEGMENT]\n" + JsonWriter.write(ContentCodec.encode(content.copy(blocks = segment.blocks, events = segment.events))) +
+                            "\n[NEXT_CONTEXT]\n" + draft.segments.filter { it.index > segment.index }.joinToString("\n") { it.summary }
+                        val fix = gateway.complete(ModelRequests.fromPolicy(policy,
+                            listOf(ModelMessage(ModelMessage.Role.USER, revisionPrompt)), expectJson = true))
+                        recordAttempt(runId, unit.id, RunPhase.REVISING, input, fix)
+                        if (fix.error != null || !fix.transportCompleted || fix.finishReason is FinishReason.Length)
+                            return@coroutineScope UnitOutcome.NeedsAttention("局部修订失败，原段落保留")
+                        val parsed = UnitContentParser.parse(fix.content, unit.id, outline.version, characters.map { it.id }.toSet(), ProjectType.SCENE)
+                        val normalized = parsed.content?.takeIf { parsed.ok }?.let {
+                            com.aiclassroom.classroom.content.SegmentNormalizer.normalize(it, candidateId, segment.index,
+                                setOf("narration", "dialogue", "heading"), characters.map { c -> c.id }.toSet())
+                        }?.segment ?: return@coroutineScope UnitOutcome.NeedsAttention("修订结构不合法，原段落保留")
+                        val replaced = drafts.replace(guard, normalized.copy(summary = parsed.content!!.events.joinToString { it.description },
+                            finished = segment.finished, unresolvedItems = parsed.content.unresolvedItems), inputNow)
+                        if (!replaced.ok()) return@coroutineScope UnitOutcome.NeedsAttention("修订写入被拒：$replaced")
+                        candidateVersion++
+                        guard = guard.copy(expectedCandidateVersion = candidateVersion)
+                    }
+                    val changed = requireNotNull(drafts.current(projectId, unit.id))
+                    content = content.copy(blocks = changed.segments.flatMap { it.blocks }, events = changed.segments.flatMap { it.events },
+                        unresolvedItems = changed.segments.last().unresolvedItems)
+                    if (changed.totalChars < com.aiclassroom.classroom.content.TextCount.acceptMin(plan.unitTarget))
+                        return@coroutineScope UnitOutcome.NeedsAttention("修订后篇幅不足，草稿已保留，请继续补写")
+                    text = JsonWriter.write(ContentCodec.encode(content))
+                    review = null
+                    continue
+                }
+                val reviewed = drafts.update(guard, inputNow) { it.copy(review = review, phase = DraftPhase.PATCHING) }
+                if (!reviewed.ok()) return@coroutineScope UnitOutcome.NeedsAttention("保存审查被拒：$reviewed")
+            }
+            val reserved = drafts.reserveCall(guard, inputNow)
+            if (!reserved.ok()) return@coroutineScope UnitOutcome.NeedsAttention("状态提取预算/输入失效：$reserved")
+            val patchResult = proposePatch(projectId, unit.id, revisionId, content,
+                characters.map { it.id }.toSet(), effectivePlan, facts.map { it.factId }, ProjectType.SCENE)
+            if (patchResult is PatchResult.Failed) return@coroutineScope UnitOutcome.NeedsAttention(patchResult.reason)
+            val patch = (patchResult as? PatchResult.Ready)?.patch
+            val prepared = drafts.update(guard, inputNow) { it.copy(phase = DraftPhase.READY_TO_COMMIT) }
+            if (!prepared.ok()) return@coroutineScope UnitOutcome.NeedsAttention("候选已失效：$prepared")
+            val outcome = store.transaction {
+                if (inputNow() != input) return@transaction null
+                val current = store.unit(unit.id) ?: return@transaction null
+                store.upsertUnit(current.copy(status = UnitStatus.DRAFT_READY))
+                committer.commit(CommitRequest(
+                    projectId, unit.id,
+                    UnitRevision(revisionId, unit.id, projectId, 0, text, content, review = review,
+                        statePatch = patch, modelName = policy.primaryModel, createdAt = clock(), sourceHash = input),
+                    patch, runId, "$candidateId:$candidateVersion", spec.version, outline.version, owner, token,
+                    draftGuard = guard, inputVersionNow = inputNow,
+                ))
+            }
+            when (outcome) {
+                is CommitResult.Committed -> UnitOutcome.Committed(outcome.revision.id, outcome.checkpoint)
+                is CommitResult.Rejected -> UnitOutcome.NeedsAttention("提交被拒：${outcome.rejection}")
+                null -> UnitOutcome.NeedsAttention("输入已更新，旧候选未提交")
+            }
+        } finally { heartbeat.cancel() }
+    }
+
 
     /** 让模型从最终正文提出状态变更；失败或没有依据时返回 null，不阻断正文提交。 */
     /**
@@ -331,6 +485,10 @@ class UnitExecutor(
                 expectJson = true,
             ),
         )
+        store.runs(projectId).firstOrNull { it.owner == runOwner && it.status == RunStatus.RUNNING }?.let {
+            recordAttempt(it.id, unitId, RunPhase.COMMITTING, prompt.hashCode().toString(), call)
+        }
+        if (!call.transportCompleted || call.finishReason is FinishReason.Length) return PatchResult.Failed("状态提取输出不完整")
         if (call.error != null) {
             return PatchResult.Failed("状态提取调用失败：" + (call.error::class.simpleName ?: "未知"))
         }
@@ -360,13 +518,14 @@ class UnitExecutor(
         }
 
         // 每个涉及角色各自记下当前版本：多人物补丁不能拿第一个人的版本代表全部。
-        val historical = if (StateTimeline.isRewrite(store, projectId, planned.index)) {
+        val isRewrite = StateTimeline.isRewrite(store, projectId, planned.index)
+        val historical = if (isRewrite) {
             StateTimeline.statesBefore(store, projectId, planned.index)
         } else {
             emptyMap()
         }
         val baseVersions = parsed.changes.map { it.actorId }.distinct().associateWith { actor ->
-            historical[actor]?.version ?: store.characterState(projectId, actor)?.version ?: 0
+            if (isRewrite) historical[actor]?.version ?: 0 else store.characterState(projectId, actor)?.version ?: 0
         }
         val first = parsed.changes.first().actorId
         val base = baseVersions[first] ?: 0

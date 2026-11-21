@@ -448,6 +448,20 @@ private fun OverviewView(
                 Column(Modifier.weight(1f)) {
                     Text(u.index.toString() + ". " + u.chapter, fontSize = 14.sp)
                     Text(unitStatusLabel(u.status), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val draft = service.store.draft(project.id, u.id)
+                    if (draft != null && draft.phase != DraftPhase.COMMITTED) {
+                        val phase = when (draft.phase) {
+                            DraftPhase.GENERATING -> "正在续写"
+                            DraftPhase.ASSEMBLED -> "正文已组装"
+                            DraftPhase.REVIEWING -> "正在审查"
+                            DraftPhase.PATCHING -> "核对人物状态"
+                            DraftPhase.READY_TO_COMMIT -> "准备保存"
+                            DraftPhase.INVALIDATED -> "输入已变更"
+                            DraftPhase.COMMITTED -> "已保存"
+                        }
+                        Text("已保存 ${draft.segments.size} 段 · 正文 ${draft.totalChars} 字 · $phase", fontSize = 11.sp)
+                        if (draft.lastError.isNotBlank()) Text(draft.lastError, fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                    }
                 }
                 TextButton(onClick = { onEditUnit(u) }) { Text("调整") }
                 if (u.status == UnitStatus.READY) {

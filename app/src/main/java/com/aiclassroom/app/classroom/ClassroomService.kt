@@ -40,6 +40,8 @@ class ClassroomService(
      * 后台提交的内容会被页面的旧快照写回覆盖 —— 这是会真正丢数据的。
      */
     val store: ClassroomStore = ClassroomServiceProvider.store(context),
+    /** 测试可注入模拟连接，生产仍使用唯一的真实网关装配。 */
+    private val gatewayFactory: (ModelPolicy, String) -> com.aiclassroom.classroom.gateway.ModelGateway = ClassroomGatewayFactory::create,
 ) {
 
     /** 应用启动时调用一次：把上次遗留的「生成中」状态收拾干净。 */
@@ -292,7 +294,7 @@ class ClassroomService(
         if (rawRequest.isBlank()) return PlanResult.Failed("没有原始需求")
 
 
-        val gateway = ClassroomGatewayFactory.create(policy, apiKey)
+        val gateway = gatewayFactory(policy, apiKey)
         val call = gateway.complete(
             ModelRequests.fromPolicy(
                 policy = policy,
@@ -395,7 +397,6 @@ class ClassroomService(
         // 否则那些单元永远不会被重新选中，后面的依赖链会整体卡死。
         // 只恢复当前项目中没有有效执行者的遗留步骤；不能因为启动项目 B
         // 就把项目 A 的 Worker 和已提交检查点重置掉。
-        RunRecovery.recoverProject(store, projectId, clock())
         val now = clock()
         val runId = RunId.new()
 
@@ -407,7 +408,7 @@ class ClassroomService(
                 specVersion = store.latestSpec(projectId)?.version ?: 1,
                 outlineVersion = store.latestOutline(projectId)?.version ?: 0,
                 phase = RunPhase.GENERATING,
-                status = RunStatus.RUNNING,
+                status = RunStatus.QUEUED,
                 totalUnits = units.size,
                 startedAt = now,
                 updatedAt = now,
@@ -417,17 +418,8 @@ class ClassroomService(
                 frozenFallbackModels = policy.fallbackModels,
             ),
         )
-        store.project(projectId)?.let {
-            store.updateProject(
-                it.copy(
-                    lifecycle = ProjectLifecycle.ACTIVE,
-                    currentRunId = runId,
-                    updatedAt = now,
-                ),
-            )
-        }
 
-        val gateway = ClassroomGatewayFactory.create(policy, apiKey)
+        val gateway = gatewayFactory(policy, apiKey)
         val committer = UnitCommitter(store, clock)
         // 任务已落库，现在抢执行权：同一任务同时只能有一个有效提交者。
         val owner = "owner-" + java.util.UUID.randomUUID()
@@ -461,6 +453,17 @@ class ClassroomService(
             is RunLease.Acquired.NotFound -> return RunOutcome.NeedsAttention(0, granted.reason)
         }
 
+        // 取得项目执行权后才恢复单元；此前不能触碰其他仍有效执行者的现场。
+        store.transaction {
+            for (u in store.units(projectId)) {
+                if (u.status in setOf(UnitStatus.GENERATING, UnitStatus.REVIEWING, UnitStatus.REVISING, UnitStatus.DRAFT_READY))
+                    store.upsertUnit(u.copy(status = UnitStatus.PLANNED))
+            }
+            store.project(projectId)?.let {
+                store.updateProject(it.copy(lifecycle = ProjectLifecycle.ACTIVE, currentRunId = runId, updatedAt = now))
+            }
+        }
+
         val executor = UnitExecutor(
             gateway = gateway,
             store = store,
@@ -469,6 +472,7 @@ class ClassroomService(
             policy = policy,
             runOwner = owner,
             fencingToken = leaseToken,
+            drafts = com.aiclassroom.classroom.repository.DraftStore(store, clock),
         )
         return try {
             RunEngine(store, executor, control, clock, owner = owner, fenceToken = leaseToken)
