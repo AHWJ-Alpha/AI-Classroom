@@ -74,7 +74,8 @@ class LengthPolicyTest {
     fun `分段数留出余量且不超过硬上限`() {
         val p = ok("每节 5000 字")
         assertEquals(1200, p.perCallTarget, "单次预算按输出上限收缩")
-        assertTrue(p.maxSegments >= 3, "基础段数之外要有补写余量")
+        // 3000 字按实测 600 字/段估 → 5 段 + 2 余量 = 7
+        assertTrue(p.maxSegments >= 6, "估算要按实测产出，不能按每次要求多少")
         val big = ok("每节 20000 字")
         assertTrue(big.maxSegments <= LengthPlan.MAX_SEGMENTS_HARD)
     }

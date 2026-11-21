@@ -41,6 +41,9 @@ sealed interface LengthPlan {
          */
         const val PER_CALL_RECOMMENDED = 1_200
 
+        /** 实测每段有效产出（汉字/段）：估算分段数用它，不用「每次要求多少」。 */
+        const val ESTIMATED_YIELD = 600
+
         /** 分段硬上限。 */
         const val MAX_SEGMENTS_HARD = 12
 
@@ -97,8 +100,11 @@ sealed interface LengthPlan {
             }
 
             val perCall = minOf(PER_CALL_RECOMMENDED, unitTarget)
-            // 基础估算之外留两段余量：模型常常写不到目标，一次就满很罕见。
-            val base = ceilDiv(unitTarget, perCall)
+            // 分段数不能按「每次要求多少」来估：真机上要求 1200 字，实际每段只写
+            // 400~800 字（实测 5 段共 2800，均值 560）。按 1200 估会少算一半，
+            // 于是刚写够八成就撞上分段上限，报「达到上限仍未写够」。
+            // 这里按实测有效产出 600 字/段来估，再加 2 段余量。
+            val base = ceilDiv(unitTarget, ESTIMATED_YIELD)
             val segments = (base + 2).coerceAtMost(MAX_SEGMENTS_HARD)
 
             return Ok(
