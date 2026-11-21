@@ -49,6 +49,8 @@ internal const val RELEASE_NOTES_TEXT = """
   从缺失的那一段继续，已写好的段落不会被重写。
 - 启动前会清理「占着项目但租约已过期」的僵尸任务，并递增执行令牌。
 
+- 每个课堂新增「查看」：一次看完全部已提交的节，不必一节一节点。
+
 ## 修复
 - 状态提取补全 SetRelationship 需要的 target 与 LearnFact 需要的 factId，
   并列出真实可用的角色与事实 ID；没有变化时允许合法空补丁。
