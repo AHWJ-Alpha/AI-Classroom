@@ -20,7 +20,7 @@ class PlannerBatchTest {
 
     @Test
     fun `解析时忽略范围外的单元`() {
-        val raw = """{\"units\":[{\"index\":1,\"goal\":\"建立边界\",\"completionCriteria\":[\"钥匙交接\"]},{\"index\":9,\"goal\":\"范围外\"}]}"""
+        val raw = """{"units":[{"index":1,"goal":"建立边界","completionCriteria":["钥匙交接"]},{"index":9,"goal":"范围外"}]}"""
         val parsed = PlannerBatch.parse(raw, 1, 4)
         assertEquals(1, parsed.size)
         assertEquals(1, parsed[0].index)
@@ -28,7 +28,7 @@ class PlannerBatchTest {
 
     @Test
     fun `没有 goal 的行被丢弃`() {
-        val raw = """{\"units\":[{\"index\":2,\"goal\":\"  \"}]}"""
+        val raw = """{"units":[{"index":2,"goal":"  "}]}"""
         assertTrue(PlannerBatch.parse(raw, 1, 4).isEmpty())
     }
 }
