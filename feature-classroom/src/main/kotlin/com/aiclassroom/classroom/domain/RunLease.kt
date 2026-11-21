@@ -101,7 +101,9 @@ object RunLease {
             // 否则旧执行者手里的令牌仍然有效。
             val switching = others.any { it.owner != null } ||
                 (run.owner != null && run.owner != owner)
-            val token = if (switching) maxToken + 1 else maxToken
+            // 令牌从 1 开始：0 专门留给「没有执行者」。
+            // 否则「令牌为 0」既可能是初始值，也可能是合法授权，守卫层无法据此判断是否被接管。
+            val token = maxToken + 1
             val until = now + ttlMillis
             store.saveRun(
                 run.copy(

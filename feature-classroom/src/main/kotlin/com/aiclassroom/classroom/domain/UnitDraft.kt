@@ -1,13 +1,21 @@
 package com.aiclassroom.classroom.domain
 
+/** 草稿阶段：恢复时按阶段接着跑，不从头生成。 */
+enum class DraftPhase {
+    GENERATING,
+    ASSEMBLED,
+    REVIEWING,
+    PATCHING,
+    READY_TO_COMMIT,
+    COMMITTED,
+    INVALIDATED,
+}
+
 /**
  * 分段草稿：一个单元在「还没写完」时的现场。
  *
- * 为什么要落盘：万字一节需要多次调用，中途断网、暂停、杀进程都发生过；
+ * 万字一节需要多次调用，中途断网、暂停、杀进程都发生过；
  * 只放内存的话，恢复时只能从头再写一遍，等于白花额度。
- *
- * 草稿**不锁死在某个执行者**上：新执行者确认输入仍有效并拿到执行权后，
- * 可以接管同一个 candidateId 继续写。
  */
 data class UnitDraft(
     val projectId: ProjectId,
@@ -17,14 +25,21 @@ data class UnitDraft(
     /** 生成时的输入版本（规格 + 总纲 + 快照）；输入变了旧候选就不能再用。 */
     val inputVersion: String,
     val segments: List<DraftSegment> = emptyList(),
-    /** 已累计的正文字数（只算叙述与对白）。 */
+    /** 已累计的正文字数，由程序按 blocks 重算，不采信调用方。 */
     val totalChars: Int = 0,
-    /** 供续写使用的累计摘要与已用桥段。 */
     val summary: String = "",
     val usedScenes: List<String> = emptyList(),
-    /** 产生最后一段的执行者与令牌，用于拒绝被接管者的迟到写入。 */
     val runId: RunId? = null,
+    val owner: String? = null,
     val fencingToken: Long = 0,
+    /** 内容有修订时递增；审查/补丁结果绑定这个版本。 */
+    val candidateVersion: Int = 0,
+    val phase: DraftPhase = DraftPhase.GENERATING,
+    /** 应用层调用计数与连续失败数：恢复后不清零。 */
+    val callCount: Int = 0,
+    val failStreak: Int = 0,
+    val committedRevisionId: RevisionId? = null,
+    val lastError: String = "",
     val updatedAt: EpochMillis = 0,
 ) {
     val nextIndex: Int get() = (segments.maxOfOrNull { it.index } ?: 0) + 1
@@ -39,4 +54,11 @@ data class DraftSegment(
     val events: List<UnitEvent> = emptyList(),
     val chars: Int = 0,
     val createdAt: EpochMillis = 0,
-)
+) {
+    /** 用于识别重复响应：同段内容一致就不再累加。 */
+    /**
+     * 重复响应判定用正文内容，不用 chars —— chars 是程序算出来的派生物，
+     * 把它算进去会让「同一段重复送达」被误判成冲突。
+     */
+    val checksum: String get() = text.trim()
+}

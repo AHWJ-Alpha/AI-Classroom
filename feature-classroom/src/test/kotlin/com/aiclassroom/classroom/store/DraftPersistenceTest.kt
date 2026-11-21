@@ -82,7 +82,16 @@ class DraftPersistenceTest {
             ),
         )
         store.saveDraft(
-            UnitDraft(projectId, unitId, "c1", "v1", listOf(segment(1, "她推门进来")), 10, "", emptyList(), null, 1, 1L),
+            UnitDraft(
+                projectId = projectId,
+                unitId = unitId,
+                candidateId = "c1",
+                inputVersion = "v1",
+                segments = listOf(segment(1, "她推门进来")),
+                totalChars = 10,
+                fencingToken = 1,
+                updatedAt = 1L,
+            ),
         )
         store.removeDraft(projectId, unitId)
 
