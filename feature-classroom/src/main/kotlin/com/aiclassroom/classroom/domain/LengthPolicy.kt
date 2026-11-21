@@ -39,7 +39,7 @@ sealed interface LengthPlan {
          * 输出预算按 4096 token 算，汉字大约 1 字 ≈ 1 token，
          * 目标定得太高（之前 2500）就会在写完前被 finish_reason=length 截断，整段作废。
          */
-        const val PER_CALL_RECOMMENDED = 1_200
+        const val PER_CALL_RECOMMENDED = 800
 
         /** 实测每段有效产出（汉字/段）：估算分段数用它，不用「每次要求多少」。 */
         const val ESTIMATED_YIELD = 600

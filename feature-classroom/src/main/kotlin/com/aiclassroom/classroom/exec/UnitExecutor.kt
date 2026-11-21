@@ -356,8 +356,14 @@ class UnitExecutor(
                     spec, effectivePlan, text, snapshot = snapshot, directiveNotes = unit.directive?.notes.orEmpty(),
                     effectiveGoal = effectivePlan.goal, projectType = ProjectType.SCENE,
                 ))
-                val call = gateway.complete(ModelRequests.fromPolicy(policy,
+                // 审查要读整节正文，请求体大、耗时长；真机上偶发读超时或流被截断。
+                // 这种情况重试一次就够，不该让整节卡在待处理。
+                var call = gateway.complete(ModelRequests.fromPolicy(policy,
                     listOf(ModelMessage(ModelMessage.Role.USER, prompt)), expectJson = true))
+                if (call.error == null && (!call.transportCompleted || call.finishReason is FinishReason.Length)) {
+                    call = gateway.complete(ModelRequests.fromPolicy(policy,
+                        listOf(ModelMessage(ModelMessage.Role.USER, prompt)), expectJson = true))
+                }
                 recordAttempt(runId, unit.id, RunPhase.REVIEWING, input, call)
                 if (call.error != null) return@coroutineScope UnitOutcome.Failed(describe(call))
                 if (!call.transportCompleted || call.finishReason is FinishReason.Length)
