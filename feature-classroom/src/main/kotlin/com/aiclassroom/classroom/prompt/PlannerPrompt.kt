@@ -87,6 +87,18 @@ object PlannerPrompt {
                 appendLine()
             }
         }
+        // 模型不知道 token 上限，只会一直写到自己满意为止；
+        // 所以必须把「这次能写多少」直接告诉它，让它自己收在边界内。
+        appendLine("[SIZE_BUDGET]")
+        appendLine("总共只输出一个 JSON 对象，不要任何解释文字、不要示例、不要注释。")
+        appendLine("单元数量不超过 " + desiredUnits + " 个。")
+        appendLine("每个单元：title 不超过 14 个字，goal 不超过 40 个字，completionCriteria 最多 2 条、每条不超过 20 字。")
+        appendLine("chapters 最多 6 条，每条不超过 12 个字。")
+        appendLine("topic 不超过 20 字，style 不超过 20 字，expectedLength 不超过 20 字。")
+        appendLine("hardConstraints 与 authorRules 各自最多 5 条、每条不超过 30 字。")
+        appendLine("publicWorld 不超过 200 字。")
+        appendLine("如果内容写不完，就减少细节而不是截断 JSON。")
+        appendLine()
         appendLine("[OUTPUT_SCHEMA]")
         appendLine("只输出一个 JSON 对象，形如：")
         appendLine("{")
