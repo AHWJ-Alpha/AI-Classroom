@@ -578,8 +578,11 @@ class ClassroomService(
         val names = listOfNotNull(
             snapshot?.mentorName?.takeIf { it.isNotBlank() },
             snapshot?.userAlias?.takeIf { it.isNotBlank() },
-        ).distinct()
-        if (names.isEmpty()) return
+        ).distinct().ifEmpty {
+            // 没有快照（旧项目或还没同步来源设定）时也要能写对白，
+            // 否则提示词要求 speakerId，模型只能把台词塞进叙述。
+            listOf("讲师", "对方")
+        }
         store.transaction {
             names.forEach { name ->
                 store.saveCharacter(
