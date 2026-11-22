@@ -11,7 +11,7 @@ object SceneInputVersion {
     fun compute(store: ClassroomStore, projectId: ProjectId, unitId: UnitId, policy: ModelPolicy): String {
         val unit = requireNotNull(store.unit(unitId))
         val parts = listOf(
-            "scene-continuation-v2", store.latestSpec(projectId).toString(), store.latestOutline(projectId).toString(),
+            "scene-continuation-v3", store.latestSpec(projectId).toString(), store.latestOutline(projectId).toString(),
             unit.copy(status = UnitStatus.PLANNED, directive = unit.directive?.takeUnless { it.isEmpty }).toString(),
             store.latestSnapshot(projectId)?.let { canonical(StoreCodec.snapshot(it)) }.orEmpty(),
             store.characters(projectId).sortedBy { it.id.value }.joinToString { canonical(StoreCodec.character(it)) },
@@ -22,7 +22,10 @@ object SceneInputVersion {
                 .joinToString { canonical(StoreCodec.characterState(it)) },
             store.facts(projectId).sortedWith(compareBy({ it.factId.value }, { it.version }))
                 .joinToString { canonical(StoreCodec.fact(it)) },
-            "${policy.provider}|${policy.baseUrl}|${policy.models}|${policy.temperature}|${policy.reasoningEffort}|${policy.maxOutputTokens}",
+            // 只把「会改变正文身份」的项算进指纹：模型、服务商、温度、推理强度。
+            // maxOutputTokens 是工程参数——调大它是为了不被截断，不是换了内容来源；
+            // 把它算进来会让「调过一次上限」之后所有旧草稿失配，用户一继续就从头写。
+            "${policy.provider}|${policy.baseUrl}|${policy.models}|${policy.temperature}|${policy.reasoningEffort}",
         )
         return MessageDigest.getInstance("SHA-256").digest(parts.joinToString("\u0000").toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
