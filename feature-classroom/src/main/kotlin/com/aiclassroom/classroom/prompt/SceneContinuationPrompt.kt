@@ -93,6 +93,15 @@ object SceneContinuationPrompt {
             appendLine("上面是最近的原文，只用来衔接，不要重复它。")
             appendLine()
         }
+        // 叙述视角：以在场第一位角色（讲师）的第一人称来写，把对方称作「你」。
+        // 不指定的话模型默认用第三人称，读起来像旁观者的报告，而不是当事人的经历。
+        if (input.characters.size >= 2) {
+            appendLine("[VIEWPOINT]")
+            appendLine("以「" + input.characters[0].name + "」的第一人称叙述：写「我」怎么想、怎么做。")
+            appendLine("把「" + input.characters[1].name + "」称作「你」，不要用第三人称称呼。")
+            appendLine("叙述里不要出现「" + input.characters[0].name + "说」这种转述，直接写动作与对白。")
+            appendLine()
+        }
         appendLine("[WRITING_RULES]")
         appendLine("- 通过动作、对白、物件、空间与停顿表现相处方式；")
         appendLine("- 允许安静与稳定，不要求每段关系升级或每段发生冲突；")
