@@ -62,6 +62,12 @@ class UnitExecutor(
     private val runOwner: String? = null,
     private val fencingToken: Long? = null,
     private val drafts: DraftStore = DraftStore(store, clock),
+    /**
+     * 来源对话最近的几轮原文。
+     *
+     * 没有它，课堂只知道一句原始需求，写出来的故事与对话里已经发生的剧情无关。
+     */
+    private val priorTurns: List<Pair<String, String>> = emptyList(),
 ) : UnitRunner {
 
     override suspend fun execute(projectId: ProjectId, unitId: UnitId, runId: RunId): UnitOutcome {
@@ -324,6 +330,20 @@ class UnitExecutor(
             snapshot = snapshot, projectType = ProjectType.SCENE,
         )).substringBefore("[OUTPUT_SCHEMA]").lineSequence()
             .filterNot { it.contains("本节正文不少于") }.joinToString("\n")
+            // 来源对话的最近几轮：课堂要接着对话里已经发生的处境写，
+            // 否则人物关系会从零重建，和用户聊过的内容完全脱节。
+            .let { base ->
+                if (priorTurns.isEmpty()) base else base + "\n\n" + buildString {
+                    appendLine("[DATA:PRIOR_TURNS]")
+                    appendLine("这是你们在对话里最近聊过的内容，本节要接着它写：")
+                    priorTurns.forEach { (role, text) ->
+                        val who = if (role == "user") "我" else "对方"
+                        appendLine(who + "：" + text)
+                    }
+                    appendLine("[/DATA:PRIOR_TURNS]")
+                    appendLine("不要复述这些句子，但人物关系、处境与称呼要与之一致。")
+                }
+            }
         val parent = currentCoroutineContext().job
         val heartbeat = launch {
             while (isActive) {

@@ -31,7 +31,7 @@ import java.io.File
 private const val LEASE_TTL_MS = 30 * 60 * 1000L
 
 class ClassroomService(
-    context: Context,
+    private val appContext: Context,
     /** 对外可见：取消落盘等收尾逻辑需要同一时钟。 */
     val clock: () -> EpochMillis = { System.currentTimeMillis() },
     /**
@@ -40,7 +40,7 @@ class ClassroomService(
      * 每个页面各建一份 FileClassroomStore 时，两个实例各持一份内存快照，
      * 后台提交的内容会被页面的旧快照写回覆盖 —— 这是会真正丢数据的。
      */
-    val store: ClassroomStore = ClassroomServiceProvider.store(context),
+    val store: ClassroomStore = ClassroomServiceProvider.store(appContext),
     /** 测试可注入模拟连接，生产仍使用唯一的真实网关装配。 */
     private val gatewayFactory: (ModelPolicy, String) -> com.aiclassroom.classroom.gateway.ModelGateway = ClassroomGatewayFactory::create,
 ) {
@@ -554,6 +554,7 @@ class ClassroomService(
             runOwner = owner,
             fencingToken = leaseToken,
             drafts = com.aiclassroom.classroom.repository.DraftStore(store, clock),
+            priorTurns = priorTurnsOf(projectId),
         )
         return try {
             RunEngine(store, executor, control, clock, owner = owner, fenceToken = leaseToken)
@@ -570,6 +571,24 @@ class ClassroomService(
      * 依据来源快照里的讲师名与用户称呼生成两条最小人物档案：只填名字与身份，
      * 人格留空（不替用户编性格）。已有角色时什么都不做。
      */
+    /**
+     * 来源对话最近的几轮原文。
+     *
+     * 取最近 6 轮、每轮截 300 字：够模型接上处境，又不会把上下文撑爆。
+     * 拿不到对话时返回空，行为与以前一致。
+     */
+    private fun priorTurnsOf(projectId: ProjectId): List<Pair<String, String>> {
+        val convId = store.project(projectId)?.sourceConversationId ?: return emptyList()
+        val conversations = runCatching {
+            com.aiclassroom.app.readConversationsForBackground(appContext)
+        }.getOrDefault(emptyList())
+        val room = conversations.firstOrNull { it.id == convId } ?: return emptyList()
+        return room.messages
+            .filter { it.text.isNotBlank() }
+            .takeLast(6)
+            .map { it.role to it.text.trim().take(300) }
+    }
+
     private fun ensureSceneParticipants(projectId: ProjectId) {
         val project = store.project(projectId) ?: return
         if (project.type != ProjectType.SCENE) return
