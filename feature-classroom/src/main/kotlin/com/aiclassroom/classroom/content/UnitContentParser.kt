@@ -97,6 +97,8 @@ object UnitContentParser {
                 "dialogue" -> {
                     val speaker = m["speakerId"].asString()?.let { CharacterId(it) }
                     if (speaker == null) {
+                        // 缺 speakerId 时不能悄悄降级成叙述：那会让整节读起来没有台词，
+                        // 而调用方还以为成功了。这里记为问题，让这一段落回重写。
                         problems += "台词缺少 speakerId：" + id
                         ContentBlock.Narration(id, m["text"].asString() ?: "")
                     } else {
