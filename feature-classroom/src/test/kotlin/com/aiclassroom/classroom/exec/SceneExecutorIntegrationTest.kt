@@ -224,4 +224,52 @@ class SceneExecutorIntegrationTest {
         assertEquals(before.segments.single().checksum, reopened.draft(project, unit)!!.segments.single().checksum)
         assertEquals(2, reopened.attempts(run).count { it.phase == RunPhase.REVIEWING })
     }
+
+    @Test
+    fun `角色人格与来源对话都进入生成请求`() = runBlocking {
+        // 真机上这两件事都出过问题：人格没落到角色、对话内容根本没进请求。
+        // 这里用同一套产品入口（UnitExecutor）验证，不依赖网络与额度。
+        val root = Files.createTempDirectory("scene-persona").toFile()
+        val s = FileClassroomStore(root)
+        seed(s)
+        // 讲师（创建顺序第一条）+ 对方，人格写在讲师上。
+        s.saveCharacter(CharacterProfile(
+            id = CharacterId("m"), projectId = project, name = "她",
+            identity = "叙述者", corePersonality = "话少、克制，用行动代替表态",
+            values = "", thinkingStyle = "", speechStyle = "短句",
+            behaviorRules = emptyList(),
+        ))
+        s.saveCharacter(CharacterProfile(
+            id = CharacterId("y"), projectId = project, name = "哥哥",
+            identity = "在场者", corePersonality = "",
+            values = "", thinkingStyle = "", speechStyle = "",
+            behaviorRules = emptyList(),
+        ))
+
+        val g = Gateway(
+            ok(segment(first, false)),
+            ok(segment(second, true)),
+            ok("{\"issues\":[]}"),
+            ok("{\"changes\":[],\"evidenceEventIds\":[],\"reason\":\"无持久变化\"}"),
+        )
+        val run = RunId("p")
+        s.saveRun(GenerationRun(run, project, 1, 1, RunPhase.GENERATING, RunStatus.QUEUED, startedAt = now, updatedAt = now))
+        val lease = assertIs<RunLease.Acquired.Granted>(
+            RunLease.acquireForProject(s, project, run, "p", 60_000, { now }, force = true),
+        )
+        val e = UnitExecutor(
+            g, s, UnitCommitter(s) { now }, { now },
+            policy = policy, runOwner = "p", fencingToken = lease.lease.token,
+            priorTurns = listOf("user" to "外面雨太大了，我今晚回不去了。"),
+        )
+
+        assertIs<UnitOutcome.Committed>(e.execute(project, unit, run))
+
+        val firstPrompt = g.prompts.first()
+        assertContains(firstPrompt, "话少、克制，用行动代替表态", message = "人格必须进请求")
+        assertContains(firstPrompt, "短句", message = "语言风格也要进")
+        assertContains(firstPrompt, "[DATA:PRIOR_TURNS]", message = "要标明这是对话上下文")
+        assertContains(firstPrompt, "外面雨太大了", message = "对话内容要真的进请求")
+        assertContains(firstPrompt, "以「她」的第一人称叙述", message = "视角要指定讲师")
+    }
 }
