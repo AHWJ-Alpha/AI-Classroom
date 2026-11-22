@@ -519,12 +519,37 @@ class UnitExecutor(
             return PatchResult.Failed("状态提取调用失败：" + (call.error::class.simpleName ?: "未知"))
         }
 
-        val parsed = StatePatchParser.parse(
+        var parsed = StatePatchParser.parse(
             call.content,
             knownCharacters,
             content.events.map { it.id }.toSet(),
             knownFacts.toSet(),
         )
+        if (!parsed.usable) {
+            // 模型偶尔返回带未转义引号或代码块标记的 JSON。
+            // 把具体错误回灌一次，要求只输出 JSON —— 比直接判整节失败划算。
+            val retryPrompt = prompt + "\n\n[上一次的输出无法解析：" +
+                parsed.dropped.take(2).joinToString("；") +
+                "]\n请只输出一个合法的 JSON 对象，不要解释、不要代码块标记。"
+            val retry = gateway.complete(
+                ModelRequests.fromPolicy(
+                    policy = policy.copy(maxOutputTokens = policy.maxOutputTokens ?: 8192),
+                    messages = listOf(ModelMessage(ModelMessage.Role.USER, retryPrompt)),
+                    expectJson = true,
+                ),
+            )
+            store.runs(projectId).firstOrNull { it.owner == runOwner && it.status == RunStatus.RUNNING }?.let {
+                recordAttempt(it.id, unitId, RunPhase.COMMITTING, retryPrompt.hashCode().toString(), retry)
+            }
+            if (retry.error == null && retry.transportCompleted && retry.finishReason !is FinishReason.Length) {
+                parsed = StatePatchParser.parse(
+                    retry.content,
+                    knownCharacters,
+                    content.events.map { it.id }.toSet(),
+                    knownFacts.toSet(),
+                )
+            }
+        }
         if (!parsed.usable) {
             return PatchResult.Failed("状态提取输出无法解析：" + parsed.dropped.take(2).joinToString("；"))
         }

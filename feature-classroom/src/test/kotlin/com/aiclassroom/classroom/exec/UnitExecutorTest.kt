@@ -207,7 +207,7 @@ class UnitExecutorTest {
     @Test
     fun `状态提取失败时进入待处理而不是当成没有变化`() = runBlocking {
         val store = storeWithProject()
-        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok("我无法判断"))
+        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok("我无法判断"), ok("我还是无法判断"))
 
         val outcome = executor(store, gateway).execute(projectId, unitId, runId)
 
@@ -295,7 +295,8 @@ class UnitExecutorTest {
             "{\"op\":\"SetEmotion\",\"characterId\":\"c1\",\"value\":\"紧张\"}," + 
             "{\"op\":\"SetEmotion\",\"characterId\":\"c404\",\"value\":\"x\"}]," + 
             "\"reason\":\"混合\",\"evidenceEventIds\":[\"e1\"]}""".trimIndent()
-        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok(mixed))
+        // 状态提取解析失败会带错误重试一次，所以这里要准备两次同样的坏输出。
+        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok(mixed), ok(mixed))
 
         val outcome = executor(store, gateway).execute(projectId, unitId, runId)
 
