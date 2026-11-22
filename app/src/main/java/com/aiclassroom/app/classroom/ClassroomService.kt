@@ -614,13 +614,19 @@ class ClassroomService(
         val snapshot = store.latestSnapshot(projectId) ?: return
         val mentorPrompt = snapshot.mentorPrompt.trim()
         if (mentorPrompt.isBlank()) return
+        // 角色顺序就是生成时的顺序：第 0 条是讲师（叙述者），其余是在场者。
+        // 不能用名字去匹配 mentorName —— 兜底建的叫「讲师 / 对方」，
+        // 而快照里的名字可能是「她 / 哥哥」，名字对不上就永远补不上人格。
+        // characters() 返回的是创建顺序，不要按 UUID 排（那是随机的）。
+        val mentorId = existing.firstOrNull()?.id
         store.transaction {
-            // 给空壳角色补上人格：不删不建，保住 id，历史正文里的 speakerId 仍有效。
             existing.filter { it.corePersonality.isBlank() }.forEach { stale ->
+                val isMentor = stale.id == mentorId
                 store.saveCharacter(
                     stale.copy(
-                        identity = if (stale.name == snapshot.mentorName) "叙述者" else stale.identity.ifBlank { "在场者" },
-                        corePersonality = if (stale.name == snapshot.mentorName) mentorPrompt else stale.corePersonality,
+                        name = if (isMentor && snapshot.mentorName.isNotBlank()) snapshot.mentorName else stale.name,
+                        identity = if (isMentor) "叙述者" else stale.identity.ifBlank { "在场者" },
+                        corePersonality = if (isMentor) mentorPrompt else stale.corePersonality,
                     ),
                 )
             }
