@@ -584,14 +584,17 @@ class ClassroomService(
             listOf("讲师", "对方")
         }
         store.transaction {
-            names.forEach { name ->
+            val mentorPrompt = snapshot?.mentorPrompt?.trim().orEmpty()
+            names.forEachIndexed { index, name ->
+                // 讲师继承来源对话的人格；对方只留名字，不替用户编性格。
+                val isMentor = index == 0 && mentorPrompt.isNotBlank()
                 store.saveCharacter(
                     com.aiclassroom.classroom.domain.CharacterProfile(
                         id = com.aiclassroom.classroom.domain.CharacterId(java.util.UUID.randomUUID().toString()),
                         projectId = projectId,
                         name = name,
-                        identity = "",
-                        corePersonality = "",
+                        identity = if (isMentor) "叙述者" else "在场者",
+                        corePersonality = if (isMentor) mentorPrompt else "",
                         values = "",
                         thinkingStyle = "",
                         speechStyle = "",

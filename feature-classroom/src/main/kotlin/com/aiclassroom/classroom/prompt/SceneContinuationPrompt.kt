@@ -64,7 +64,19 @@ object SceneContinuationPrompt {
             appendLine("[DATA:CHARACTERS]")
             input.characters.forEach {
                 appendLine("- id=" + it.id.value + "；姓名=" + it.name)
-                appendLine("  人格=" + it.corePersonality + "；语言=" + it.speechStyle)
+                // 人格各字段都要给：只给名字等于让模型自己编性格，
+                // 而「固定人格不能被上一轮台词悄悄改写」是这套设定的前提。
+                if (it.identity.isNotBlank()) appendLine("  身份=" + it.identity)
+                if (it.corePersonality.isNotBlank()) appendLine("  人格=" + it.corePersonality)
+                if (it.values.isNotBlank()) appendLine("  看重=" + it.values)
+                if (it.thinkingStyle.isNotBlank()) appendLine("  思维习惯=" + it.thinkingStyle)
+                if (it.speechStyle.isNotBlank()) appendLine("  语言=" + it.speechStyle)
+                it.behaviorRules.filter { r -> r.isNotBlank() }.take(6).forEach { r ->
+                    appendLine("  行为约束=" + r)
+                }
+                if (it.authorPrivate.isNotBlank()) {
+                    appendLine("  作者私密（不要让人物说出来）=" + it.authorPrivate)
+                }
             }
             appendLine("[/DATA:CHARACTERS]")
             appendLine()
