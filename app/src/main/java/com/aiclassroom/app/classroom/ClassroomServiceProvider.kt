@@ -26,7 +26,11 @@ object ClassroomServiceProvider {
         }
     }
 
-    fun service(context: Context): ClassroomService = ClassroomService(context)
+    fun service(context: Context): ClassroomService = ClassroomService(
+        appContext = context,
+        // 自动同步来源设定：人格、角色、资料都以来源对话为准。
+        autoSyncSource = { pid -> ClassroomSourceSync.sync(context, pid) },
+    )
 
     /** 仅供测试或进程重置使用。 */
     fun reset() {

@@ -43,6 +43,13 @@ class ClassroomService(
     val store: ClassroomStore = ClassroomServiceProvider.store(appContext),
     /** 测试可注入模拟连接，生产仍使用唯一的真实网关装配。 */
     private val gatewayFactory: (ModelPolicy, String) -> com.aiclassroom.classroom.gateway.ModelGateway = ClassroomGatewayFactory::create,
+    /**
+     * 自动同步来源设定。
+     *
+     * 由宿主注入：取数需要读来源对话的 config/files/记忆，那部分只在 app 层。
+     * 传 null 时跳过（测试与无宿主的场景）。
+     */
+    private val autoSyncSource: ((ProjectId) -> Unit)? = null,
 ) {
 
     /** 应用启动时调用一次：把上次遗留的「生成中」状态收拾干净。 */
@@ -467,7 +474,12 @@ class ClassroomService(
         forceLease: Boolean = false,
         runIdentity: RunId? = null,
     ): RunOutcome {
-        // 生成前也补一次：旧项目没重新规划时同样要能写出对白。
+        // 生成前自动同步来源设定：人格、角色、资料都以来源对话为准。
+        // 以前靠界面上的「同步来源设定」按钮，用户不点就永远没有快照，
+        // 于是人格是空的、资料检索也没有内容。
+        autoSyncSource?.invoke(projectId)
+        // 同步之后重建参与者：人格要落到角色档案上，否则提示词里仍然是空的。
+        refreshParticipants(projectId)
         ensureSceneParticipants(projectId)
 
         // 开跑之前先把上次遗留的「生成中 / 草稿待提交」放回队列，
@@ -587,6 +599,32 @@ class ClassroomService(
             .filter { it.text.isNotBlank() }
             .takeLast(6)
             .map { it.role to it.text.trim().take(300) }
+    }
+
+    /**
+     * 用最新快照重建场景参与者。
+     *
+     * 只在「角色还没有人格」时重建：用户手动改过的人格不能被覆盖。
+     */
+    private fun refreshParticipants(projectId: ProjectId) {
+        val project = store.project(projectId) ?: return
+        if (project.type != ProjectType.SCENE) return
+        val existing = store.characters(projectId)
+        if (existing.isNotEmpty() && existing.any { it.corePersonality.isNotBlank() }) return
+        val snapshot = store.latestSnapshot(projectId) ?: return
+        val mentorPrompt = snapshot.mentorPrompt.trim()
+        if (mentorPrompt.isBlank()) return
+        store.transaction {
+            // 给空壳角色补上人格：不删不建，保住 id，历史正文里的 speakerId 仍有效。
+            existing.filter { it.corePersonality.isBlank() }.forEach { stale ->
+                store.saveCharacter(
+                    stale.copy(
+                        identity = if (stale.name == snapshot.mentorName) "叙述者" else stale.identity.ifBlank { "在场者" },
+                        corePersonality = if (stale.name == snapshot.mentorName) mentorPrompt else stale.corePersonality,
+                    ),
+                )
+            }
+        }
     }
 
     private fun ensureSceneParticipants(projectId: ProjectId) {

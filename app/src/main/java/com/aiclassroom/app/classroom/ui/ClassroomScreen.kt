@@ -512,8 +512,6 @@ private fun OverviewView(
         Spacer(Modifier.height(16.dp))
         // 改过方向之后，之前写的正文就不再对应当前设定：给一个明确的重写入口。
         val staleCount = units.count { it.status == UnitStatus.STALE }
-        // 来源改过之后，用户要能主动同步；这里不做自动同步。
-        TextButton(onClick = onSync, enabled = !running) { Text("同步来源设定") }
         if (staleCount > 0) {
             Button(
                 onClick = onRegenerate,
