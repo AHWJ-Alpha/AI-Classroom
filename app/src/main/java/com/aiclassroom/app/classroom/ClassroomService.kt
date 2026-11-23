@@ -630,23 +630,16 @@ class ClassroomService(
         val existing = store.characters(projectId)
         if (existing.isNotEmpty() && existing.any { it.corePersonality.isNotBlank() }) return
         val snapshot = store.latestSnapshot(projectId) ?: return
-        val mentorPrompt = snapshot.mentorPrompt.trim()
-        if (mentorPrompt.isBlank()) return
-        // 角色顺序就是生成时的顺序：第 0 条是讲师（叙述者），其余是在场者。
-        // 不能用名字去匹配 mentorName —— 兜底建的叫「讲师 / 对方」，
-        // 而快照里的名字可能是「她 / 哥哥」，名字对不上就永远补不上人格。
-        // characters() 返回的是创建顺序，不要按 UUID 排（那是随机的）。
+        // 人格不写进角色卡：它已经由 [SOURCE_PERSONA] 整段注入。
+        // 这里只把讲师的名字与身份对齐快照，避免提示词里出现两套称呼。
         val mentorId = existing.firstOrNull()?.id
         store.transaction {
-            existing.filter { it.corePersonality.isBlank() }.forEach { stale ->
+            existing.forEach { stale ->
                 val isMentor = stale.id == mentorId
-                store.saveCharacter(
-                    stale.copy(
-                        name = if (isMentor && snapshot.mentorName.isNotBlank()) snapshot.mentorName else stale.name,
-                        identity = if (isMentor) "叙述者" else stale.identity.ifBlank { "在场者" },
-                        corePersonality = if (isMentor) mentorPrompt else stale.corePersonality,
-                    ),
-                )
+                val name = if (isMentor && snapshot.mentorName.isNotBlank()) snapshot.mentorName else stale.name
+                val identity = if (isMentor) "叙述者" else stale.identity.ifBlank { "在场者" }
+                if (name == stale.name && identity == stale.identity) return@forEach
+                store.saveCharacter(stale.copy(name = name, identity = identity))
             }
         }
     }
@@ -665,17 +658,16 @@ class ClassroomService(
             listOf("讲师", "对方")
         }
         store.transaction {
-            val mentorPrompt = snapshot?.mentorPrompt?.trim().orEmpty()
+            // 只建身份，不写人格：人格统一来自 [SOURCE_PERSONA]（来源对话的系统提示词）。
+            // 同一份人格写两遍既浪费上下文，也容易让模型把它当成两个人。
             names.forEachIndexed { index, name ->
-                // 讲师继承来源对话的人格；对方只留名字，不替用户编性格。
-                val isMentor = index == 0 && mentorPrompt.isNotBlank()
                 store.saveCharacter(
                     com.aiclassroom.classroom.domain.CharacterProfile(
                         id = com.aiclassroom.classroom.domain.CharacterId(java.util.UUID.randomUUID().toString()),
                         projectId = projectId,
                         name = name,
-                        identity = if (isMentor) "叙述者" else "在场者",
-                        corePersonality = if (isMentor) mentorPrompt else "",
+                        identity = if (index == 0) "叙述者" else "在场者",
+                        corePersonality = "",
                         values = "",
                         thinkingStyle = "",
                         speechStyle = "",
