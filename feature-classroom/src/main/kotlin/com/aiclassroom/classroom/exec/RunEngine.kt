@@ -70,6 +70,8 @@ class RunEngine(
     suspend fun run(projectId: ProjectId, runId: RunId): RunOutcome {
         var committed = 0
         var executed = 0
+        // 跳过的单元与原因：一轮跑完要如实报告，不能装作全部成功。
+        val skipped = mutableListOf<Pair<UnitId, String>>()
 
         while (true) {
             if (!control.shouldContinue()) {
@@ -86,13 +88,17 @@ class RunEngine(
             }
 
             val units = store.units(projectId)
+            // 跳过已经失败过的单元：否则它会一直被选中，同一节反复重试到死循环。
+            val skipIds = skipped.map { it.first }.toSet()
+            val candidates = units.filterNot { it.id in skipIds }
             val next = if (onlyUnitId != null) {
                 units.firstOrNull { it.id == onlyUnitId && it.status != UnitStatus.READY }
             } else {
-                UnitExecutor.nextReadyUnit(units)
+                UnitExecutor.nextReadyUnit(candidates)
             }
             if (next == null) {
-                val remaining = units.filter { it.status != UnitStatus.READY }
+                // 只剩被跳过的单元也算「没有可跑的」：它们已在 skipped 里报告过。
+                val remaining = candidates.filter { it.status != UnitStatus.READY }
                 return when {
                     remaining.isEmpty() -> {
                         // 状态与结果事件必须同一次提交：分开写的话，
@@ -102,10 +108,13 @@ class RunEngine(
                                 store = store,
                                 project = project,
                                 run = store.run(runId),
-                                runStatus = RunStatus.COMPLETED,
-                                projectLifecycle = ProjectLifecycle.READY,
-                                type = EventType.COMPLETED,
-                                summary = "共 " + committed + " 节",
+                                // 有跳过的单元就不是「全部完成」：生命周期与文案都要如实。
+                                runStatus = if (skipped.isEmpty()) RunStatus.COMPLETED else RunStatus.WAITING_INPUT,
+                                projectLifecycle = if (skipped.isEmpty()) ProjectLifecycle.READY else ProjectLifecycle.NEEDS_ATTENTION,
+                                type = if (skipped.isEmpty()) EventType.COMPLETED else EventType.NEEDS_ATTENTION,
+                                summary = if (skipped.isEmpty()) "共 " + committed + " 节"
+                                    else "共 " + committed + " 节，另有 " + skipped.size + " 节待处理：" +
+                                        skipped.joinToString("；") { it.second }.take(120),
                                 committedUnits = committed,
                                 clock = clock,
                                 owner = owner,
@@ -131,8 +140,13 @@ class RunEngine(
                 }
                 is UnitOutcome.AlreadyDone -> Unit
                 is UnitOutcome.Failed -> {
-                    store.run(runId)?.let { store.saveRun(it.copy(status = RunStatus.RETRY_WAIT, error = outcome.reason, updatedAt = clock())) }
-                    return RunOutcome.NeedsAttention(committed, outcome.reason)
+                    // 一节失败不该拖垮整轮：记下原因，跳过它继续下一节。
+                    // 以前这里直接 return，表现为「生成完一节就断」。
+                    // 必须记进 skipped，否则 nextReadyUnit 会一直选中同一节，死循环。
+                    skipped += next.id to outcome.reason
+                    store.run(runId)?.let {
+                        store.saveRun(it.copy(error = "这一节失败：" + outcome.reason, updatedAt = clock()))
+                    }
                 }
                 is UnitOutcome.NetworkInterrupted -> {
                     // 网络断了不是任务出错：把 run 标成暂停（可继续），
@@ -150,11 +164,11 @@ class RunEngine(
                     return RunOutcome.Paused(committed, RunOutcome.PauseReason.NETWORK)
                 }
                 is UnitOutcome.NeedsAttention -> {
-                    store.run(runId)?.let { store.saveRun(it.copy(status = RunStatus.WAITING_INPUT, error = outcome.reason, updatedAt = clock())) }
-                    store.project(projectId)?.let {
-                        store.updateProject(it.copy(lifecycle = ProjectLifecycle.NEEDS_ATTENTION, updatedAt = clock()))
+                    // 同样跳过：这一节留在待处理，后面的节照常写。
+                    skipped += next.id to outcome.reason
+                    store.run(runId)?.let {
+                        store.saveRun(it.copy(error = "这一节待处理：" + outcome.reason, updatedAt = clock()))
                     }
-                    return RunOutcome.NeedsAttention(committed, outcome.reason)
                 }
             }
         }

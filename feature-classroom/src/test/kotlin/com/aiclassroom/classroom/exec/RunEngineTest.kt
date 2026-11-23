@@ -118,30 +118,53 @@ class RunEngineTest {
     }
 
     @Test
-    fun `单元需要人处理时整个任务停下且后续单元不执行`() = runBlocking {
-        val store = storeWith(unit("u1", 1), unit("u2", 2, listOf("u1")))
+    fun `一节需要人处理时跳过它继续后面的节`() = runBlocking {
+        // 以前是「整个任务停下」：真机表现就是「生成完一节就断」。
+        // 现在这一节留在待处理，后面的节照常写，收尾时如实报告。
+        val store = storeWith(unit("u1", 1), unit("u2", 2))
         val runner = FakeRunner(
-            mapOf("u1" to queue(UnitOutcome.NeedsAttention("审查一直不过"))),
+            mapOf(
+                "u1" to queue(UnitOutcome.NeedsAttention("审查一直不过")),
+                "u2" to queue(committed("u2")),
+            ),
         )
+        // 假执行器不改状态：提交成功时手动标 READY，否则循环会一直选中同一节。
+        val wrapped = object : UnitRunner {
+            override suspend fun execute(projectId: ProjectId, unitId: UnitId, runId: RunId): UnitOutcome {
+                val o = runner.execute(projectId, unitId, runId)
+                if (o is UnitOutcome.Committed) store.upsertUnit(store.unit(unitId)!!.copy(status = UnitStatus.READY))
+                return o
+            }
+        }
 
-        val outcome = engine(store, runner, alwaysGo).run(projectId, runId)
+        RunEngine(store, wrapped, alwaysGo, { now }).run(projectId, runId)
 
-        val attention = assertIs<RunOutcome.NeedsAttention>(outcome)
-        assertEquals("审查一直不过", attention.reason)
-        assertEquals(listOf("u1"), runner.executed, "依赖 u1 的 u2 不该被执行")
+        assertEquals(listOf("u1", "u2"), runner.executed, "u2 必须继续执行")
         assertEquals(ProjectLifecycle.NEEDS_ATTENTION, store.project(projectId)!!.lifecycle)
-        assertEquals(RunStatus.WAITING_INPUT, store.run(runId)!!.status)
+        assertTrue(store.run(runId)!!.error.orEmpty().contains("这一节待处理"), "要记下跳过原因")
     }
 
     @Test
-    fun `调用失败时记录 RETRY_WAIT 并停下`() = runBlocking {
-        val store = storeWith(unit("u1", 1))
-        val runner = FakeRunner(mapOf("u1" to queue(UnitOutcome.Failed("断网"))))
+    fun `一节调用失败时记录原因并继续后面的节`() = runBlocking {
+        val store = storeWith(unit("u1", 1), unit("u2", 2))
+        val runner = FakeRunner(
+            mapOf(
+                "u1" to queue(UnitOutcome.Failed("断网")),
+                "u2" to queue(committed("u2")),
+            ),
+        )
+        val wrapped = object : UnitRunner {
+            override suspend fun execute(projectId: ProjectId, unitId: UnitId, runId: RunId): UnitOutcome {
+                val o = runner.execute(projectId, unitId, runId)
+                if (o is UnitOutcome.Committed) store.upsertUnit(store.unit(unitId)!!.copy(status = UnitStatus.READY))
+                return o
+            }
+        }
 
-        val outcome = engine(store, runner, alwaysGo).run(projectId, runId)
+        RunEngine(store, wrapped, alwaysGo, { now }).run(projectId, runId)
 
-        assertIs<RunOutcome.NeedsAttention>(outcome)
-        assertEquals(RunStatus.RETRY_WAIT, store.run(runId)!!.status)
+        assertEquals(listOf("u1", "u2"), runner.executed)
+        assertTrue(store.run(runId)!!.error.orEmpty().contains("这一节失败"), "要记下失败原因")
     }
 
     @Test

@@ -483,11 +483,10 @@ private fun OverviewView(
         Spacer(Modifier.height(8.dp))
 
         units.forEach { u ->
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
+            // 竖排：正文在上，操作按钮在下。
+            // 原来按钮挤在右边一列，中文标签一长就吃掉正文宽度。
+            Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                Column(Modifier.fillMaxWidth()) {
                     Text(u.index.toString() + ". " + u.chapter, fontSize = 14.sp)
                     Text(u.directive?.effectiveGoal(u.goal) ?: u.goal, fontSize = 12.sp)
                     u.directive?.notes?.takeIf { it.isNotBlank() }?.let { Text("补充要求：$it", fontSize = 12.sp) }
@@ -507,13 +506,15 @@ private fun OverviewView(
                         if (draft.lastError.isNotBlank()) Text(draft.lastError, fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
                     }
                 }
-                TextButton(onClick = { onEditUnit(u) }) { Text("调整") }
-                // 单节生成：只跑这一节，不必等整本排队，也不受别的节失败影响。
-                if (u.status != UnitStatus.READY && !running) {
-                    TextButton(onClick = { onGenerateUnit(u.id) }) { Text("生成这节") }
-                }
-                if (u.currentRevisionId != null || service.store.draft(project.id, u.id)?.segments?.isNotEmpty() == true) {
-                    TextButton(onClick = { onRead(u.id) }) { Text(if (u.status == UnitStatus.READY) "阅读" else "查看已生成") }
+                Row(Modifier.fillMaxWidth()) {
+                    TextButton(onClick = { onEditUnit(u) }) { Text("调整") }
+                    // 单节生成：只跑这一节，不必等整本排队，也不受别的节失败影响。
+                    if (u.status != UnitStatus.READY && !running) {
+                        TextButton(onClick = { onGenerateUnit(u.id) }) { Text("生成这节") }
+                    }
+                    if (u.currentRevisionId != null || service.store.draft(project.id, u.id)?.segments?.isNotEmpty() == true) {
+                        TextButton(onClick = { onRead(u.id) }) { Text(if (u.status == UnitStatus.READY) "阅读" else "查看已生成") }
+                    }
                 }
             }
         }
