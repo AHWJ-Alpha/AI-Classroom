@@ -58,6 +58,13 @@ class RunEngine(
     /** 执行者与令牌：写终态前校验，旧执行者不能覆盖新任务。 */
     private val owner: String? = null,
     private val fenceToken: Long? = null,
+    /**
+     * 只跑这一节：给「单节生成」按钮用。
+     *
+     * 为空时按依赖顺序跑完整项目；指定后就只处理这一个单元，
+     * 跑完立刻收尾，不会顺带把后面的节也写掉。
+     */
+    private val onlyUnitId: UnitId? = null,
 ) {
 
     suspend fun run(projectId: ProjectId, runId: RunId): RunOutcome {
@@ -79,7 +86,11 @@ class RunEngine(
             }
 
             val units = store.units(projectId)
-            val next = UnitExecutor.nextReadyUnit(units)
+            val next = if (onlyUnitId != null) {
+                units.firstOrNull { it.id == onlyUnitId && it.status != UnitStatus.READY }
+            } else {
+                UnitExecutor.nextReadyUnit(units)
+            }
             if (next == null) {
                 val remaining = units.filter { it.status != UnitStatus.READY }
                 return when {

@@ -12,6 +12,7 @@ import androidx.work.workDataOf
 import com.aiclassroom.app.readConversationsForBackground
 import com.aiclassroom.classroom.domain.ClassroomEvent
 import com.aiclassroom.classroom.domain.ProjectId
+import com.aiclassroom.classroom.domain.UnitId
 import com.aiclassroom.classroom.domain.RunStatus
 import com.aiclassroom.classroom.event.EventOutbox
 import com.aiclassroom.classroom.exec.RunControl
@@ -136,6 +137,8 @@ class ClassroomRunWorker(
                     ProjectId(projectId), source.connection.policy, source.connection.apiKey, control,
                     forceLease = true,
                     runIdentity = executionRun,
+                    // 单节生成：只跑这一节，不顺着把后面的也写掉。
+                    onlyUnitId = inputData.getString(KEY_UNIT)?.takeIf { it.isNotBlank() }?.let { UnitId(it) },
                 )
             }
             val message = when (outcome) {
@@ -218,12 +221,21 @@ class ClassroomRunWorker(
         const val KEY_STALE_ONLY = "stale_only"
         const val KEY_ERROR = "error"
         const val KEY_PLAN_ONLY = "plan_only"
+        /** 只生成这一节：单节按钮用。 */
+        const val KEY_UNIT = "unit_id"
         const val KEY_PLAN_RUN = "plan_run"
 
         /** 每个项目只允许一个未完成的执行：重复点击不会起第二个执行者。 */
         fun workName(projectId: ProjectId) = "classroom-run-" + projectId.value
 
-        fun schedule(context: Context, projectId: ProjectId, staleOnly: Boolean, planOnly: Boolean = false) {
+        fun schedule(
+            context: Context,
+            projectId: ProjectId,
+            staleOnly: Boolean,
+            planOnly: Boolean = false,
+            /** 非空时只生成这一节。 */
+            unitId: String? = null,
+        ) {
             val planRun = if (planOnly) com.aiclassroom.classroom.domain.RunId.new() else null
             if (planRun != null) {
                 val store = ClassroomServiceProvider.store(context)
@@ -240,6 +252,7 @@ class ClassroomRunWorker(
                         KEY_STALE_ONLY to staleOnly,
                         KEY_PLAN_ONLY to planOnly,
                         KEY_PLAN_RUN to planRun?.value,
+                        KEY_UNIT to unitId,
                     ),
                 )
                 .build()

@@ -446,13 +446,16 @@ class UnitExecutor(
                         val fix = gateway.complete(ModelRequests.fromPolicy(policy,
                             listOf(ModelMessage(ModelMessage.Role.USER, revisionPrompt)), expectJson = true))
                         recordAttempt(runId, unit.id, RunPhase.REVISING, input, fix)
-                        if (fix.error != null || !fix.transportCompleted || fix.finishReason is FinishReason.Length)
-                            return@coroutineScope UnitOutcome.NeedsAttention("局部修订失败，原段落保留")
+                        // 修订失败不能结束整轮：原段落已经保存，跳过这段继续下一段。
+                        // 以前这里直接 NeedsAttention，看起来就像「只生成第一段就不往后」。
+                        if (fix.error != null || !fix.transportCompleted || fix.finishReason is FinishReason.Length) {
+                            continue
+                        }
                         val parsed = UnitContentParser.parse(fix.content, unit.id, outline.version, characters.map { it.id }.toSet(), ProjectType.SCENE)
                         val normalized = parsed.content?.takeIf { parsed.ok }?.let {
                             com.aiclassroom.classroom.content.SegmentNormalizer.normalize(it, candidateId, segment.index,
                                 setOf("narration", "dialogue", "heading"), characters.map { c -> c.id }.toSet())
-                        }?.segment ?: return@coroutineScope UnitOutcome.NeedsAttention("修订结构不合法，原段落保留")
+                        }?.segment ?: continue
                         val replaced = drafts.replace(guard, normalized.copy(summary = parsed.content!!.events.joinToString { it.description },
                             finished = segment.finished, unresolvedItems = parsed.content.unresolvedItems), inputNow)
                         if (!replaced.ok()) return@coroutineScope UnitOutcome.NeedsAttention("修订写入被拒：$replaced")

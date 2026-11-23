@@ -255,6 +255,21 @@ fun ClassroomScreen(
                         notice = "正在暂停，已保存的正文保留，继续时从断点续写"
                     },
                       onViewAll = { viewingAll = true },
+                      onGenerateUnit = { unitId ->
+                          val source = resolveSource(project.id)
+                          if (source is SourceResolution.Ready) {
+                              ClassroomRunManager.start(
+                                  context = context,
+                                  service = service,
+                                  projectId = project.id,
+                                  policy = source.connection.policy,
+                                  apiKey = source.connection.apiKey,
+                                  unitId = unitId,
+                              )
+                          } else {
+                              notice = source.describe()
+                          }
+                      },
                       onRead = { tapped ->
                         // 明确点了哪一节，就进入哪一节。
                         readingUnitId = tapped
@@ -431,6 +446,8 @@ private fun OverviewView(
     onPause: () -> Unit,
     onRead: (UnitId) -> Unit,
     onViewAll: () -> Unit = {},
+    /** 单节生成：只跑这一节。 */
+    onGenerateUnit: (UnitId) -> Unit = {},
     onRefresh: () -> Unit,
     onEditUnit: (ClassroomUnit) -> Unit = {},
     planning: Boolean = false,
@@ -491,6 +508,10 @@ private fun OverviewView(
                     }
                 }
                 TextButton(onClick = { onEditUnit(u) }) { Text("调整") }
+                // 单节生成：只跑这一节，不必等整本排队，也不受别的节失败影响。
+                if (u.status != UnitStatus.READY && !running) {
+                    TextButton(onClick = { onGenerateUnit(u.id) }) { Text("生成这节") }
+                }
                 if (u.currentRevisionId != null || service.store.draft(project.id, u.id)?.segments?.isNotEmpty() == true) {
                     TextButton(onClick = { onRead(u.id) }) { Text(if (u.status == UnitStatus.READY) "阅读" else "查看已生成") }
                 }

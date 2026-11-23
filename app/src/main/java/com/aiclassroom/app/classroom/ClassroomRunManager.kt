@@ -101,13 +101,19 @@ object ClassroomRunManager {
         policy: ModelPolicy,
         apiKey: String,
         staleOnly: Boolean = false,
+        /** 非空时只生成这一节（单节按钮）。 */
+        unitId: UnitId? = null,
     ) {
         // 执行交给持久 Worker：进程被杀后任务还能继续。
         // 这里只负责入队与状态投影，不再自己跑协程 —— 避免双执行。
-        _notice.value = if (staleOnly) "正在重写待复查的单元…" else "正在生成…"
+        _notice.value = when {
+            unitId != null -> "正在生成这一节…"
+            staleOnly -> "正在重写待复查的单元…"
+            else -> "正在生成…"
+        }
         _running.value = true
         cancelJob?.cancel()
-        ClassroomRunWorker.schedule(context, projectId, staleOnly)
+        ClassroomRunWorker.schedule(context, projectId, staleOnly, unitId = unitId?.value)
 
         // 状态以仓库为准：Worker 结束后自然收敛，不依赖 Activity 存活。
         cancelJob = scope.launch {

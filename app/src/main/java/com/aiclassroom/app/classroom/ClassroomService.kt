@@ -473,6 +473,8 @@ class ClassroomService(
         /** Worker 传 true：uniqueWork 已保证唯一执行者，可以接管被杀进程留下的租约。 */
         forceLease: Boolean = false,
         runIdentity: RunId? = null,
+        /** 只跑这一节：单节生成按钮用；为空时按依赖顺序跑完整项目。 */
+        onlyUnitId: UnitId? = null,
     ): RunOutcome {
         // 生成前自动同步来源设定：人格、角色、资料都以来源对话为准。
         // 以前靠界面上的「同步来源设定」按钮，用户不点就永远没有快照，
@@ -571,7 +573,7 @@ class ClassroomService(
             sourcePersona = sourcePersonaBlock(projectId),
         )
         return try {
-            RunEngine(store, executor, control, clock, owner = owner, fenceToken = leaseToken)
+            RunEngine(store, executor, control, clock, owner = owner, fenceToken = leaseToken, onlyUnitId = onlyUnitId)
                 .run(projectId, runId)
         } finally {
             // 无论正常结束还是被取消都要释放，否则这个任务再也抢不到执行权。
