@@ -35,11 +35,30 @@ object StatePatchParser {
         val allDropped: Boolean get() = rawChangeCount > 0 && changes.isEmpty()
     }
 
+    /**
+     * 把模型给的 characterId 解析成真实角色。
+     *
+     * 模型在生成阶段看到的是「id=…；姓名=…」，经常直接拿名字填。
+     * 只认 UUID 会让整份补丁作废；先按 id 认，再按名字认。
+     */
+    private fun resolveCharacter(
+        raw: String?,
+        known: Set<CharacterId>,
+        names: Map<String, CharacterId>,
+    ): CharacterId? {
+        if (raw == null) return null
+        val byId = CharacterId(raw)
+        if (byId in known) return byId
+        return names[raw.trim()]?.takeIf { it in known }
+    }
+
     fun parse(
         raw: String,
         knownCharacters: Set<CharacterId>,
         knownEventIds: Set<String>,
         knownFacts: Set<FactId> = emptySet(),
+        /** 角色名 → id：模型常把名字当 characterId 填，能映射就映射，不因此整份作废。 */
+        knownNames: Map<String, CharacterId> = emptyMap(),
     ): Parsed {
         val jsonText = StructuredPayload.extract(raw)
             ?: return Parsed(emptyList(), emptyList(), "", listOf("输出里没有完整 JSON"))
@@ -84,7 +103,7 @@ object StatePatchParser {
         val changes = o["changes"].asArray().mapNotNull { item ->
             val m = item.asObject()
             val actorRaw = m["characterId"].asString()?.takeIf { it.isNotBlank() }
-            val actor = actorRaw?.let { CharacterId(it) }
+            val actor = resolveCharacter(actorRaw, knownCharacters, knownNames)
             if (actor == null) {
                 dropped += "变更缺少 characterId"
                 return@mapNotNull null
@@ -100,12 +119,11 @@ object StatePatchParser {
                 "SetLocation" -> StateChange.SetLocation(actor, m["value"].asString() ?: "")
                 "AdjustStress" -> StateChange.AdjustStress(actor, m["delta"].asInt() ?: 0)
                 "SetRelationship" -> {
-                    val target = m["target"].asString()?.takeIf { it.isNotBlank() }?.let { CharacterId(it) }
+                    val targetRaw = m["target"].asString()?.takeIf { it.isNotBlank() }
+                    val target = resolveCharacter(targetRaw, knownCharacters, knownNames)
                     if (target == null) {
-                        dropped += "关系变更缺少 target"
-                        null
-                    } else if (target !in knownCharacters) {
-                        dropped += "关系变更引用了不存在的角色：" + target.value
+                        dropped += if (targetRaw == null) "关系变更缺少 target"
+                            else "关系变更引用了不存在的角色：" + targetRaw
                         null
                     } else {
                         StateChange.SetRelationship(actor, target, m["value"].asString() ?: "")

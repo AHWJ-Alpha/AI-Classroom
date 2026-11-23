@@ -68,6 +68,13 @@ class UnitExecutor(
      * 没有它，课堂只知道一句原始需求，写出来的故事与对话里已经发生的剧情无关。
      */
     private val priorTurns: List<Pair<String, String>> = emptyList(),
+    /**
+     * 来源对话的完整系统提示词。
+     *
+     * 课堂不能只搬 mentorPrompt 一句话：对话真正的人格还包括一致性规则、
+     * 回复边界、公开背景、作者世界书与角色卡。
+     */
+    private val sourcePersona: String = "",
 ) : UnitRunner {
 
     override suspend fun execute(projectId: ProjectId, unitId: UnitId, runId: RunId): UnitOutcome {
@@ -333,15 +340,29 @@ class UnitExecutor(
             // 来源对话的最近几轮：课堂要接着对话里已经发生的处境写，
             // 否则人物关系会从零重建，和用户聊过的内容完全脱节。
             .let { base ->
-                if (priorTurns.isEmpty()) base else base + "\n\n" + buildString {
-                    appendLine("[DATA:PRIOR_TURNS]")
-                    appendLine("这是你们在对话里最近聊过的内容，本节要接着它写：")
+                if (priorTurns.isEmpty() && sourcePersona.isBlank()) base else base + "\n\n" + buildString {
+                    if (sourcePersona.isNotBlank()) {
+                        // 完整人格优先于任何摘要：规则、边界、世界书都在里面。
+                        appendLine("[SOURCE_PERSONA]")
+                        appendLine("以下是这个对话本身的设定，必须遵守：")
+                        appendLine(sourcePersona)
+                        appendLine("[/SOURCE_PERSONA]")
+                        appendLine()
+                    }
+                    if (priorTurns.isEmpty()) return@buildString
+                    appendLine("[DATA:PRIOR_CONTEXT]")
+                    // 这些是**背景记忆**，不是本节的开头。
+                    // 以前写成「接着它写」，模型会把对话原文当成场景开场重写一遍。
+                    appendLine("以下是你们之前已经发生过的事。它们属于**背景记忆**，不是本节的起点：")
                     priorTurns.forEach { (role, text) ->
                         val who = if (role == "user") "我" else "对方"
-                        appendLine(who + "：" + text)
+                        appendLine("- " + who + "：" + text)
                     }
-                    appendLine("[/DATA:PRIOR_TURNS]")
-                    appendLine("不要复述这些句子，但人物关系、处境与称呼要与之一致。")
+                    appendLine("[/DATA:PRIOR_CONTEXT]")
+                    appendLine("规则：")
+                    appendLine("- 不要复述、不要重演上面的内容，也不要从它们开始写；")
+                    appendLine("- 本节的时间从更靠后的地方开始；")
+                    appendLine("- 只把它们当作已经成立的关系、称呼与已知事实。")
                 }
             }
         val parent = currentCoroutineContext().job
@@ -539,11 +560,14 @@ class UnitExecutor(
             return PatchResult.Failed("状态提取调用失败：" + (call.error::class.simpleName ?: "未知"))
         }
 
+        // 模型可能拿名字当 id：能映射就映射，不整份作废。
+        val knownNames = store.characters(projectId).associate { it.name to it.id }
         var parsed = StatePatchParser.parse(
             call.content,
             knownCharacters,
             content.events.map { it.id }.toSet(),
             knownFacts.toSet(),
+            knownNames = knownNames,
         )
         if (!parsed.usable) {
             // 模型偶尔返回带未转义引号或代码块标记的 JSON。
@@ -567,6 +591,7 @@ class UnitExecutor(
                     knownCharacters,
                     content.events.map { it.id }.toSet(),
                     knownFacts.toSet(),
+                    knownNames = knownNames,
                 )
             }
         }

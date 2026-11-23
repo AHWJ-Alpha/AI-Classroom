@@ -567,6 +567,8 @@ class ClassroomService(
             fencingToken = leaseToken,
             drafts = com.aiclassroom.classroom.repository.DraftStore(store, clock),
             priorTurns = priorTurnsOf(projectId),
+            // 完整人格（含一致性规则、边界、世界书、角色卡）一起带进去。
+            sourcePersona = sourcePersonaBlock(projectId),
         )
         return try {
             RunEngine(store, executor, control, clock, owner = owner, fenceToken = leaseToken)
@@ -590,15 +592,31 @@ class ClassroomService(
      * 拿不到对话时返回空，行为与以前一致。
      */
     private fun priorTurnsOf(projectId: ProjectId): List<Pair<String, String>> {
-        val convId = store.project(projectId)?.sourceConversationId ?: return emptyList()
-        val conversations = runCatching {
-            com.aiclassroom.app.readConversationsForBackground(appContext)
-        }.getOrDefault(emptyList())
-        val room = conversations.firstOrNull { it.id == convId } ?: return emptyList()
+        val room = sourceRoom(projectId) ?: return emptyList()
         return room.messages
             .filter { it.text.isNotBlank() }
             .takeLast(6)
             .map { it.role to it.text.trim().take(300) }
+    }
+
+    /** 来源对话本身：人格、规则、世界书、角色卡都要从它取。 */
+    private fun sourceRoom(projectId: ProjectId): com.aiclassroom.app.model.Classroom? {
+        val convId = store.project(projectId)?.sourceConversationId ?: return null
+        val conversations = runCatching {
+            com.aiclassroom.app.readConversationsForBackground(appContext)
+        }.getOrDefault(emptyList())
+        return conversations.firstOrNull { it.id == convId }
+    }
+
+    /**
+     * 来源对话的完整系统提示词。
+     *
+     * 课堂不能只搬 mentorPrompt 一个字段：对话真正的人格还包括一致性规则、
+     * 回复边界、公开背景、作者世界书与角色卡。只搬一句话，人物的口吻和边界都会走样。
+     */
+    private fun sourcePersonaBlock(projectId: ProjectId): String {
+        val room = sourceRoom(projectId) ?: return ""
+        return runCatching { com.aiclassroom.app.util.conversationSystemPrompt(room) }.getOrDefault("")
     }
 
     /**

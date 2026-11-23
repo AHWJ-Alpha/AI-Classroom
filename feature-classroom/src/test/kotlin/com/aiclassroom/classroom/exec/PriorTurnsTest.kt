@@ -91,7 +91,7 @@ class PriorTurnsTest {
 
         assertTrue(gateway.prompts.isNotEmpty(), "应该至少发过一次请求，实际 outcome=" + outcome)
         val first = gateway.prompts.first()
-        assertTrue(first.contains("[DATA:PRIOR_TURNS]"), "必须标明这是对话上下文")
+        assertTrue(first.contains("[DATA:PRIOR_CONTEXT]"), "必须标明这是背景记忆")
         assertTrue(first.contains("这周放假，不想出门"), "对话内容要真的进请求")
     }
 }

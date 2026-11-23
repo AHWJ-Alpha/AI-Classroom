@@ -261,6 +261,8 @@ class SceneExecutorIntegrationTest {
             g, s, UnitCommitter(s) { now }, { now },
             policy = policy, runOwner = "p", fencingToken = lease.lease.token,
             priorTurns = listOf("user" to "外面雨太大了，我今晚回不去了。"),
+            // 完整人格块：一致性规则、边界、世界书都在里面，不能只搬一句话。
+            sourcePersona = "[讲师/叙述者身份]\n话少、克制，用行动代替表态\n[事实与人物规则]\n固定人格保持稳定",
         )
 
         assertIs<UnitOutcome.Committed>(e.execute(project, unit, run))
@@ -268,7 +270,9 @@ class SceneExecutorIntegrationTest {
         val firstPrompt = g.prompts.first()
         assertContains(firstPrompt, "话少、克制，用行动代替表态", message = "人格必须进请求")
         assertContains(firstPrompt, "短句", message = "语言风格也要进")
-        assertContains(firstPrompt, "[DATA:PRIOR_TURNS]", message = "要标明这是对话上下文")
+        assertContains(firstPrompt, "[DATA:PRIOR_CONTEXT]", message = "要标明这是背景记忆")
+        assertContains(firstPrompt, "不是本节的起点", message = "不能把对话当成开场")
+        assertContains(firstPrompt, "[SOURCE_PERSONA]", message = "完整人格要带进来")
         assertContains(firstPrompt, "外面雨太大了", message = "对话内容要真的进请求")
         assertContains(firstPrompt, "以「她」的第一人称叙述", message = "视角要指定讲师")
     }
