@@ -141,7 +141,10 @@ class RunEngineTest {
 
         assertEquals(listOf("u1", "u2"), runner.executed, "u2 必须继续执行")
         assertEquals(ProjectLifecycle.NEEDS_ATTENTION, store.project(projectId)!!.lifecycle)
-        assertTrue(store.run(runId)!!.error.orEmpty().contains("这一节待处理"), "要记下跳过原因")
+        // run.error 是「这一轮整体出了什么事」的红字提示，不该被逐节的跳过原因占用。
+        // 跳过原因要出现在收尾汇报里（summary），而不是每节刷一条错误。
+        assertTrue(store.run(runId)!!.error.orEmpty().isBlank(), "逐节跳过不该写 run.error")
+        assertEquals(RunStatus.WAITING_INPUT, store.run(runId)!!.status, "有跳过就不是 COMPLETED")
     }
 
     @Test
@@ -164,7 +167,8 @@ class RunEngineTest {
         RunEngine(store, wrapped, alwaysGo, { now }).run(projectId, runId)
 
         assertEquals(listOf("u1", "u2"), runner.executed)
-        assertTrue(store.run(runId)!!.error.orEmpty().contains("这一节失败"), "要记下失败原因")
+        assertTrue(store.run(runId)!!.error.orEmpty().isBlank(), "逐节失败不该写 run.error")
+        assertEquals(RunStatus.WAITING_INPUT, store.run(runId)!!.status)
     }
 
     @Test

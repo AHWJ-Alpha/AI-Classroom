@@ -143,10 +143,11 @@ class RunEngine(
                     // 一节失败不该拖垮整轮：记下原因，跳过它继续下一节。
                     // 以前这里直接 return，表现为「生成完一节就断」。
                     // 必须记进 skipped，否则 nextReadyUnit 会一直选中同一节，死循环。
+                    // 不写进 run.error：那个字段是给「这一轮整体出了什么事」用的，
+                    // 界面把它当红字显示。逐节写进去会让用户每写完一节就闪一条错误，
+                    // 随后又被下一节盖掉 —— 看起来像莫名其妙一直在报错。
+                    // 跳过原因在收尾时统一汇报（见 RunFinalizer 的 summary）。
                     skipped += next.id to outcome.reason
-                    store.run(runId)?.let {
-                        store.saveRun(it.copy(error = "这一节失败：" + outcome.reason, updatedAt = clock()))
-                    }
                 }
                 is UnitOutcome.NetworkInterrupted -> {
                     // 网络断了不是任务出错：把 run 标成暂停（可继续），
@@ -165,10 +166,8 @@ class RunEngine(
                 }
                 is UnitOutcome.NeedsAttention -> {
                     // 同样跳过：这一节留在待处理，后面的节照常写。
+                    // 同样不写 run.error：理由同上，逐节刷红字会被误读成持续报错。
                     skipped += next.id to outcome.reason
-                    store.run(runId)?.let {
-                        store.saveRun(it.copy(error = "这一节待处理：" + outcome.reason, updatedAt = clock()))
-                    }
                 }
             }
         }
