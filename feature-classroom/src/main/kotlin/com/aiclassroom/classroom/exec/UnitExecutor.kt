@@ -726,11 +726,18 @@ class UnitExecutor(
         "调用失败：" + (result.error?.let { it::class.simpleName } ?: "未知")
 
     companion object {
-        /** 依赖都已 READY 的下一个单元；没有则 null。 */
+        /**
+         * 依赖都已 READY 的下一个单元；没有则 null。
+         *
+         * **STALE 也算可执行**：它的语义就是「上游改过，这一节该重写」。
+         * 以前只挑 PLANNED，导致依赖链上只要出现一个 STALE，
+         * 它和它下游的所有节都永远选不中 —— 表现为「写一节就停，
+         * 还报还有 N 个单元无法开始」。
+         */
         fun nextReadyUnit(units: List<ClassroomUnit>): ClassroomUnit? {
             val readyIds = units.filter { it.status == UnitStatus.READY }.map { it.id }.toSet()
             return units
-                .filter { it.status == UnitStatus.PLANNED }
+                .filter { it.status == UnitStatus.PLANNED || it.status == UnitStatus.STALE }
                 .filter { u -> u.dependsOn.all { it in readyIds } }
                 .minByOrNull { it.index }
         }
