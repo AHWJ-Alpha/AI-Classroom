@@ -37,6 +37,15 @@ class SceneContinuation(
         val onAttempt: (String, ModelCallResult) -> Unit = { _, _ -> },
     )
 
+    companion object {
+        /**
+         * 分段绝对硬上限。
+         *
+         * 动态放宽也不能无限：模型每段只写几十字时，没有上限会一直烧调用。
+         */
+        const val MAX_SEGMENTS = 24
+    }
+
     sealed interface Result {
         data class Assembled(val content: UnitContent, val segments: Int, val chars: Int) : Result
         data class Paused(val reason: String, val segments: Int, val chars: Int) : Result
@@ -67,8 +76,21 @@ class SceneContinuation(
                 if (!saved.ok()) return Result.NeedsAttention("组装失败：$saved", draft.segments.size, draft.totalChars)
                 return Result.Assembled(assemble(req, draft), draft.segments.size, draft.totalChars)
             }
-            if (draft.segments.size >= req.plan.maxSegments || draft.callCount >= 64 || draft.failStreak >= 3) {
-                return Result.NeedsAttention("达到分段/调用/纠正上限：${draft.totalChars} / ${req.plan.unitTarget}；${draft.lastError}",
+            // 分段上限按「实际产出」动态放宽：
+            // 计划里的 maxSegments 是按 600 字/段估的，而真机每段常只有 200~300 字，
+            // 于是刚写一半就撞上限，报「达到上限」——用户看到的就是「写几段就停」。
+            // 只要每段还在有效产出、总字数还没到目标，就继续写，直到硬上限为止。
+            val plannedSegments = req.plan.maxSegments
+            val dynamicSegments = run {
+                val avg = if (draft.segments.isEmpty()) 0 else draft.totalChars / draft.segments.size
+                val remain = (req.plan.unitTarget - draft.totalChars).coerceAtLeast(0)
+                // 用实测均值估算还需要几段；均值太小（模型不给力）时不无限膨胀，交给硬上限兜底。
+                val needed = if (avg <= 0) plannedSegments else draft.segments.size + (remain + avg - 1) / avg
+                needed.coerceAtMost(MAX_SEGMENTS)
+            }
+            val segmentLimit = maxOf(plannedSegments, dynamicSegments)
+            if (draft.segments.size >= segmentLimit || draft.callCount >= 64 || draft.failStreak >= 3) {
+                return Result.NeedsAttention("达到分段/调用/纠正上限：${draft.totalChars} / ${req.plan.unitTarget}（已写 ${draft.segments.size} 段，上限 $segmentLimit）",
                     draft.segments.size, draft.totalChars)
             }
             if (draft.totalChars > TextCount.acceptMax(req.plan.unitTarget))

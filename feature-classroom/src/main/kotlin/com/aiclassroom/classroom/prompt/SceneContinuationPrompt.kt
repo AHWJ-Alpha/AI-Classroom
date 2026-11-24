@@ -55,7 +55,10 @@ object SceneContinuationPrompt {
         appendLine("本节要写到的：" + input.unitGoal)
         appendLine("整节目标：" + input.totalTarget + " 字")
         appendLine("当前累计：" + input.currentChars + " 字")
-        appendLine("本次建议新增：约 " + input.perCallTarget + " 字")
+        // 「建议约 N 字」模型只写三分之一（真机实测 230/800）。
+        // 改成明确的区间下限：写不够会被要求续写，反而多花一次调用。
+        appendLine("本段必须写满 " + input.perCallTarget + " 字以上，不要只写一个片段就收尾。")
+        appendLine("宁可把这一段的动作、对白、细节写透，也不要提前结束。")
         if (input.isFirst) appendLine("这是本节的第 1 段：可以用一个标题交代时间范围，之后不再出现标题。")
         else appendLine("这是续写段：不要新增标题。")
         if (input.mustFinish) appendLine("这一段要把当前阶段自然收束，并声明 finished=true。")
