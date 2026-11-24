@@ -253,6 +253,36 @@ class FileClassroomStore(
     @Synchronized
     override fun updateProject(project: ClassroomProject) = mutate { state.projects[project.id.value] = project }
 
+    override fun deleteProject(projectId: ProjectId) = mutate {
+        val key = projectId.value
+        val unitIds = state.units.values.filter { it.projectId == projectId }.map { it.id.value }.toSet()
+        state.projects.remove(key)
+        state.specs.keys.filter { it.startsWith(key + "#") }.forEach { state.specs.remove(it) }
+        state.outlines.keys.filter { it.startsWith(key + "#") }.forEach { state.outlines.remove(it) }
+        unitIds.forEach { state.units.remove(it) }
+        state.revisions.values.filter { it.projectId == projectId }.map { it.id.value }
+            .forEach { state.revisions.remove(it) }
+        state.drafts.keys.filter { it.startsWith(key + "#") }.forEach { state.drafts.remove(it) }
+        state.summaries.values.filter { it.projectId == projectId }.map { it.unitId.value }
+            .forEach { state.summaries.remove(it) }
+        state.stateSnaps.values.filter { it.projectId == projectId }.map { it.unitId.value }
+            .forEach { state.stateSnaps.remove(it) }
+        state.manifests.keys.filter { it.startsWith(key + "#") }.forEach { state.manifests.remove(it) }
+        state.facts.keys.filter { it.startsWith(key + "#") }.forEach { state.facts.remove(it) }
+        state.chars.keys.filter { it.startsWith(key + "#") }.forEach { state.chars.remove(it) }
+        state.charStates.keys.filter { it.startsWith(key + "#") }.forEach { state.charStates.remove(it) }
+        state.snapshots.keys.filter { it.startsWith(key + "#") }.forEach { state.snapshots.remove(it) }
+        state.runs.values.filter { it.projectId == projectId }.map { it.id.value }
+            .forEach { state.runs.remove(it) }
+        state.attempts.keys.filter { it.startsWith(key + "#") || unitIds.any { u -> it.contains(u) } }
+            .forEach { state.attempts.remove(it) }
+        state.checkpoints.values.filter { it.unitId.value in unitIds }.map { it.unitId.value }
+            .forEach { state.checkpoints.remove(it) }
+        state.reader.remove(key)
+        state.saves.values.filter { it.projectId == projectId }.map { it.id.value }
+            .forEach { state.saves.remove(it) }
+    }
+
     @Synchronized
     override fun saveSpec(spec: ProjectSpec) = mutate { state.specs[spec.projectId.value + "#" + spec.version] = spec }
     @Synchronized

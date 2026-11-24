@@ -62,6 +62,9 @@ class ClassroomService(
      *
      * 未关联的旧项目不在这里出现 —— 它们需要显式关联，不能被当前对话顺手接管。
      */
+    /** 删除项目及其全部关联数据（不可恢复，调用方必须先确认）。 */
+    fun deleteProject(projectId: ProjectId) = store.deleteProject(projectId)
+
     fun projectsOf(sourceConversationId: String): List<ClassroomProject> =
         projects().filter { it.sourceConversationId == sourceConversationId }
 

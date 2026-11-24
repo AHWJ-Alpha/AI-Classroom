@@ -87,6 +87,16 @@ class InMemoryStore : ClassroomStore {
     override fun characters(projectId: ProjectId) =
         charMap.values.filter { it.projectId == projectId }
 
+    override fun deleteProject(projectId: ProjectId) {
+        projectMap.remove(projectId)
+        specMap.keys.filter { it.first == projectId }.forEach { specMap.remove(it) }
+        outlineMap.keys.filter { it.first == projectId }.forEach { outlineMap.remove(it) }
+        unitMap.values.filter { it.projectId == projectId }.map { it.id }.forEach { unitMap.remove(it) }
+        revisionMap.values.filter { it.projectId == projectId }.map { it.id }.forEach { revisionMap.remove(it) }
+        draftMap.keys.filter { it.startsWith(projectId.value + "#") }.forEach { draftMap.remove(it) }
+        runMap.values.filter { it.projectId == projectId }.map { it.id }.forEach { runMap.remove(it) }
+    }
+
     override fun saveRun(run: GenerationRun) { runMap[run.id] = run }
     override fun run(runId: RunId) = runMap[runId]
     override fun activeRun(projectId: ProjectId) =

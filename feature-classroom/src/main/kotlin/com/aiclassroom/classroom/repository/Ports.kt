@@ -16,6 +16,15 @@ interface ClassroomStore {
     fun createProject(project: ClassroomProject)
     fun project(id: ProjectId): ClassroomProject?
     fun projects(): List<ClassroomProject>
+
+    /**
+     * 删除项目及其全部关联数据。
+     *
+     * 项目不是孤立一行：规格、总纲、单元、版本、草稿、摘要、状态快照、清单、
+     * 事实、人物、run、事件都挂在它下面。只删 projects 会留下一堆孤儿记录，
+     * 下次按 projectId 查还会查出来。
+     */
+    fun deleteProject(projectId: ProjectId)
     fun updateProject(project: ClassroomProject)
 
     fun saveSpec(spec: ProjectSpec)

@@ -5,7 +5,9 @@ import androidx.compose.foundation.border
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -95,6 +97,8 @@ fun ClassroomScreen(
     var pinnedWorkVersion by remember { mutableStateOf(initialWorkVersion) }
     LaunchedEffect(initialWorkVersion) { pinnedWorkVersion = initialWorkVersion }
     var creating by remember { mutableStateOf(false) }
+    // 长按待删除的项目：删除不可逆，必须二次确认。
+    var deletingProject by remember { mutableStateOf<ClassroomProject?>(null) }
     // 任务跑在进程级作用域（ClassroomRunManager），界面只观察状态：
     // 退出这一屏不会中断生成，通知栏也能看到进度。
     val running by ClassroomRunManager.running.collectAsState()
@@ -326,6 +330,7 @@ fun ClassroomScreen(
                     },
                     onCreate = { creating = true },
                     onOpen = { pinnedWorkVersion = null; openProjectId = it.id },
+                    onDelete = { deletingProject = it },
                 )
             }
         }
@@ -344,6 +349,35 @@ fun ClassroomScreen(
                 refreshTick++
                 notice = "已更新本单元方向（只影响之后的生成）"
             },
+        )
+    }
+
+    // 长按删除的确认框：写清「连正文一起删」，避免误以为只删列表项。
+    deletingProject?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deletingProject = null },
+            title = { Text("删除这个课堂？") },
+            text = {
+                Column {
+                    Text(target.title, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "会连同它的总纲、已写好的 " + service.store.units(target.id).count { it.status == UnitStatus.READY } +
+                            " 节正文、草稿与记录一起删除，无法恢复。",
+                        fontSize = 13.sp,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    service.deleteProject(target.id)
+                    if (openProjectId == target.id) openProjectId = null
+                    deletingProject = null
+                    reloadProjects()
+                    notice = "已删除《" + target.title + "》"
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { deletingProject = null }) { Text("取消") } },
         )
     }
 
@@ -376,6 +410,7 @@ private fun describe(outcome: RunOutcome): String = when (outcome) {
     is RunOutcome.Stalled -> "无法继续：" + outcome.reason
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ProjectListView(
     projects: List<ClassroomProject>,
@@ -385,6 +420,7 @@ private fun ProjectListView(
     onToggleAll: () -> Unit = {},
     onCreate: () -> Unit,
     onOpen: (ClassroomProject) -> Unit,
+    onDelete: (ClassroomProject) -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         if (notice.isNotBlank()) {
@@ -410,7 +446,13 @@ private fun ProjectListView(
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(projects) { p ->
-                Card(Modifier.fillMaxWidth().clickable { onOpen(p) }) {
+                // 长按删除：删除不可逆，做成「长按 + 二次确认」，不放按钮避免误触。
+                Card(
+                    Modifier.fillMaxWidth().combinedClickable(
+                        onClick = { onOpen(p) },
+                        onLongClick = { onDelete(p) },
+                    ),
+                ) {
                     Column(Modifier.padding(14.dp)) {
                         Text(p.title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                         Text(
