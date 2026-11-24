@@ -90,7 +90,9 @@ class UnitCommitterTest {
     }
 
     @Test
-    fun `审查有 blocking 问题时不写入任何内容`() {
+    fun `审查已移除 旧的审查报告不再拦截提交`() {
+        // 审查调用真机上返回空内容，把写够的正文卡在「审查未通过」的死循环里。
+        // 现在提交器完全不看 review 字段：即使版本里带着 blocking 报告也照常提交。
         val store = storeWithUnit()
         val committer = UnitCommitter(store) { now }
         val review = ReviewReport(
@@ -102,12 +104,10 @@ class UnitCommitterTest {
 
         val result = committer.commit(request(revision(review = review)))
 
-        assertIs<CommitResult.Rejected>(result)
-        assertTrue((result as CommitResult.Rejected).rejection is CommitRejection.Blocked)
-        assertNull(store.officialRevision(unitId))
-        assertNull(store.checkpoint(runId))
-        assertEquals(UnitStatus.DRAFT_READY, store.unit(unitId)!!.status)
-        assertEquals(0, store.project(projectId)!!.workVersion)
+        assertTrue(result is CommitResult.Committed, "带 blocking 报告也必须能提交，实际：" + result)
+        assertNotNull(store.officialRevision(unitId), "提交成功就该有正式版本")
+        // 提交成功意味着工作版本 +1，不再是原来的 0。
+        assertEquals(1, store.project(projectId)!!.workVersion)
     }
 
     @Test

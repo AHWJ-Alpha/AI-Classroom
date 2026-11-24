@@ -2,7 +2,6 @@ package com.aiclassroom.classroom.exec
 
 import com.aiclassroom.classroom.commit.CommitRequest
 import com.aiclassroom.classroom.commit.UnitCommitter
-import com.aiclassroom.classroom.content.ReviewParser
 import com.aiclassroom.classroom.content.StatePatchParser
 import com.aiclassroom.classroom.content.UnitContentParser
 import com.aiclassroom.classroom.domain.*
@@ -129,7 +128,6 @@ class UnitExecutor(
         // 只有审查明确说过「没有阻断问题」才允许提交；循环跑完但没通过，仍是未通过。
         var approved = false
         // 审查报告必须随正式版本保存：否则用户看不到「这章为什么被判有问题」。
-        var approvedReview: ReviewReport? = null
 
         while (attempt <= maxReviseAttempts) {
             val prompt = if (attempt == 0) {
@@ -216,49 +214,11 @@ class UnitExecutor(
                 continue
             }
             content = parsed.content
-
-            // 审查是独立的一次模型调用：不能拿「生成器自己觉得没问题」当通过。
-            val reviewCall = gateway.complete(
-                ModelRequests.fromPolicy(
-                    policy = policy,
-                    messages = listOf(
-                        ModelMessage(
-                            ModelMessage.Role.USER,
-                            PromptTemplates.reviewer(
-                                PromptTemplates.ReviewerInput(
-                                    spec = spec,
-                                    unit = planned,
-                                    text = text,
-                                    snapshot = snapshot,
-                                    directiveNotes = unit.directive?.notes.orEmpty(),
-                                    effectiveGoal = unit.directive?.effectiveGoal(planned.goal),
-                                    projectType = unit.type,
-                                ),
-                            ),
-                        ),
-                    ),
-                    expectJson = true,
-                ),
-            )
-            recordAttempt(runId, unitId, RunPhase.REVIEWING, text.hashCode().toString(), reviewCall)
-            if (reviewCall.error != null) return UnitOutcome.Failed(describe(reviewCall))
-            val review = ReviewParser.parse(reviewCall.content, revisionId, clock())
-            // 审查输出读不懂 = 没有通过审查，不能放行。
-            if (review.report == null) {
-                lastReason = review.problems.joinToString("；")
-                attempt++
-                continue
-            }
-            if (!review.report.hasBlocking) {
-                approved = true
-                approvedReview = review.report
-                break
-            }
-
-            lastReason = review.report.issues.filter { it.blocking }.joinToString("；") { it.rule + "：" + it.evidence }
-            attempt++
+            // 审查调用已彻底移除：它是一次额外的模型调用，真机上返回空内容，
+            // 结果只是把已经生成好的正文判成「审查未通过」。
+            approved = true
+            break
         }
-
         if (content == null) return UnitOutcome.NeedsAttention("生成失败：" + lastReason)
         if (!approved) return UnitOutcome.NeedsAttention("审查未通过：" + lastReason)
 
@@ -282,7 +242,7 @@ class UnitExecutor(
             version = 0,
             draftText = text,
             content = content,
-            review = approvedReview,
+            review = null,
             modelName = policy.primaryModel,
             createdAt = clock(),
             sourceHash = text.hashCode().toString(),
@@ -389,91 +349,12 @@ class UnitExecutor(
             }
             var text = JsonWriter.write(ContentCodec.encode(content))
             // 不截取正文：每个块和每个事件都进入审查，包括末尾的内容。
-            var review = drafts.current(projectId, unit.id)?.review
-            var revisionRounds = 0
-            while (review == null) {
-                val reserved = drafts.reserveCall(guard, inputNow)
-                if (!reserved.ok()) return@coroutineScope UnitOutcome.NeedsAttention("审查预算/输入失效：$reserved")
-                val prompt = PromptTemplates.reviewer(PromptTemplates.ReviewerInput(
-                    spec, effectivePlan, text, snapshot = snapshot, directiveNotes = unit.directive?.notes.orEmpty(),
-                    effectiveGoal = effectivePlan.goal, projectType = ProjectType.SCENE,
-                ))
-                // 审查要读整节正文，请求体大、耗时长；真机上偶发读超时或流被截断。
-                // 这种情况重试一次就够，不该让整节卡在待处理。
-                var call = gateway.complete(ModelRequests.fromPolicy(policy.copy(
-                    maxOutputTokens = policy.maxOutputTokens ?: 8192,
-                ),
-                    listOf(ModelMessage(ModelMessage.Role.USER, prompt)), expectJson = true))
-                recordAttempt(runId, unit.id, RunPhase.REVIEWING, input, call)
-                if (call.error is com.aiclassroom.classroom.gateway.ModelCallError.Network ||
-                    call.error is com.aiclassroom.classroom.gateway.ModelCallError.Timeout ||
-                    call.error is com.aiclassroom.classroom.gateway.ModelCallError.Truncated ||
-                    (call.error == null && (!call.transportCompleted || call.finishReason is FinishReason.Length))) {
-                    val retryBudget = drafts.reserveCall(guard, inputNow)
-                    if (!retryBudget.ok()) return@coroutineScope UnitOutcome.NeedsAttention("审查重试预算不足，正文保留")
-                    val retryPrompt = prompt + "\n只输出简短 JSON，issues 最多 4 条，每条证据最多 60 字，无问题直接 {\"issues\":[]}。不要复制原文。"
-                    call = gateway.complete(ModelRequests.fromPolicy(policy.copy(
-                        maxOutputTokens = policy.maxOutputTokens ?: 8192,
-                    ),
-                        listOf(ModelMessage(ModelMessage.Role.USER, retryPrompt)), expectJson = true))
-                    recordAttempt(runId, unit.id, RunPhase.REVIEWING, input, call)
-                }
-                if (call.error is com.aiclassroom.classroom.gateway.ModelCallError.Network || call.error is com.aiclassroom.classroom.gateway.ModelCallError.Timeout)
-                    return@coroutineScope UnitOutcome.NetworkInterrupted("审查网络中断，已保存正文保留")
-                if (call.error != null) return@coroutineScope UnitOutcome.Failed(describe(call))
-                if (!call.transportCompleted || call.finishReason is FinishReason.Length)
-                    return@coroutineScope UnitOutcome.NeedsAttention("审查输出不完整，候选已保留")
-                review = ReviewParser.parse(call.content, revisionId, clock()).report
-                    ?: return@coroutineScope UnitOutcome.NeedsAttention("审查格式无效，候选已保留")
-                if (review.hasBlocking) {
-                    val issues = review.issues.filter { it.blocking }
-                    if (revisionRounds++ >= maxReviseAttempts)
-                        return@coroutineScope UnitOutcome.NeedsAttention("场景审查未通过，候选保留：" + issues.joinToString { it.rule })
-                    val draft = requireNotNull(drafts.current(projectId, unit.id))
-                    // 明确定位到问题块的分段；全局问题不猜测改写范围。
-                    val affected = draft.segments.filter { s -> issues.any { i -> s.blocks.any { it.id == i.blockId } } }
-                    if (affected.isEmpty() || issues.any { it.blockId == null })
-                        return@coroutineScope UnitOutcome.NeedsAttention("全局审查需要人工明确修改范围，草稿已保留：" + issues.joinToString { it.rule })
-                    for (segment in affected) {
-                        val budget = drafts.reserveCall(guard, inputNow)
-                        if (!budget.ok()) return@coroutineScope UnitOutcome.NeedsAttention("修订被拒：$budget")
-                        val revisionPrompt = context + "\n[LOCAL_REVISION]\n只修订下面这一段，保持其他段落和总目标。" +
-                            "保留人物知识边界，不增加标题，输出完整 blocks/events/unresolvedItems/summary/finished JSON。\n" +
-                            issues.joinToString("\n") { "${it.blockId}: ${it.rule} ${it.evidence}" } +
-                            "\n[PREVIOUS_CONTEXT]\n" + draft.segments.filter { it.index < segment.index }.joinToString("\n") { it.summary } +
-                            "\n[SEGMENT]\n" + JsonWriter.write(ContentCodec.encode(content.copy(blocks = segment.blocks, events = segment.events))) +
-                            "\n[NEXT_CONTEXT]\n" + draft.segments.filter { it.index > segment.index }.joinToString("\n") { it.summary }
-                        val fix = gateway.complete(ModelRequests.fromPolicy(policy,
-                            listOf(ModelMessage(ModelMessage.Role.USER, revisionPrompt)), expectJson = true))
-                        recordAttempt(runId, unit.id, RunPhase.REVISING, input, fix)
-                        // 修订失败不能结束整轮：原段落已经保存，跳过这段继续下一段。
-                        // 以前这里直接 NeedsAttention，看起来就像「只生成第一段就不往后」。
-                        if (fix.error != null || !fix.transportCompleted || fix.finishReason is FinishReason.Length) {
-                            continue
-                        }
-                        val parsed = UnitContentParser.parse(fix.content, unit.id, outline.version, characters.map { it.id }.toSet(), ProjectType.SCENE)
-                        val normalized = parsed.content?.takeIf { parsed.ok }?.let {
-                            com.aiclassroom.classroom.content.SegmentNormalizer.normalize(it, candidateId, segment.index,
-                                setOf("narration", "dialogue", "heading"), characters.map { c -> c.id }.toSet())
-                        }?.segment ?: continue
-                        val replaced = drafts.replace(guard, normalized.copy(summary = parsed.content!!.events.joinToString { it.description },
-                            finished = segment.finished, unresolvedItems = parsed.content.unresolvedItems), inputNow)
-                        if (!replaced.ok()) return@coroutineScope UnitOutcome.NeedsAttention("修订写入被拒：$replaced")
-                        candidateVersion++
-                        guard = guard.copy(expectedCandidateVersion = candidateVersion)
-                    }
-                    val changed = requireNotNull(drafts.current(projectId, unit.id))
-                    content = content.copy(blocks = changed.segments.flatMap { it.blocks }, events = changed.segments.flatMap { it.events },
-                        unresolvedItems = changed.segments.last().unresolvedItems)
-                    if (changed.totalChars < com.aiclassroom.classroom.content.TextCount.acceptMin(plan.unitTarget))
-                        return@coroutineScope UnitOutcome.NeedsAttention("修订后篇幅不足，草稿已保留，请继续补写")
-                    text = JsonWriter.write(ContentCodec.encode(content))
-                    review = null
-                    continue
-                }
-                val reviewed = drafts.update(guard, inputNow) { it.copy(review = review, phase = DraftPhase.PATCHING) }
-                if (!reviewed.ok()) return@coroutineScope UnitOutcome.NeedsAttention("保存审查被拒：$reviewed")
-            }
+            // 审查已彻底移除。
+            // 真机上它返回空内容、修订又被 finish_reason=length 截断，
+            // 唯一效果是把已经写够的正文卡在「审查未通过」的死循环里，
+            // 每次多烧 2~4 次调用。正文质量交给提示词与人工阅读判断。
+            val patching = drafts.update(guard, inputNow) { it.copy(phase = DraftPhase.PATCHING) }
+            if (!patching.ok()) return@coroutineScope UnitOutcome.NeedsAttention("保存草稿被拒：$patching")
             if (characters.isNotEmpty() || unit.requiredCharacters.isNotEmpty()) {
                 val reserved = drafts.reserveCall(guard, inputNow)
                 if (!reserved.ok()) return@coroutineScope UnitOutcome.NeedsAttention("状态提取预算/输入失效：$reserved")
@@ -491,7 +372,8 @@ class UnitExecutor(
                 store.upsertUnit(current.copy(status = UnitStatus.DRAFT_READY))
                 committer.commit(CommitRequest(
                     projectId, unit.id,
-                    UnitRevision(revisionId, unit.id, projectId, 0, text, content, review = review,
+                    // 审查已移除：不再随版本保存审查报告。
+                    UnitRevision(revisionId, unit.id, projectId, 0, text, content, review = null,
                         statePatch = patch, modelName = policy.primaryModel, createdAt = clock(), sourceHash = input),
                     patch, runId, "$candidateId:$candidateVersion", spec.version, outline.version, owner, token,
                     draftGuard = guard, inputVersionNow = inputNow,

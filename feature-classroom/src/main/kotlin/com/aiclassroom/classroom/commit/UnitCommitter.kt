@@ -57,8 +57,9 @@ class UnitCommitter(
                     .firstOrNull { it.revisionId == request.revision.id }
                 if (existingRevision != null && existingCheckpoint != null) return CommitResult.Committed(existingCheckpoint, existingRevision)
             }
-            if (draft.phase != DraftPhase.READY_TO_COMMIT || draft.review == null || draft.review.hasBlocking)
-                return CommitResult.Rejected(CommitRejection.StaleInput("草稿尚未通过审查"))
+            // 审查已移除：只要求草稿进入可提交阶段，不再要求存在审查报告。
+            if (draft.phase != DraftPhase.READY_TO_COMMIT)
+                return CommitResult.Rejected(CommitRejection.StaleInput("草稿尚未准备好提交"))
         }
 
         // 幂等：同一单元已经用同一把键提交过，直接返回既有结果，不再造新版本。
@@ -77,11 +78,8 @@ class UnitCommitter(
             return CommitResult.Rejected(CommitRejection.WrongStatus(unit.status))
         }
 
-        // 审查：blocking 问题没清掉之前不能进正式内容。
-        val review = request.revision.review
-        if (review != null && review.hasBlocking) {
-            return CommitResult.Rejected(CommitRejection.Blocked(review.issues.filter { it.blocking }))
-        }
+        // 审查已移除：不再有 blocking 拦截。
+
 
         // 并发：状态补丁必须基于当前版本，否则拒绝并让调用方重新排任务。
         val patch = request.statePatch

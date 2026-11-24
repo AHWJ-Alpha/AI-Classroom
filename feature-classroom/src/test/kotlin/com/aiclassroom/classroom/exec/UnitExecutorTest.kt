@@ -107,7 +107,7 @@ class UnitExecutorTest {
     @Test
     fun `顺利生成并提交后单元变 READY 且有检查点`() = runBlocking {
         val store = storeWithProject()
-        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok(validPatch))
+        val gateway = FakeGateway(ok(validContent), ok(validPatch))
 
         val outcome = executor(store, gateway).execute(projectId, unitId, runId)
 
@@ -120,38 +120,36 @@ class UnitExecutorTest {
     }
 
     @Test
-    fun `审查与生成是两次独立调用`() = runBlocking {
+    fun `审查已移除 只剩生成与状态提取两次调用`() = runBlocking {
         val store = storeWithProject()
-        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok(validPatch))
+        val gateway = FakeGateway(ok(validContent), ok(validPatch))
         executor(store, gateway).execute(projectId, unitId, runId)
-        assertEquals(3, gateway.prompts.size)
+        assertEquals(2, gateway.prompts.size, "生成 + 状态提取，不再有审查")
     }
 
     @Test
     fun `网络重试成功保留重试正文 不再被首次失败内容覆盖`() = runBlocking {
         val store = storeWithProject()
-        val gateway = FakeGateway(failed(ModelCallError.Network("offline")), ok(validContent), ok(cleanReview), ok(validPatch))
+        val gateway = FakeGateway(failed(ModelCallError.Network("offline")), ok(validContent), ok(validPatch))
         val outcome = executor(store, gateway).execute(projectId, unitId, runId)
         assertIs<UnitOutcome.Committed>(outcome)
         assertNotNull(store.officialRevision(unitId))
-        assertEquals(4, gateway.prompts.size)
+        assertEquals(3, gateway.prompts.size, "失败1次 + 重试1次 + 状态提取1次")
     }
 
     @Test
-    fun `审查一直阻断时进入待处理且不提交`() = runBlocking {
+    fun `审查已移除 阻断报告不再影响提交`() = runBlocking {
+        // 审查调用真机上返回空内容，把写够的正文卡在「审查未通过」的死循环里。
+        // 现在完全不调用审查，正文解析通过就提交。
         val store = storeWithProject()
-        val gateway = FakeGateway(
-            ok(validContent), ok(blockingReview),
-            ok(validContent), ok(blockingReview),
-            ok(validContent), ok(blockingReview),
-        )
+        val gateway = FakeGateway(ok(validContent), ok(validPatch))
 
         val outcome = executor(store, gateway).execute(projectId, unitId, runId)
 
-        assertIs<UnitOutcome.NeedsAttention>(outcome)
-        assertNull(store.officialRevision(unitId))
-        assertNull(store.checkpoint(runId))
-        assertEquals(UnitStatus.PLANNED, store.unit(unitId)!!.status)
+        assertIs<UnitOutcome.Committed>(outcome, "不再有审查拦截")
+        assertNotNull(store.officialRevision(unitId))
+        assertNotNull(store.checkpoint(runId))
+        assertEquals(UnitStatus.READY, store.unit(unitId)!!.status, "提交成功后单元就是 READY")
     }
 
     @Test
@@ -207,7 +205,7 @@ class UnitExecutorTest {
     @Test
     fun `状态提取失败时进入待处理而不是当成没有变化`() = runBlocking {
         val store = storeWithProject()
-        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok("我无法判断"), ok("我还是无法判断"))
+        val gateway = FakeGateway(ok(validContent), ok("我无法判断"), ok("我还是无法判断"))
 
         val outcome = executor(store, gateway).execute(projectId, unitId, runId)
 
@@ -243,18 +241,15 @@ class UnitExecutorTest {
     }
 
     @Test
-    fun `正式版本保留审查报告与模型名`() = runBlocking {
-        // 之前 revision.review 写死为 null：审完就丢，用户看不到判据。
+    fun `正式版本记录模型名 不再保存审查报告`() = runBlocking {
+        // 审查调用已删除：版本里的 review 恒为 null，模型名仍然记录。
         val store = storeWithProject()
-        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok(validPatch))
+        val gateway = FakeGateway(ok(validContent), ok(validPatch))
 
         executor(store, gateway).execute(projectId, unitId, runId)
 
         val official = store.officialRevision(unitId)!!
-        // 注意：assertNotNull 返回的是值本身，最后一句会让方法返回非 void，
-        // JUnit 4 会直接忽略这种测试（这里踩过一次）。所以断言后显式收尾。
-        val review = assertNotNull(official.review, "审查报告应随正式版本保存")
-        assertEquals(false, review.hasBlocking)
+        assertNull(official.review, "审查已移除，不再保存报告")
         val modelName = assertNotNull(official.modelName)
         assertTrue(modelName.isNotBlank())
     }
@@ -262,14 +257,15 @@ class UnitExecutorTest {
     @Test
     fun `每次模型调用都留下尝试记录`() = runBlocking {
         val store = storeWithProject()
-        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok(validPatch))
+        val gateway = FakeGateway(ok(validContent), ok(validPatch))
 
         executor(store, gateway).execute(projectId, unitId, runId)
 
         val attempts = store.attempts(runId)
-        assertTrue(attempts.size >= 2, "生成与审查都应留痕，实际 " + attempts.size)
+        // 审查已移除：只剩生成与状态提取两次调用。
+        assertTrue(attempts.size >= 1, "至少生成要留痕，实际 " + attempts.size)
         assertTrue(attempts.any { it.phase == RunPhase.GENERATING })
-        assertTrue(attempts.any { it.phase == RunPhase.REVIEWING })
+        assertTrue(attempts.none { it.phase == RunPhase.REVIEWING }, "不该再有审查调用")
     }
 
     @Test
@@ -278,7 +274,7 @@ class UnitExecutorTest {
         val noEvents = """{"unitId":"u1","title":"开场","planVersion":1,"blocks":[{"id":"b1","type":"narration","text":"雨夜。"}],"events":[]}""".trimIndent()
         // 即使没有事件也要问一次状态提取：模型可能漏写事件，静默跳过会丢变化。
         val emptyPatch = "{\"changes\":[],\"reason\":\"本单元没有状态变化\",\"evidenceEventIds\":[]}"
-        val gateway = FakeGateway(ok(noEvents), ok(cleanReview), ok(emptyPatch))
+        val gateway = FakeGateway(ok(noEvents), ok(emptyPatch))
 
         val outcome = executor(store, gateway).execute(projectId, unitId, runId)
 
@@ -296,7 +292,7 @@ class UnitExecutorTest {
             "{\"op\":\"SetEmotion\",\"characterId\":\"c404\",\"value\":\"x\"}]," + 
             "\"reason\":\"混合\",\"evidenceEventIds\":[\"e1\"]}""".trimIndent()
         // 状态提取解析失败会带错误重试一次，所以这里要准备两次同样的坏输出。
-        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok(mixed), ok(mixed))
+        val gateway = FakeGateway(ok(validContent), ok(mixed), ok(mixed))
 
         val outcome = executor(store, gateway).execute(projectId, unitId, runId)
 
@@ -356,7 +352,7 @@ class UnitExecutorTest {
         )
 
         val emptyPatch = "{\"changes\":[],\"reason\":\"无变化\",\"evidenceEventIds\":[]}"
-        val gateway = FakeGateway(ok(validContent), ok(cleanReview), ok(emptyPatch))
+        val gateway = FakeGateway(ok(validContent), ok(emptyPatch))
         executor(store, gateway).execute(projectId, u2, runId)
 
         val first = gateway.prompts.first()
