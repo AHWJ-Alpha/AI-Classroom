@@ -150,8 +150,10 @@ class RunEngine(
                     skipped += next.id to outcome.reason
                 }
                 is UnitOutcome.NetworkInterrupted -> {
-                    // 网络断了不是任务出错：把 run 标成暂停（可继续），
-                    // 由 Worker 交给 WorkManager 退避重试，已提交的节一律保留。
+                    // 网络断了不是任务出错：把 run 标成暂停（可继续），已提交的节一律保留。
+                    // 注意：不再交给 WorkManager 自动重试 —— 那会在应用被杀、
+                    // 设备重启后自己接着跑，用户什么都没点却在烧额度。
+                    // 现在停在 PAUSED，由用户点「继续生成」。
                     store.run(runId)?.let {
                         store.saveRun(
                             it.copy(

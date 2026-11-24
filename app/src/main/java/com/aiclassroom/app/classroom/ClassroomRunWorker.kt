@@ -190,11 +190,14 @@ class ClassroomRunWorker(
             // 结果卡在 Worker 里就投出去：以前要等用户下次打开应用才写回对话。
             runCatching { ClassroomDelivery.deliverPending(context) }
 
-            // 判定直接用引擎返回值，不再二次查库：
-            // 之前查库拿到的是「租约释放后的状态」，条件永远不成立，retry 从没排上过。
+            // 网络中断**不再** Result.retry()。
+            // WorkManager 的 retry 会在应用被杀、设备重启后自己接着跑，
+            // 用户看到的现象是「我什么都没点，它又开始写了」——
+            // 而且会一直烧额度。现在统一结束，状态停在 PAUSED，由用户点继续。
             when {
                 outcome is RunOutcome.Paused &&
-                    outcome.reason == RunOutcome.PauseReason.NETWORK -> Result.retry()
+                    outcome.reason == RunOutcome.PauseReason.NETWORK ->
+                    Result.success(workDataOf(KEY_ERROR to "网络中断，已暂停，点继续接着写"))
                 outcome is RunOutcome.NeedsAttention || outcome is RunOutcome.Stalled ->
                     Result.failure(workDataOf(KEY_ERROR to message))
                 else -> Result.success()
