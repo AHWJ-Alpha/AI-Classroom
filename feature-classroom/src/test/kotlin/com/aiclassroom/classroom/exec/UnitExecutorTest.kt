@@ -265,7 +265,7 @@ class UnitExecutorTest {
         // 审查已移除：只剩生成与状态提取两次调用。
         assertTrue(attempts.size >= 1, "至少生成要留痕，实际 " + attempts.size)
         assertTrue(attempts.any { it.phase == RunPhase.GENERATING })
-        assertTrue(attempts.none { it.phase == RunPhase.REVIEWING }, "不该再有审查调用")
+        // 阶段枚举里已没有 REVIEWING：审查调用不存在了。
     }
 
     @Test

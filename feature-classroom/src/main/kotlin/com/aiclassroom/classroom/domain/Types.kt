@@ -151,8 +151,7 @@ enum class RunPhase {
     SPECIFYING,
     PLANNING,
     GENERATING,
-    REVIEWING,
-    REVISING,
+    // REVIEWING / REVISING 已删除：审查与修订不再存在。
     COMMITTING,
 }
 
