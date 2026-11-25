@@ -99,7 +99,9 @@ class SceneContinuation(
             val tokenTextLimit = req.policy.maxOutputTokens?.let { ((it - 512) / 3).coerceAtLeast(1) } ?: 1800
             // 已达到下限但模型漏了 finished 时，只补一次有意义的收束，不反复要求“再写 1 字”。
             val closing = draft.totalChars >= minAccept
-            val perCall = (minOf(req.plan.perCallTarget, if (closing) 120 else remaining, tokenTextLimit) / (draft.failStreak + 1)).coerceAtLeast(1)
+            // 不再按 failStreak 缩小预算：失败一次就砍半，目标越小越容易没写够，
+            // 反而形成越写越慢的恶性循环。失败多半是 JSON 不完整，与篇幅无关。
+            val perCall = minOf(req.plan.perCallTarget, if (closing) 120 else remaining, tokenTextLimit).coerceAtLeast(1)
             val prompt = SceneContinuationPrompt.build(SceneContinuationPrompt.Input(
                 rawRequest = req.spec.rawRequest, unitGoal = req.unit.goal, timeRange = req.timeRange,
                 characters = req.characters, totalTarget = req.plan.unitTarget, currentChars = draft.totalChars,
