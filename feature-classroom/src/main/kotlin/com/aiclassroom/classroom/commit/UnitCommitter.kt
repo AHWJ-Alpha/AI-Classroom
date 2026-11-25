@@ -190,6 +190,10 @@ class UnitCommitter(
                 applyPatch(request.projectId, patch, now)
             }
 
+            // 提交前先记下「上一版正文」：传播 STALE 时要拿它比对，
+            // 只有正文真的变了才需要让下游复查。
+            val previousRevision = unit.currentRevisionId?.let { store.revision(it) }
+
             val checkpoint = Checkpoint(
                 runId = request.runId,
                 unitId = unit.id,
@@ -211,9 +215,19 @@ class UnitCommitter(
                 ),
             )
 
-            // 重写某一节之后，依赖它的下游章节已经跟新前文对不上了：
-            // 只把本节标成待复查，等于默许后面几章继续错着。
-            RevisionImpact.markDownstreamStale(store, request.projectId, unit.id)
+            // 重写某一节之后，依赖它的下游章节已经跟新前文对不上了。
+            //
+            // 但只在「正文真的变了」时才传播。原来的行为是每次提交都传播，
+            // 而第一次生成时 #1 会被反复重写（改方向、重试、单节生成），
+            // 每写一次就把 #2..#8 全标成待重写 —— 用户看到的就是
+            // 「一生成，所有进度都变成待重写」，而且永远追不上。
+            //
+            // 判定：这一节之前有正式版本，且这次提交的正文与上一版不同，
+            // 才算「前文变了」。首次提交（没有上一版）不传播：
+            // 下游本来就要按新前文生成，没有「已写好却对不上」的问题。
+            if (previousRevision != null && previousRevision.draftText != request.revision.draftText) {
+                RevisionImpact.markDownstreamStale(store, request.projectId, unit.id)
+            }
 
             store.project(request.projectId)?.let { project ->
                 val newVersion = project.workVersion + 1
