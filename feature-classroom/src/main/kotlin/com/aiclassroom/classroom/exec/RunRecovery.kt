@@ -58,10 +58,15 @@ object RunRecovery {
             if (hasActiveExecutor) continue
 
             for (unit in store.units(project.id)) {
-                if (unit.status in STUCK_UNIT) {
-                    store.upsertUnit(unit.copy(status = UnitStatus.PLANNED))
-                    reset++
-                }
+                if (unit.status !in STUCK_UNIT) continue
+                // 有草稿就退回「草稿已组装」，不是 PLANNED。
+                // 草稿本身没丢（分段都在库里），标成 PLANNED 只是让界面显示「待生成」，
+                // 用户看到的就是「进度没了」；退回 ASSEMBLED 会如实显示已写多少字，
+                // 下次继续时也能从断点接着写。
+                val hasDraft = store.draft(project.id, unit.id)?.segments?.isNotEmpty() == true
+                val target = if (hasDraft) UnitStatus.DRAFT_READY else UnitStatus.PLANNED
+                store.upsertUnit(unit.copy(status = target))
+                reset++
             }
         }
         return Report(paused, reset)

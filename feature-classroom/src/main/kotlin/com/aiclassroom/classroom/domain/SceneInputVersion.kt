@@ -15,8 +15,13 @@ object SceneInputVersion {
             unit.copy(status = UnitStatus.PLANNED, directive = unit.directive?.takeUnless { it.isEmpty }).toString(),
             store.latestSnapshot(projectId)?.let { canonical(StoreCodec.snapshot(it)) }.orEmpty(),
             store.characters(projectId).sortedBy { it.id.value }.joinToString { canonical(StoreCodec.character(it)) },
+            // 上游只取「真正影响正文身份」的三项：是哪一节、它的正式版本、它的正文 id。
+            // **不取 status** —— 状态会因为一次失败、一次恢复、一次标 STALE 就变，
+            // 而正文并没有变。把 status 算进指纹会让下游草稿集体失配：
+            // 上一节刚报错，下一节已经写好的草稿就被判成「输入变了」，从头重写。
+            // 用户看到的就是「一报错/一中断，进度就没了」。
             store.units(projectId).filter { it.index < unit.index }.sortedBy { it.index }
-                .joinToString { "${it.id.value}:${it.currentRevisionId?.value}:${it.officialVersion}:${it.status}" },
+                .joinToString { "${it.id.value}:${it.currentRevisionId?.value}:${it.officialVersion}" },
             // 正式状态只在单元提交时改变；本候选的生成阶段不改变这些值。
             store.characterStates(projectId).sortedBy { it.characterId.value }
                 .joinToString { canonical(StoreCodec.characterState(it)) },
