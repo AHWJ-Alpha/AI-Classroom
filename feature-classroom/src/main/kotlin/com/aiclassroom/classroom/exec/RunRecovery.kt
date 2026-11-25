@@ -58,15 +58,25 @@ object RunRecovery {
             if (hasActiveExecutor) continue
 
             for (unit in store.units(project.id)) {
-                if (unit.status !in STUCK_UNIT) continue
-                // 有草稿就退回「草稿已组装」，不是 PLANNED。
-                // 草稿本身没丢（分段都在库里），标成 PLANNED 只是让界面显示「待生成」，
-                // 用户看到的就是「进度没了」；退回 ASSEMBLED 会如实显示已写多少字，
-                // 下次继续时也能从断点接着写。
-                val hasDraft = store.draft(project.id, unit.id)?.segments?.isNotEmpty() == true
-                val target = if (hasDraft) UnitStatus.DRAFT_READY else UnitStatus.PLANNED
-                store.upsertUnit(unit.copy(status = target))
-                reset++
+                val draft = store.draft(project.id, unit.id)
+                val hasDraft = draft?.segments?.isNotEmpty() == true && draft.phase != DraftPhase.COMMITTED
+                // 情况一：状态卡在「进行中」，必须清掉，否则 nextReadyUnit 永远选不中它。
+                if (unit.status in STUCK_UNIT) {
+                    // 有草稿就退回「草稿已组装」，不是 PLANNED。
+                    // 草稿本身没丢（分段都在库里），标成 PLANNED 只是让界面显示「待生成」，
+                    // 用户看到的就是「进度没了」；退回 DRAFT_READY 会如实显示已写多少字，
+                    // 下次继续时也能从断点接着写。
+                    store.upsertUnit(unit.copy(status = if (hasDraft) UnitStatus.DRAFT_READY else UnitStatus.PLANNED))
+                    reset++
+                    continue
+                }
+                // 情况二：状态是 PLANNED/STALE，但草稿里已经写了几段。
+                // 这是历史遗留的「状态与草稿不一致」：界面显示「待生成」，
+                // 用户以为进度没了。补一次修正，让它如实显示。
+                if (hasDraft && unit.status in setOf(UnitStatus.PLANNED, UnitStatus.STALE)) {
+                    store.upsertUnit(unit.copy(status = UnitStatus.DRAFT_READY))
+                    reset++
+                }
             }
         }
         return Report(paused, reset)
