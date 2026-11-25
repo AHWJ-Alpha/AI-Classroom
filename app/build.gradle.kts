@@ -12,8 +12,8 @@ android {
         applicationId = "com.aiclassroom.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 48
-        versionName = "4.1.1"
+        versionCode = 49
+        versionName = "4.1.2"
         testInstrumentationRunner = "com.aiclassroom.app.classroom.SceneTestInstrumentation"
     }
 
