@@ -313,9 +313,21 @@ class ClassroomService(
             historyThroughIndex = historyThroughIndex,
             sourceConversationId = sourceConversationId,
         )
-        val stale = com.aiclassroom.classroom.exec.Regeneration.markReadyStale(store, projectId)
-        store.project(projectId)?.let {
-            store.updateProject(it.copy(lifecycle = ProjectLifecycle.NEEDS_ATTENTION, updatedAt = clock()))
+        // 只在「设定真的变了」时才把已完成单元标成待复查。
+        // 以前无条件标：而 run() 每次开始生成前都会自动同步一次快照，
+        // 于是每按一次「生成」，所有写好的节全变成「待重写」，
+        // 用户看到的就是「一生成进度就没了」。
+        // 快照内容与上一张完全一致时，正文并没有失配的理由，不该标。
+        val changed = sourceSettingsChanged(store.latestSnapshot(projectId), snapshot)
+        val stale = if (changed) {
+            com.aiclassroom.classroom.exec.Regeneration.markReadyStale(store, projectId)
+        } else {
+            0
+        }
+        if (stale > 0) {
+            store.project(projectId)?.let {
+                store.updateProject(it.copy(lifecycle = ProjectLifecycle.NEEDS_ATTENTION, updatedAt = clock()))
+            }
         }
         return snapshot to stale
     }
@@ -627,6 +639,36 @@ class ClassroomService(
             com.aiclassroom.app.readConversationsForBackground(appContext)
         }.getOrDefault(emptyList())
         return conversations.firstOrNull { it.id == convId }
+    }
+
+    /**
+     * 两张快照的「来源设定」是否真的不同。
+     *
+     * 只比会影响正文的那几项：人格、称呼、世界书、角色卡、事实、可见性。
+     * 不比 historyThroughIndex —— 对话每多一句它就变，但正文不受影响；
+     * 拿它当判据会让「每聊一句就整本待重写」。
+     */
+    private fun sourceSettingsChanged(
+        previous: com.aiclassroom.classroom.domain.ContextSnapshot?,
+        next: com.aiclassroom.classroom.domain.ContextSnapshot?,
+    ): Boolean = sourceSettingsChangedForTest(previous, next)
+
+    companion object {
+        /** 供测试直接验证判定逻辑，不依赖整个服务实例。 */
+        internal fun sourceSettingsChangedForTest(
+            previous: com.aiclassroom.classroom.domain.ContextSnapshot?,
+            next: com.aiclassroom.classroom.domain.ContextSnapshot?,
+        ): Boolean {
+            if (previous == null || next == null) return true
+            return previous.mentorName != next.mentorName ||
+                previous.mentorPrompt != next.mentorPrompt ||
+                previous.userAlias != next.userAlias ||
+                previous.publicWorldBook != next.publicWorldBook ||
+                previous.authorWorldBook != next.authorWorldBook ||
+                previous.characters != next.characters ||
+                previous.materials != next.materials ||
+                previous.facts != next.facts
+        }
     }
 
     /**
