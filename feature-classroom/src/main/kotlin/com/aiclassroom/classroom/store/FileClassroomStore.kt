@@ -373,6 +373,8 @@ class FileClassroomStore(
 
     @Synchronized
     override fun saveRun(run: GenerationRun) = mutate { state.runs[run.id.value] = run }
+
+    override fun deleteRun(runId: RunId) = mutate { state.runs.remove(runId.value) }
     @Synchronized
     override fun run(runId: RunId) = state.runs[runId.value]
     @Synchronized

@@ -21,6 +21,9 @@ object RunRecovery {
     }
 
     private val STUCK_RUN = setOf(RunStatus.RUNNING, RunStatus.PAUSE_REQUESTED)
+
+    /** 每个项目保留多少条已结束的 run 记录（用于排查），更早的删掉。 */
+    private const val KEEP_RUNS = 8
     private val STUCK_UNIT = setOf(
         UnitStatus.GENERATING,
         UnitStatus.REVIEWING,
@@ -36,6 +39,13 @@ object RunRecovery {
         var reset = 0
 
         for (project in store.projects()) {
+            // 先记下「进 recover 时还在跑」的 run：它们马上会被标成 PAUSED，
+            // 但清理历史时要把它们当活的留下 —— 否则刚杀进程重启，
+            // 那条正被 Worker 持有的记录就被当垃圾删了。
+            val liveAtEntry = store.runs(project.id)
+                .filter { it.status == RunStatus.RUNNING || it.status == RunStatus.QUEUED }
+                .map { it.id }
+                .toSet()
             // PAUSE_REQUESTED 的任务 activeRun 查不到，所以按项目取全部任务再筛。
             for (run in store.runs(project.id).filter { it.status in STUCK_RUN }) {
                 // 有有效执行者（租约未过期）的任务正在别人手里跑：
@@ -78,6 +88,16 @@ object RunRecovery {
                     reset++
                 }
             }
+
+            // 清理过旧的 run 记录：只留最近 KEEP_RUNS 条。
+            // 每次杀进程、每次点生成都会新建一条，不清理会一直堆；
+            // 界面又会读「最近一次 run 的 error」，旧记录混在里面只会误导。
+            // 只删已结束的：正在跑的由租约保护，删了会让执行者失去状态。
+            store.runs(project.id)
+                .filter { it.id !in liveAtEntry }
+                .sortedByDescending { it.startedAt }
+                .drop(KEEP_RUNS)
+                .forEach { store.deleteRun(it.id) }
         }
         return Report(paused, reset)
     }

@@ -72,6 +72,15 @@ interface ClassroomStore {
     /** 某个项目下的全部任务（含已结束的），用于恢复与诊断。 */
     fun runs(projectId: ProjectId): List<GenerationRun>
 
+    /**
+     * 删掉一条已经结束的 run 记录。
+     *
+     * run 记录只用于展示进度与排查，正文在 revisions 里，删它不影响内容。
+     * 只允许删已结束的（COMPLETED / FAILED / CANCELLED / PAUSED），
+     * 正在跑的记录由租约保护，调用方不该删。
+     */
+    fun deleteRun(runId: RunId)
+
     fun saveAttempt(attempt: GenerationAttempt)
     fun attempts(runId: RunId): List<GenerationAttempt>
 

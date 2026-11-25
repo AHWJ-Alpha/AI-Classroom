@@ -65,3 +65,52 @@ class RecoveryKeepsDraftTest {
         assertEquals(UnitStatus.PLANNED, s.unit(unitId)!!.status)
     }
 }
+
+/** run 记录只留最近 8 条，避免越堆越多。 */
+class RunHistoryPruneTest {
+
+    private val projectId = ProjectId("p1")
+    private val now = 5_000_000L
+
+    private fun store(count: Int): InMemoryStore {
+        val s = InMemoryStore()
+        s.createProject(
+            ClassroomProject(
+                id = projectId, title = "t", type = ProjectType.SCENE,
+                lifecycle = ProjectLifecycle.ACTIVE, createdAt = 1L, updatedAt = 1L,
+            ),
+        )
+        for (i in 1..count) {
+            s.saveRun(
+                GenerationRun(
+                    RunId("r" + i), projectId, 1, 1, RunPhase.GENERATING, RunStatus.PAUSED,
+                    startedAt = i.toLong(), updatedAt = i.toLong(),
+                ),
+            )
+        }
+        return s
+    }
+
+    @Test
+    fun `只保留最近 8 条 run 记录`() {
+        val s = store(20)
+        RunRecovery.recover(s, now)
+        assertEquals(8, s.runs(projectId).size, "旧记录该被清理")
+        // 保留的应该是最新的那几条。
+        val kept = s.runs(projectId).map { it.startedAt }.sorted()
+        assertEquals((13L..20L).toList(), kept, "保留最近 8 条")
+    }
+
+    @Test
+    fun `正在跑的 run 不会被清理`() {
+        val s = store(20)
+        s.saveRun(
+            GenerationRun(
+                RunId("live"), projectId, 1, 1, RunPhase.GENERATING, RunStatus.RUNNING,
+                startedAt = 1L, updatedAt = 1L,
+            ),
+        )
+        RunRecovery.recover(s, now)
+        assertTrue(s.run(RunId("live")) != null, "正在跑的记录不能删")
+    }
+}

@@ -98,6 +98,7 @@ class InMemoryStore : ClassroomStore {
     }
 
     override fun saveRun(run: GenerationRun) { runMap[run.id] = run }
+    override fun deleteRun(runId: RunId) { runMap.remove(runId) }
     override fun run(runId: RunId) = runMap[runId]
     override fun activeRun(projectId: ProjectId) =
         runMap.values.firstOrNull { it.projectId == projectId && it.status == RunStatus.RUNNING }
