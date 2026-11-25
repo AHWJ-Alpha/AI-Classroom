@@ -236,9 +236,12 @@ class SceneExecutorIntegrationTest {
         assertContains(firstPrompt, "话少、克制，用行动代替表态", message = "人格必须进请求")
         assertContains(firstPrompt, "短句", message = "语言风格也要进")
         assertContains(firstPrompt, "[DATA:PRIOR_CONTEXT]", message = "要标明这是背景记忆")
-        assertContains(firstPrompt, "不是本节的起点", message = "不能把对话当成开场")
+        assertContains(firstPrompt, "不要把它当成本节的开场", message = "不能把对话当成开场")
+        assertContains(firstPrompt, "不是台词", message = "必须说明这是转述而不是台词")
         assertContains(firstPrompt, "[SOURCE_PERSONA]", message = "完整人格要带进来")
         assertContains(firstPrompt, "外面雨太大了", message = "对话内容要真的进请求")
+        // 原文不能以「我：… / 对方：…」的形式出现，那会被当成待续写的对话。
+        assertTrue(!firstPrompt.contains("我：外面雨太大了"), "不能用对话格式，要用转述")
         assertContains(firstPrompt, "以「她」的第一人称叙述", message = "视角要指定讲师")
     }
 }

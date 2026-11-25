@@ -596,12 +596,28 @@ class ClassroomService(
      * 取最近 6 轮、每轮截 300 字：够模型接上处境，又不会把上下文撑爆。
      * 拿不到对话时返回空，行为与以前一致。
      */
+    /**
+     * 来源对话里「已经成立的事实」。
+     *
+     * 优先用记忆卡片（标题 + 摘要）——它们本来就是被总结过的事实，
+     * 模型不会把它们当成待续写的台词。只有完全没有卡片时才退回最近几轮原话。
+     *
+     * 为什么不再默认用原话：对话原文在模型眼里就是一份可续写的对话，
+     * 它会把原句搬进正文，甚至接着那几句往下写。
+     */
     private fun priorTurnsOf(projectId: ProjectId): List<Pair<String, String>> {
         val room = sourceRoom(projectId) ?: return emptyList()
+        val cards = room.memoryCards
+            .filter { it.summary.isNotBlank() }
+            .sortedByDescending { it.priority }
+            .take(8)
+            .map { "fact" to (it.title + "：" + it.summary).trim() }
+        if (cards.isNotEmpty()) return cards
+        // 没有卡片：退回最近几轮，但仍然只取很短的一段。
         return room.messages
             .filter { it.text.isNotBlank() }
-            .takeLast(6)
-            .map { it.role to it.text.trim().take(300) }
+            .takeLast(4)
+            .map { it.role to it.text.trim().take(150) }
     }
 
     /** 来源对话本身：人格、规则、世界书、角色卡都要从它取。 */

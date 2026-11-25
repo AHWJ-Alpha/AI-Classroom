@@ -311,18 +311,26 @@ class UnitExecutor(
                     }
                     if (priorTurns.isEmpty()) return@buildString
                     appendLine("[DATA:PRIOR_CONTEXT]")
-                    // 这些是**背景记忆**，不是本节的开头。
-                    // 以前写成「接着它写」，模型会把对话原文当成场景开场重写一遍。
-                    appendLine("以下是你们之前已经发生过的事。它们属于**背景记忆**，不是本节的起点：")
+                    // 关键：不能按「我：… / 对方：…」逐条列。
+                    // 那种格式在模型眼里就是一份待续写的对话，它会把原话搬进正文，
+                    // 甚至直接接着那几句往下写 —— 用户看到的就是「对话记录被写进场景」。
+                    // 改成不带说话人标签的事实陈述，并明确禁止引用原句。
+                    appendLine("以下情况在本节开始之前**已经成立**，只作为前提：")
                     priorTurns.forEach { (role, text) ->
-                        val who = if (role == "user") "我" else "对方"
-                        appendLine("- " + who + "：" + text)
+                        // role=fact 是记忆卡片（已总结的事实）；其余是退回的原始对话。
+                        if (role == "fact") {
+                            appendLine("- " + condense(text))
+                        } else {
+                            val who = if (role == "user") "我" else "对方"
+                            appendLine("- " + who + "曾提到：" + condense(text))
+                        }
                     }
                     appendLine("[/DATA:PRIOR_CONTEXT]")
-                    appendLine("规则：")
-                    appendLine("- 不要复述、不要重演上面的内容，也不要从它们开始写；")
-                    appendLine("- 本节的时间从更靠后的地方开始；")
-                    appendLine("- 只把它们当作已经成立的关系、称呼与已知事实。")
+                    appendLine("硬性要求：")
+                    appendLine("- 上面这些是**转述**，不是台词。正文里不要出现这些原句，一个字都不要抄。")
+                    appendLine("- 不要接着上面的话往下写，不要把它当成本节的开场。")
+                    appendLine("- 本节的时间从更靠后开始，写的是新发生的场景。")
+                    appendLine("- 只取其中的关系、称呼与已知事实。")
                 }
             }
         val parent = currentCoroutineContext().job
@@ -603,6 +611,18 @@ class UnitExecutor(
             ),
         )
     }
+
+    /**
+     * 把一句对话压成事实陈述。
+     *
+     * 去掉引号与对话腔：引号是「这是台词」的强信号，留着它模型就会原样搬进正文。
+     * 同时截短，避免一段闲聊占满上下文。
+     */
+    private fun condense(text: String): String = text
+        .replace(Regex("[\\\"「」『』“”‘’]"), "")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .take(120)
 
     private fun describe(result: ModelCallResult): String =
         "调用失败：" + (result.error?.let { it::class.simpleName } ?: "未知")
