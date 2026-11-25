@@ -38,7 +38,6 @@ data class UnitDraft(
     /** 应用层调用计数与连续失败数：恢复后不清零。 */
     val callCount: Int = 0,
     val failStreak: Int = 0,
-    val review: ReviewReport? = null,
     val committedRevisionId: RevisionId? = null,
     val lastError: String = "",
     val updatedAt: EpochMillis = 0,

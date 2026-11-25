@@ -224,7 +224,7 @@ class DraftStore(
         update(guard, inputVersionNow) { d ->
             require(d.segments.any { it.index == segment.index })
             val segments = d.segments.map { if (it.index == segment.index) segment else it }
-            d.copy(segments = segments, candidateVersion = d.candidateVersion + 1, review = null,
+            d.copy(segments = segments, candidateVersion = d.candidateVersion + 1,
                 totalChars = segments.sumOf { com.aiclassroom.classroom.content.TextCount.units(it.blocks) },
                 summary = segments.joinToString("\n") { it.summary }.takeLast(6000),
                 usedScenes = segments.flatMap { it.events }.map { it.description }.distinct(),

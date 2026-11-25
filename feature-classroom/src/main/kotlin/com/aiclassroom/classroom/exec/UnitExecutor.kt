@@ -242,7 +242,7 @@ class UnitExecutor(
             version = 0,
             draftText = text,
             content = content,
-            review = null,
+
             modelName = policy.primaryModel,
             createdAt = clock(),
             sourceHash = text.hashCode().toString(),
@@ -373,7 +373,7 @@ class UnitExecutor(
                 committer.commit(CommitRequest(
                     projectId, unit.id,
                     // 审查已移除：不再随版本保存审查报告。
-                    UnitRevision(revisionId, unit.id, projectId, 0, text, content, review = null,
+                    UnitRevision(revisionId, unit.id, projectId, 0, text, content,
                         statePatch = patch, modelName = policy.primaryModel, createdAt = clock(), sourceHash = input),
                     patch, runId, "$candidateId:$candidateVersion", spec.version, outline.version, owner, token,
                     draftGuard = guard, inputVersionNow = inputNow,

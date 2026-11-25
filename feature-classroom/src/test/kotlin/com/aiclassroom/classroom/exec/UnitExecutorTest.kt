@@ -249,7 +249,7 @@ class UnitExecutorTest {
         executor(store, gateway).execute(projectId, unitId, runId)
 
         val official = store.officialRevision(unitId)!!
-        assertNull(official.review, "审查已移除，不再保存报告")
+
         val modelName = assertNotNull(official.modelName)
         assertTrue(modelName.isNotBlank())
     }

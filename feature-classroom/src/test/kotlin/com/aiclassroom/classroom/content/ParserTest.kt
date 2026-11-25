@@ -105,32 +105,4 @@ class UnitContentParserTest {
     }
 }
 
-class ReviewParserTest {
 
-    private val revisionId = RevisionId("rev1")
-
-    @Test
-    fun `解析出结构化问题并保留 blocking`() {
-        val text = raw("""{"issues":[{"id":"i1","severity":"ERROR","rule":"因果","evidence":"e","blocking":true}]}""")
-        val parsed = ReviewParser.parse(text, revisionId, 1L)
-        val report = assertNotNull(parsed.report)
-        assertEquals(1, report.issues.size)
-        assertTrue(report.hasBlocking)
-        assertEquals(ReviewIssue.Severity.ERROR, report.issues[0].severity)
-        assertEquals(revisionId, report.issues[0].revisionId)
-    }
-
-    @Test
-    fun `空问题列表表示通过`() {
-        val parsed = ReviewParser.parse(raw("""{"issues":[]}"""), revisionId, 1L)
-        val report = assertNotNull(parsed.report)
-        assertTrue(!report.hasBlocking)
-    }
-
-    @Test
-    fun `审查输出读不懂时返回问题而不是当成通过`() {
-        val parsed = ReviewParser.parse("看起来还行。", revisionId, 1L)
-        assertNull(parsed.report)
-        assertTrue(parsed.problems.isNotEmpty())
-    }
-}

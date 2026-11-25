@@ -111,7 +111,6 @@ object StoreCodec {
         "draftText" to Json.of(r.draftText),
         // 正文块必须落库：不存的话阅读器只能读原始 JSON 草稿。
         "content" to (r.content?.let(ContentCodec::encode) ?: Json.Null),
-        "review" to (r.review?.let(::review) ?: Json.Null),
         "attemptId" to Json.of(r.attemptId?.value),
         "modelName" to Json.of(r.modelName),
         "promptTemplateVersion" to Json.of(r.promptTemplateVersion),
@@ -130,7 +129,7 @@ object StoreCodec {
             version = o["version"].asInt() ?: 0,
             draftText = o["draftText"].asString() ?: "",
             content = ContentCodec.decode(o["content"]),
-            review = o["review"].takeIf { it !is Json.Null }?.let(::review),
+
             attemptId = o["attemptId"].asString()?.let { AttemptId(it) },
             modelName = o["modelName"].asString(),
             promptTemplateVersion = o["promptTemplateVersion"].asInt() ?: 1,
@@ -138,46 +137,6 @@ object StoreCodec {
             committedAt = o["committedAt"].asLong(),
             sourceHash = o["sourceHash"].asString() ?: "",
             supersededBy = o["supersededBy"].asString()?.let { RevisionId(it) },
-        )
-    }
-
-    private fun review(r: ReviewReport): Json = Json.obj(
-        "reviewedAt" to Json.of(r.reviewedAt),
-        "templateVersion" to Json.of(r.templateVersion),
-        "issues" to Json.arr(
-            r.issues.map { i ->
-                Json.obj(
-                    "id" to Json.of(i.id),
-                    "severity" to Json.of(i.severity.name),
-                    "revisionId" to Json.of(i.revisionId.value),
-                    "blockId" to Json.of(i.blockId),
-                    "rule" to Json.of(i.rule),
-                    "evidence" to Json.of(i.evidence),
-                    "suggestedScope" to Json.of(i.suggestedScope),
-                    "blocking" to Json.of(i.blocking),
-                )
-            },
-        ),
-    )
-
-    private fun review(j: Json): ReviewReport {
-        val o = j.asObject()
-        return ReviewReport(
-            issues = o["issues"].asArray().map { item ->
-                val m = item.asObject()
-                ReviewIssue(
-                    id = m["id"].asString() ?: "",
-                    severity = enumOr(m["severity"].asString(), ReviewIssue.Severity.WARN),
-                    revisionId = RevisionId(m["revisionId"].asString() ?: ""),
-                    blockId = m["blockId"].asString(),
-                    rule = m["rule"].asString() ?: "",
-                    evidence = m["evidence"].asString() ?: "",
-                    suggestedScope = m["suggestedScope"].asString(),
-                    blocking = m["blocking"].asBool() ?: false,
-                )
-            },
-            reviewedAt = o["reviewedAt"].asLong() ?: 0,
-            templateVersion = o["templateVersion"].asInt() ?: 1,
         )
     }
 
@@ -286,7 +245,6 @@ object StoreCodec {
         "failStreak" to Json.of(d.failStreak),
         "lastError" to Json.of(d.lastError),
         "committedRevisionId" to Json.of(d.committedRevisionId?.value),
-        "review" to (d.review?.let { review(it) } ?: Json.Null),
         "segments" to Json.arr(d.segments.map { segment(it) }),
     )
 
@@ -311,7 +269,7 @@ object StoreCodec {
             failStreak = o["failStreak"].asInt() ?: 0,
             lastError = o["lastError"].asString().orEmpty(),
             committedRevisionId = o["committedRevisionId"].asString()?.let(::RevisionId),
-            review = o["review"].takeIf { it != null && it !is Json.Null }?.let { review(it) },
+
         )
     }
 

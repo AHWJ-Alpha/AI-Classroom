@@ -39,7 +39,7 @@ class UnknownCharacterTest {
 
     private fun revision() = UnitRevision(
         id = RevisionId("r1"), unitId = unitId, projectId = projectId, version = 1,
-        draftText = "正文", content = null, review = null, attemptId = null, modelName = "m",
+        draftText = "正文", content = null, attemptId = null, modelName = "m",
         promptTemplateVersion = 1, createdAt = now, committedAt = now, sourceHash = "h",
     )
 

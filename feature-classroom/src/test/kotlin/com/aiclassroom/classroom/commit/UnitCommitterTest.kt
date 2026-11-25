@@ -39,7 +39,6 @@ class UnitCommitterTest {
 
     private fun revision(
         id: String = "rev1",
-        review: ReviewReport? = null,
     ) = UnitRevision(
         id = RevisionId(id), unitId = unitId, projectId = projectId, version = 0,
         draftText = "正文",
@@ -49,7 +48,7 @@ class UnitCommitterTest {
             events = listOf(UnitEvent(id = "e1", sourceBlockIds = listOf("b1"), description = "开场")),
             blocks = listOf(ContentBlock.Narration("b1", "正文")),
         ),
-        review = review, createdAt = now, sourceHash = "h-" + id,
+        createdAt = now, sourceHash = "h-" + id,
     )
 
     private fun request(
@@ -87,41 +86,6 @@ class UnitCommitterTest {
         assertEquals(first.checkpoint.revisionId, second.checkpoint.revisionId)
         assertEquals(1, store.project(projectId)!!.workVersion)
         assertEquals(1, store.revisions(unitId).size)
-    }
-
-    @Test
-    fun `审查已移除 旧的审查报告不再拦截提交`() {
-        // 审查调用真机上返回空内容，把写够的正文卡在「审查未通过」的死循环里。
-        // 现在提交器完全不看 review 字段：即使版本里带着 blocking 报告也照常提交。
-        val store = storeWithUnit()
-        val committer = UnitCommitter(store) { now }
-        val review = ReviewReport(
-            issues = listOf(
-                ReviewIssue("i1", ReviewIssue.Severity.ERROR, RevisionId("rev1"), null, "因果", "证据", null, true),
-            ),
-            reviewedAt = now,
-        )
-
-        val result = committer.commit(request(revision(review = review)))
-
-        assertTrue(result is CommitResult.Committed, "带 blocking 报告也必须能提交，实际：" + result)
-        assertNotNull(store.officialRevision(unitId), "提交成功就该有正式版本")
-        // 提交成功意味着工作版本 +1，不再是原来的 0。
-        assertEquals(1, store.project(projectId)!!.workVersion)
-    }
-
-    @Test
-    fun `非阻断问题允许提交`() {
-        val store = storeWithUnit()
-        val committer = UnitCommitter(store) { now }
-        val review = ReviewReport(
-            issues = listOf(
-                ReviewIssue("i1", ReviewIssue.Severity.INFO, RevisionId("rev1"), null, "风格", "提示", null, false),
-            ),
-            reviewedAt = now,
-        )
-
-        assertIs<CommitResult.Committed>(committer.commit(request(revision(review = review))))
     }
 
     @Test

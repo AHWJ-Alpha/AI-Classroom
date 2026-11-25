@@ -58,34 +58,4 @@ class PlannerReviewerContextTest {
         assertFalse(text.contains("[MENTOR_IDENTITY]"))
         assertFalse(text.contains("[DATA:MATERIALS]"))
     }
-
-    @Test
-    fun `审查器拿到角色 事实与用户补充要求`() {
-        val text = PromptTemplates.reviewer(
-            PromptTemplates.ReviewerInput(
-                spec = spec(),
-                unit = PlannedUnit(UnitId("u1"), 1, "第一章", "讲对象", completionCriteria = listOf("讲清")),
-                text = "这是正文",
-                snapshot = snapshot(),
-                directiveNotes = "多举一个例子",
-            ),
-        )
-        assertTrue(text.contains("多举一个例子"), "审查要按用户改过的目标判")
-        assertTrue(text.contains("林夏"))
-        assertTrue(text.contains("仅作者"), "事实要带可见范围，审查才能判泄密")
-        assertTrue(text.contains("校长是幕后黑手"), "作者世界书要参与审查")
-    }
-
-    @Test
-    fun `审查器没有快照时仍能工作`() {
-        val text = PromptTemplates.reviewer(
-            PromptTemplates.ReviewerInput(
-                spec = spec(),
-                unit = PlannedUnit(UnitId("u1"), 1, "第一章", "讲对象", completionCriteria = listOf("讲清")),
-                text = "这是正文",
-            ),
-        )
-        assertTrue(text.contains("这是正文"))
-        assertFalse(text.contains("[DATA:ESTABLISHED_FACTS]"))
-    }
 }

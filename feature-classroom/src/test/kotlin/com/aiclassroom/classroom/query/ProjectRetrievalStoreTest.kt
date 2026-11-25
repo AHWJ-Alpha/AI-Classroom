@@ -35,7 +35,7 @@ class ProjectRetrievalStoreTest {
             store.saveRevision(
                 UnitRevision(
                     id = rid, unitId = uid, projectId = pid, version = 1,
-                    draftText = "", review = null, attemptId = null, modelName = "m",
+                    draftText = "", attemptId = null, modelName = "m",
                     promptTemplateVersion = 1, createdAt = now, committedAt = now,
                     sourceHash = "h",
                     content = UnitContent(

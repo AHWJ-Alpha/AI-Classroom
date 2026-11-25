@@ -151,7 +151,6 @@ data class UnitRevision(
     val content: UnitContent?,
     /** 生成后由 StateUpdater 提出、程序校验通过的状态补丁。 */
     val statePatch: StatePatch? = null,
-    val review: ReviewReport? = null,
     val attemptId: AttemptId? = null,
     val modelName: String? = null,
     val promptTemplateVersion: Int = 1,

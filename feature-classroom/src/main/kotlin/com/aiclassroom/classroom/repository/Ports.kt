@@ -131,8 +131,7 @@ sealed interface CommitRejection {
     /** 基础状态版本已变化：说明有人改过状态，不能用旧补丁覆盖。 */
     data class StaleBaseVersion(val expected: Int, val actual: Int) : CommitRejection
 
-    /** 审查还有 blocking 问题。 */
-    data class Blocked(val issues: List<ReviewIssue>) : CommitRejection
+    // 审查已移除，Blocked 拒绝类型随之删除。
 
     /** 幂等键已提交过：重复回调不应该再造一版。 */
     data class AlreadyCommitted(val revisionId: RevisionId) : CommitRejection

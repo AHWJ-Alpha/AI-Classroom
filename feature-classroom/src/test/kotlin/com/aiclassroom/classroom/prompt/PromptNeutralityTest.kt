@@ -53,25 +53,6 @@ class PromptNeutralityTest {
         assertTrue(prompt.contains("[/ORIGINAL_REQUEST]"))
     }
 
-    @Test
-    fun `生成与审查提示词不含教学用词`() {
-        val prompts = listOf(
-            generator(),
-            PlannerPrompt.build("写个雨夜重逢", ProjectType.TEACHING, 3),
-            PromptTemplates.reviewer(
-                PromptTemplates.ReviewerInput(
-                    spec = spec(),
-                    unit = unit(),
-                    text = "她转过身，说了半句又停住。",
-                ),
-            ),
-        )
-        for (prompt in prompts) {
-            for (word in listOf("课程", "教学", "讲课", "讲师", "学生")) {
-                assertTrue(!prompt.contains(word), "提示词里不该出现「" + word + "」")
-            }
-        }
-    }
 
     @Test
     fun `场景类型的提示词要求反流水线`() {
@@ -100,28 +81,7 @@ class PromptNeutralityTest {
         assertTrue(prompt.contains("共同生活的时间线"), "指导内容要真的进请求")
     }
 
-    @Test
-    fun `场景审查不得把安静段落判成缺陷`() {
-        val criteria = PromptTemplates.reviewCriteria(ProjectType.SCENE)
-        assertTrue(criteria.contains("明确不算缺陷"))
-        assertTrue(criteria.contains("没有发生大事"), "安静的一节不许被判错")
-        assertTrue(criteria.contains("没有冲突"))
-        assertTrue(criteria.contains("只作参考"), "完成条件在场景里只是参考")
-    }
 
-    @Test
-    fun `场景的审查提示词自带这份标准`() {
-        val prompt = PromptTemplates.reviewer(
-            PromptTemplates.ReviewerInput(
-                spec = spec(),
-                unit = unit(),
-                text = "整个下午谁都没说话，只有窗外的雨。",
-                projectType = ProjectType.SCENE,
-            ),
-        )
-        assertTrue(prompt.contains("[REVIEW_CRITERIA]"))
-        assertTrue(prompt.contains("没有发生大事"))
-    }
 
     @Test
     fun `叙事类型不得出现讲解类块`() {
@@ -160,12 +120,4 @@ class PromptNeutralityTest {
         assertTrue(types.contains("exercise"))
     }
 
-    @Test
-    fun `场景审查细则覆盖重复桥段与时间边界`() {
-        val c = PromptTemplates.reviewCriteria(ProjectType.SCENE)
-        assertTrue(c.contains("时间是否只向前"))
-        assertTrue(c.contains("重复"), "重复桥段要能被查出来")
-        assertTrue(c.contains("越权知情"))
-        assertTrue(c.contains("没有产生新的持久状态变化"), "允许空状态节")
-    }
 }

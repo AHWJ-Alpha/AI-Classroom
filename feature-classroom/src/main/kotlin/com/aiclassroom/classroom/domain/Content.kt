@@ -92,26 +92,4 @@ sealed interface Effect {
     data class Increment(val variable: String, val delta: kotlin.Int) : Effect
 }
 
-/** 审查报告：结构化问题，不是一段自然语言评语。 */
-data class ReviewReport(
-    val issues: List<ReviewIssue>,
-    val reviewedAt: EpochMillis,
-    val templateVersion: Int = 1,
-) {
-    /** 有 blocking 问题就不能提交。 */
-    val hasBlocking: Boolean get() = issues.any { it.blocking }
-}
 
-data class ReviewIssue(
-    val id: String,
-    val severity: Severity,
-    val revisionId: RevisionId,
-    /** 位置：块 id，或空表示整篇。 */
-    val blockId: String? = null,
-    val rule: String,
-    val evidence: String,
-    val suggestedScope: String? = null,
-    val blocking: Boolean,
-) {
-    enum class Severity { INFO, WARN, ERROR }
-}
