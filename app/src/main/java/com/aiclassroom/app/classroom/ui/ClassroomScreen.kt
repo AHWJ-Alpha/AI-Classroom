@@ -15,6 +15,16 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.collectAsState
@@ -209,7 +219,11 @@ fun ClassroomScreen(
                     )
                 },
                 navigationIcon = {
-                    TextButton(onClick = goBack) { Text("返回") }
+                    TextButton(onClick = goBack) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("返回")
+                    }
                 },
             )
         },
@@ -465,7 +479,11 @@ private fun ProjectListView(
             }
         }
         Spacer(Modifier.height(12.dp))
-        Button(onClick = onCreate, modifier = Modifier.fillMaxWidth()) { Text("新建课堂") }
+        Button(onClick = onCreate, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("新建课堂")
+        }
     }
 }
 
@@ -507,7 +525,12 @@ private fun OverviewView(
     Column(Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
             // 一次性看完所有已提交的内容，不必一节一节点。
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onViewAll) { Text("查看") }
+                // 「查看全部」用眼睛图标 + 短标签：只有两个字，占不了多少宽度。
+                TextButton(onClick = onViewAll) {
+                    Icon(Icons.Filled.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("查看")
+                }
             }
 
         if (notice.isNotBlank()) {
@@ -527,12 +550,32 @@ private fun OverviewView(
         units.forEach { u ->
             // 竖排：正文在上，操作按钮在下。
             // 原来按钮挤在右边一列，中文标签一长就吃掉正文宽度。
-            Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+            // 每节一块卡片：以前所有节连成一片，标题和状态混在一起分不清边界。
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+            ) {
+            Column(Modifier.fillMaxWidth().padding(10.dp)) {
                 Column(Modifier.fillMaxWidth()) {
-                    Text(u.index.toString() + ". " + u.chapter, fontSize = 14.sp)
-                    Text(u.directive?.effectiveGoal(u.goal) ?: u.goal, fontSize = 12.sp)
-                    u.directive?.notes?.takeIf { it.isNotBlank() }?.let { Text("补充要求：$it", fontSize = 12.sp) }
-                    Text(unitStatusLabel(u.status), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            u.index.toString() + ". " + u.chapter,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        // 状态做成小徽章：一眼看出哪节好了、哪节要重写。
+                        UnitStatusBadge(u.status)
+                    }
+                    Text(
+                        u.directive?.effectiveGoal(u.goal) ?: u.goal,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    u.directive?.notes?.takeIf { it.isNotBlank() }?.let {
+                        Text("补充：$it", fontSize = 11.sp, color = MaterialTheme.colorScheme.tertiary)
+                    }
                     val draft = service.store.draft(project.id, u.id)
                     if (draft != null && draft.phase != DraftPhase.COMMITTED) {
                         val phase = when (draft.phase) {
@@ -548,16 +591,25 @@ private fun OverviewView(
                         if (draft.lastError.isNotBlank()) Text(draft.lastError, fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
                     }
                 }
-                Row(Modifier.fillMaxWidth()) {
-                    TextButton(onClick = { onEditUnit(u) }) { Text("调整") }
+                // 操作图标：文字标签在窄屏上会挤掉正文宽度，图标一行放得下三个。
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    UnitAction(Icons.Filled.Tune, "调整方向", enabled = !running) { onEditUnit(u) }
                     // 单节生成：只跑这一节，不必等整本排队，也不受别的节失败影响。
                     if (u.status != UnitStatus.READY && !running) {
-                        TextButton(onClick = { onGenerateUnit(u.id) }) { Text("生成这节") }
+                        UnitAction(Icons.Filled.AutoAwesome, "生成这一节") { onGenerateUnit(u.id) }
                     }
                     if (u.currentRevisionId != null || service.store.draft(project.id, u.id)?.segments?.isNotEmpty() == true) {
-                        TextButton(onClick = { onRead(u.id) }) { Text(if (u.status == UnitStatus.READY) "阅读" else "查看已生成") }
+                        UnitAction(
+                            if (u.status == UnitStatus.READY) Icons.Filled.MenuBook else Icons.Filled.Visibility,
+                            if (u.status == UnitStatus.READY) "阅读" else "查看已生成",
+                        ) { onRead(u.id) }
                     }
                 }
+            }
             }
         }
 
@@ -586,26 +638,92 @@ private fun OverviewView(
             }
             Spacer(Modifier.height(8.dp))
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // 主操作保留文字（最常点，图标不足以表意），配一个方向性图标；
+        // 暂停与刷新只是辅助，用图标省宽度。
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Button(onClick = onStart, enabled = !running && !planning && units.any { it.status != UnitStatus.READY }) {
-                Text(if (running) "生成中…" else if (units.isNotEmpty() && units.all { it.status == UnitStatus.READY }) "全部完成"
-                    else if (units.any { service.store.draft(project.id, it.id)?.segments?.isNotEmpty() == true }) "继续生成" else "开始生成")
+                Icon(
+                    imageVector = if (running) Icons.Filled.Refresh else Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    when {
+                        running -> "生成中"
+                        units.isNotEmpty() && units.all { it.status == UnitStatus.READY } -> "全部完成"
+                        units.any { service.store.draft(project.id, it.id)?.segments?.isNotEmpty() == true } -> "继续生成"
+                        else -> "开始生成"
+                    },
+                )
             }
-            OutlinedButton(onClick = onPause, enabled = running) { Text("暂停") }
-            OutlinedButton(onClick = onRefresh) { Text("刷新") }
+            OutlinedButton(
+                onClick = onPause, enabled = running,
+                contentPadding = PaddingValues(horizontal = 12.dp),
+            ) { Icon(Icons.Filled.Pause, contentDescription = "暂停", modifier = Modifier.size(18.dp)) }
+            OutlinedButton(
+                onClick = onRefresh,
+                contentPadding = PaddingValues(horizontal = 12.dp),
+            ) { Icon(Icons.Filled.Refresh, contentDescription = "刷新", modifier = Modifier.size(18.dp)) }
         }
     }
 }
 
-private fun unitStatusLabel(status: UnitStatus): String = when (status) {
-    UnitStatus.PLANNED -> "待生成"
-    UnitStatus.GENERATING -> "生成中"
-    UnitStatus.DRAFT_READY -> "草稿待审"
-    UnitStatus.REVIEWING -> "审查中"
-    UnitStatus.REVISING -> "修订中"
-    UnitStatus.READY -> "已完成"
-    UnitStatus.STALE -> "待复查"
-    UnitStatus.FAILED -> "失败"
+/**
+ * 单元操作图标按钮。
+ *
+ * 用图标而不是文字：三个中文标签（调整 / 生成这节 / 查看已生成）横排会吃掉
+ * 一整行宽度，标题反而被挤到换行。contentDescription 保留给无障碍。
+ */
+@Composable
+private fun UnitAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    IconButton(onClick = onClick, enabled = enabled) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            modifier = Modifier.size(20.dp),
+            tint = if (enabled) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+        )
+    }
+}
+
+/**
+ * 单元状态徽章。
+ *
+ * 原来状态是标题下面一行灰字，扫一眼分不出「已好」和「要重写」。
+ * 做成带底色的小标签，颜色直接编码含义，不用读文字。
+ */
+@Composable
+private fun UnitStatusBadge(status: UnitStatus) {
+    val color = when (status) {
+        UnitStatus.READY -> MaterialTheme.colorScheme.primary
+        UnitStatus.STALE -> MaterialTheme.colorScheme.tertiary
+        UnitStatus.DRAFT_READY, UnitStatus.GENERATING -> MaterialTheme.colorScheme.secondary
+        UnitStatus.FAILED -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val text = when (status) {
+        UnitStatus.READY -> "已好"
+        UnitStatus.STALE -> "待重写"
+        UnitStatus.DRAFT_READY -> "待保存"
+        UnitStatus.GENERATING -> "生成中"
+        UnitStatus.FAILED -> "失败"
+        else -> "待生成"
+    }
+    Surface(shape = RoundedCornerShape(6.dp), color = color.copy(alpha = 0.14f)) {
+        Text(
+            text,
+            fontSize = 10.sp,
+            color = color,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+        )
+    }
 }
 
 @Composable
